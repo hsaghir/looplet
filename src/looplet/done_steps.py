@@ -1,14 +1,14 @@
 """Helpers for inspecting ``done()`` steps recorded in ``state.steps``.
 
 The composable loop records every ``done()`` invocation as a regular
-``Step`` in ``state.steps`` - including attempts that were rejected by
-a hook's ``check_done``.  Rejected attempts carry the marker
-``tool_result.data = {"rejected": True, "reason": "<gate message>"}``
-set by the loop engine (see ``loop.py`` where quality-gate rejections
-are recorded).
+``Step`` in ``state.steps`` - including attempts rejected by a gate
+or a tool error. The loop records acceptance in
+``step.metadata["terminal_accepted"]``. Business output fields do not
+control acceptance. Older steps without this metadata use the legacy
+``tool_result.data["rejected"]`` marker.
 
 These helpers let consumers walk the history without reimplementing
-the marker convention:
+the acceptance convention:
 
 - :func:`iter_done_steps` - yield every ``done()`` step in reverse
   chronological order.
@@ -58,14 +58,16 @@ _DEFAULT_DONE_TOOL = "done"
 
 
 def is_rejected_done(step: Step, *, tool_name: str = _DEFAULT_DONE_TOOL) -> bool:
-    """Return ``True`` if ``step`` is a ``done()`` rejected by a hook.
+    """Return ``True`` if ``step`` is a rejected terminal attempt.
 
-    Matches the convention set by the loop engine:
-    ``step.tool_call.tool == tool_name`` and
-    ``step.tool_result.data == {"rejected": True, ...}``.
+    Explicit ``terminal_accepted`` step metadata takes precedence.
+    Steps without it retain the legacy ``data["rejected"]`` convention.
     """
     if step.tool_call.tool != tool_name:
         return False
+    accepted = step.metadata.get("terminal_accepted")
+    if isinstance(accepted, bool):
+        return not accepted
     data = step.tool_result.data
     return isinstance(data, dict) and bool(data.get("rejected"))
 
@@ -94,8 +96,7 @@ def last_accepted_done(
 ) -> Step | None:
     """Return the most recent accepted ``done()`` step, or ``None``.
 
-    "Accepted" means the step is a ``done()`` call whose
-    ``tool_result.data`` is not a rejection marker.  The returned
+    Acceptance follows :func:`is_rejected_done`. The returned
     step's ``tool_result.data`` is the payload the ``done`` tool
     produced (typically a dict of summary / reasoning / etc. - shape
     is consumer-defined).

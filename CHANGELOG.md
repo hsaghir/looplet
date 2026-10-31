@@ -100,7 +100,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
+- Method-style and event-style tool hooks apply argument and result rewrites in registration order. Cached results still pass permission checks, and tool-gate callback failures stop dispatch.
+- Terminal acceptance uses step metadata instead of business output fields. Payloads containing `rejected` or `status` no longer cause false retries or hide accepted output. History helpers retain the legacy marker for older steps.
+- Replay documentation describes failed run states for exhausted captures and protocol divergence instead of promising caller-visible exceptions.
 - Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.
 - Run-evidence setup errors explain writable-directory and persistence opt-out remedies while preserving the original filesystem error.

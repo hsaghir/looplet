@@ -810,6 +810,29 @@ Without `task`, replay reuses the saved trajectory task, or `{}` when no task wa
 Pass `task={}` to request an empty task, or another dictionary to replace the saved task.
 Replay does not restore checkpoints or copy starting files.
 
+### Inspect replay failures
+
+Replay reports model-call failures through the run state, not caller-visible exceptions.
+If the loop asks for more captured responses, it ends with status `failed` and
+`termination_reason="replay_exhausted"`. If the configured protocol differs from
+the captured protocol, the run fails with `termination_reason="llm_error"`.
+The final step's error describes the mismatch.
+
+Pass state to inspect the outcome after iteration:
+
+```python
+from looplet import DefaultState, RunResult, replay_loop
+
+state = DefaultState(max_steps=20)
+steps = list(replay_loop("traces/run_1/", tools=my_tools, state=state, max_steps=20))
+result = RunResult.from_state(state)
+print(result.status.value, result.termination_reason)
+```
+
+This also applies to `async_replay_loop`. Tools that ran before failure keep their
+fresh side effects. Replay does not roll them back or alter the source capture.
+Missing or invalid capture files can still raise before the loop starts.
+
 ### Replay async agents
 
 The async entry point uses the same evidence validation, saved task, protocol, and budget defaults.
@@ -847,10 +870,10 @@ The shell replay command remains synchronous.
 **Constraints:**
 
 - If your loop now asks for **more** LLM calls than were recorded,
-  replay raises `RuntimeError`; reduce `max_steps` or re-record.
+  replay fails with `replay_exhausted`; reduce `max_steps` or re-record.
 - If a call was recorded as `generate_with_tools` but the replay loop
-  uses `generate` (or vice versa), replay raises `RuntimeError`. The
-  divergence is almost certainly a bug you want to see.
+  requests `generate`, replay fails through normal model-call error handling.
+  Keep the captured protocol unless the divergence is the subject of the test.
 - Tools **do** execute at replay time. Replace with mocks if you don't
   want side effects.
 - Prompt edits do not affect the already-captured responses. Record fresh

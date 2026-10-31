@@ -1906,6 +1906,7 @@ async def _async_composable_loop_impl(
             )
 
             if gate_warning is not None:
+                done_metadata["terminal_accepted"] = False
                 tool_result = ToolResult(
                     tool=done_tool_name,
                     args_summary="rejected",
@@ -2013,17 +2014,11 @@ async def _async_composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
-                done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
-                rejected_done = tool_result.error is not None or (
-                    done_data.get("rejected") is True or done_data.get("status") == "rejected"
-                )
+                rejected_done = tool_result.error is not None
+                done_metadata["terminal_accepted"] = not rejected_done
                 if rejected_done:
-                    reason = str(
-                        done_data.get("reason")
-                        or done_data.get("error")
-                        or tool_result.error
-                        or "Final answer was not accepted"
-                    )
+                    done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                    reason = str(tool_result.error)
                     tool_result.data = {**done_data, "rejected": True, "reason": reason}
                     tool_result.error = reason
                     post_dispatch_parts.append(reason)

@@ -75,6 +75,84 @@ def _run_loop(
 
 @pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("secondary", [False, True])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"rejected": False, "invoice_id": "example"},
+        {"rejected": True, "invoice_id": "example"},
+        {"rejected": "business-field", "invoice_id": "example"},
+        {"status": "rejected", "invoice_id": "example"},
+    ],
+)
+async def test_terminal_payload_does_not_control_acceptance(is_async, native, secondary, payload):
+    import json
+
+    from looplet import run_result, run_result_async
+    from looplet.done_steps import done_output, is_rejected_done
+
+    effects = []
+
+    def submit_invoice(invoice_id: str) -> dict:
+        effects.append(invoice_id)
+        return dict(payload)
+
+    if is_async:
+        synchronous = submit_invoice
+
+        async def submit_invoice(invoice_id: str) -> dict:
+            return synchronous(invoice_id)
+
+    class Backend:
+        calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            return json.dumps({"tool": "submit_invoice", "args": {"invoice_id": "example"}})
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            return [
+                {
+                    "type": "tool_use",
+                    "id": str(self.calls),
+                    "name": "submit_invoice",
+                    "input": {"invoice_id": "example"},
+                }
+            ]
+
+    backend = Backend()
+    state = DefaultState(max_steps=2)
+    recorder = DoneAcceptedRecorder()
+    options = dict(
+        tools=[submit_invoice],
+        state=state,
+        hooks=[recorder],
+        config=LoopConfig(
+            harness_profile="minimal",
+            max_steps=2,
+            use_native_tools=native,
+            **(
+                {"done_tools": ["submit_invoice"]} if secondary else {"done_tool": "submit_invoice"}
+            ),
+        ),
+    )
+    result = (
+        await run_result_async(backend, **options) if is_async else run_result(backend, **options)
+    )
+    assert result.completed and result.output == payload
+    assert result.termination_reason == "done"
+    assert backend.calls == 1 and effects == ["example"]
+    assert len(result.steps) == len(recorder.done_accepted_payloads) == 1
+    step = result.steps[0]
+    assert step.metadata["terminal_accepted"] is True
+    assert step.tool_result.error is None and step.tool_result.data == payload
+    assert not is_rejected_done(step, tool_name="submit_invoice")
+    assert done_output(state, tool_name="submit_invoice") == payload
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("mode", ["missing", "default", "custom", "secondary"])
 async def test_terminal_setup_warning_precedes_model_calls(is_async, native, mode) -> None:
     import json
@@ -232,25 +310,33 @@ async def test_secondary_terminal_uses_its_own_schema_before_dispatch(is_async: 
 
 
 @pytest.mark.parametrize("accept_retry", [True, False])
-@pytest.mark.parametrize(
-    "rejection",
-    [
-        {"error": "not accepted yet", "status": "rejected"},
-        {"reason": "not accepted yet", "rejected": True},
-    ],
-)
+@pytest.mark.parametrize("failure", ["tool", "hook"])
 def test_dispatched_done_rejection_retries_within_budget(
     accept_retry: bool,
-    rejection: dict[str, str | bool],
+    failure: str,
 ) -> None:
+    from looplet import ToolResult
+
     attempts = 0
 
     def submit(*, answer: str) -> dict[str, str | bool]:
         nonlocal attempts
         attempts += 1
-        if attempts == 1 or not accept_retry:
-            return rejection
+        if failure == "tool" and (attempts == 1 or not accept_retry):
+            raise ValueError("not accepted yet")
         return {"answer": answer}
+
+    class RejectResult:
+        def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+            if failure == "hook" and (attempts == 1 or not accept_retry):
+                return HookDecision(
+                    updated_result=ToolResult(
+                        tool=tool_call.tool,
+                        args_summary=tool_result.args_summary,
+                        data=tool_result.data,
+                        error="not accepted yet",
+                    )
+                )
 
     tools = BaseToolRegistry()
     tools.register(
@@ -270,16 +356,18 @@ def test_dispatched_done_rejection_retries_within_budget(
             ),
             tools=tools,
             state=state,
-            hooks=[recorder],
+            hooks=[RejectResult(), recorder],
             config=LoopConfig(max_steps=2),
         )
     )
 
     assert len(steps) == attempts == 2
+    assert steps[0].metadata["terminal_accepted"] is False
     assert steps[0].tool_result.data["rejected"] is True
-    assert steps[0].tool_result.data["reason"] == "not accepted yet"
-    assert steps[0].tool_result.error == "not accepted yet"
+    assert "not accepted yet" in steps[0].tool_result.data["reason"]
+    assert steps[0].tool_result.error == steps[0].tool_result.data["reason"]
     if accept_retry:
+        assert steps[1].metadata["terminal_accepted"] is True
         assert [event.step_num for event in recorder.done_accepted_payloads] == [2]
         assert recorder.stop_reasons == ["done"]
         assert state.termination_reason == "done"

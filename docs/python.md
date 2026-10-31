@@ -152,6 +152,12 @@ A rejected completion lets the loop continue.
 Accepted completion also runs `post_dispatch`.
 Both completion paths yield a `Step`.
 
+**Source preview:** The loop records acceptance in `step.metadata["terminal_accepted"]`.
+Business output fields such as `rejected` and `status` do not control acceptance.
+Use `check_done` to reject completion before the terminal tool runs.
+A terminal tool exception or a post-dispatch result with `error` also prevents acceptance.
+The history helpers retain the legacy rejection marker for older steps without this metadata.
+
 A yielded `Step` is not a request for approval.
 Use a permission hook when a check must happen before execution.
 Limits and `should_stop` can end the run without accepted completion.

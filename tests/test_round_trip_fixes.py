@@ -297,6 +297,9 @@ def test_tool_required_resource_written_back(tmp_path: Path) -> None:
         [{"tool": "bash", "settings": {"enabled": False}}],
         [None, "null", "false", "001", {}, []],
         [[{"value": "quoted: value"}]],
+        "plain-account",
+        "${literal:not-a-reference}",
+        {"@runtime": "ordinary-value"},
     ],
 )
 def test_hook_kwargs_inferred_from_init_when_no_to_config(
@@ -365,7 +368,23 @@ def test_hook_kwargs_inferred_from_init_when_no_to_config(
 
 
 @pytest.mark.parametrize("strict", [False, True])
-@pytest.mark.parametrize("settings", [object(), {"unsupported"}, float("nan"), {1: "value"}])
+@pytest.mark.parametrize(
+    "settings",
+    [
+        object(),
+        {"unsupported"},
+        float("nan"),
+        {1: "value"},
+        "@runtime",
+        "${runtime.identity:-fallback}",
+        "${ref:cache}",
+        "${py:math:pi}",
+        {"policy": {"account": "@runtime"}},
+        [{"policy": {"account": "${runtime.identity:-fallback}"}}],
+        "prefix ${runtime.identity:-fallback} suffix",
+        {"${runtime.identity:-fallback}": "ordinary-value"},
+    ],
+)
 def test_export_reports_unrepresentable_hook_constructor_settings(
     tmp_path: Path, strict: bool, settings
 ) -> None:
@@ -376,6 +395,7 @@ def test_export_reports_unrepresentable_hook_constructor_settings(
                 CartridgeSerializationError, match="ConstructorSettingsHook.*settings"
             ):
                 preset_to_cartridge(preset, tmp_path / "agent", strict=True)
+            assert not (tmp_path / "agent").exists()
         else:
             written = preset_to_cartridge(preset, tmp_path / "agent")
             assert any(

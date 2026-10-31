@@ -612,7 +612,9 @@ arbitrary blocking system call.
 
 External `asyncio.Task.cancel()` still raises `CancelledError` to the host.
 An unfinished async run becomes cancelled rather than failed.
-`AgentRuntime.run_async()` saves that terminal result and any configured runtime checkpoint before propagation.
+`AgentRuntime.run_async()` attempts to save that terminal result and any configured runtime checkpoint before propagation.
+Evidence-flush failures do not replace an external cancellation.
+They emit a warning with the exception type.
 Cancellation does not prove that an interrupted tool had no effects.
 Reconcile any `effect_unknown` record before retrying.
 

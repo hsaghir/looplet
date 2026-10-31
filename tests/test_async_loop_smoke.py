@@ -121,10 +121,10 @@ async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(
     assert any(key == "model_turn" for key, _ in writes) == (model_limit is not None)
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("fault", ["none", "oserror", "cancelled"])
 @pytest.mark.parametrize("cancel_helpers", [False, True])
 async def test_persistence_drains_inflight_write_before_propagating_cancellation(
-    fail, cancel_helpers
+    fault, cancel_helpers
 ):
     from contextvars import ContextVar
     from threading import Event
@@ -143,8 +143,10 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         assert release.wait(5)
         assert marker.get() == "caller"
         events.append("written")
-        if fail:
+        if fault == "oserror":
             raise OSError("storage failed")
+        if fault == "cancelled":
+            raise asyncio.CancelledError("worker cancellation")
 
     async def drive():
         try:
@@ -169,9 +171,25 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         assert not pending.done()
     finally:
         release.set()
-    with pytest.raises(OSError if fail else asyncio.CancelledError):
+    with pytest.raises(OSError if fault == "oserror" else asyncio.CancelledError):
         await pending
     assert events == ["written", "finalized"]
+
+
+@pytest.mark.timeout(5)
+async def test_persistence_callback_cancellation_propagates_without_retry():
+    from looplet.checkpoint import _run_persistence
+
+    calls = []
+
+    def write():
+        calls.append("written")
+        raise asyncio.CancelledError("worker cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await _run_persistence(write)
+    assert caught.value.args == ("worker cancellation",)
+    assert calls == ["written"]
 
 
 class TestAsyncLlmCall:

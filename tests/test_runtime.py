@@ -358,10 +358,12 @@ async def test_runtime_faults_share_restoration_and_persistence_contract(async_r
 
 @pytest.mark.parametrize("store_kind", ["none", "memory", "file"])
 @pytest.mark.parametrize("checkpoints", [False, True])
+@pytest.mark.parametrize("flush_fault", ["none", "oserror", "cancelled"])
 async def test_external_async_cancellation_restores_and_releases_runtime(
-    tmp_path, store_kind, checkpoints
+    tmp_path, monkeypatch, caplog, store_kind, checkpoints, flush_fault
 ):
     from looplet import FileRunStore, RunEnvelope, RunPhase, RunResult
+    from looplet.provenance import ProvenanceSink
 
     entered = asyncio.Event()
     blocked = asyncio.Event()
@@ -373,6 +375,8 @@ async def test_external_async_cancellation_restores_and_releases_runtime(
             return '{"tool":"done","args":{"summary":"ok"}}'
 
     preset = _preset(use_native_tools=False)
+    preset.config.harness_profile = "execution-v1"
+    preset.config.run_dir = str(tmp_path / "evidence")
     envelope = preset.config.run_envelope
     token = preset.config.cancel_token
     store = (
@@ -384,6 +388,15 @@ async def test_external_async_cancellation_restores_and_releases_runtime(
     )
     runtime = AgentRuntime(preset, store=store, checkpoint_every_n_steps=1 if checkpoints else None)
     run_envelope = RunEnvelope(run_id="external-cancel")
+    original_flush = ProvenanceSink.flush
+
+    def fail_flush(self):
+        if flush_fault == "oserror":
+            raise OSError("private flush failure details")
+        raise asyncio.CancelledError("secondary persistence cancellation")
+
+    if flush_fault != "none":
+        monkeypatch.setattr(ProvenanceSink, "flush", fail_flush)
     pending = asyncio.create_task(runtime.run_async(Backend(), envelope=run_envelope))
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
@@ -391,6 +404,19 @@ async def test_external_async_cancellation_restores_and_releases_runtime(
         with pytest.raises(asyncio.CancelledError) as caught:
             await pending
         assert caught.value.args == ("host request",)
+        assert pending.cancelled()
+        flush_warnings = [
+            record.message
+            for record in caplog.records
+            if "Persistence failed during async cancellation" in record.message
+        ]
+        if flush_fault == "none":
+            assert not flush_warnings
+        else:
+            category = "OSError" if flush_fault == "oserror" else "CancelledError"
+            assert flush_warnings == [f"Persistence failed during async cancellation ({category})"]
+            assert "private flush failure details" not in caplog.text
+            assert "secondary persistence cancellation" not in caplog.text
         assert not runtime._active_tokens
         assert preset.config.run_envelope is envelope
         assert preset.config.cancel_token is token
@@ -417,9 +443,41 @@ async def test_external_async_cancellation_restores_and_releases_runtime(
                 assert checkpoint.run_status == "cancelled"
                 assert checkpoint.run_phase == "terminal"
                 assert checkpoint.termination_reason == "cancelled"
+        monkeypatch.setattr(ProvenanceSink, "flush", original_flush)
     finally:
         blocked.set()
         runtime.close()
+    fresh_preset = _preset(use_native_tools=False)
+    fresh_preset.tools = preset.tools
+    fresh_preset.config.run_dir = str(tmp_path / "subsequent-evidence")
+    with AgentRuntime(fresh_preset, store=store) as fresh_runtime:
+        subsequent = await fresh_runtime.run_async(
+            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"reused"}}']),
+            envelope=RunEnvelope(run_id="after-external-cancel"),
+        )
+        assert subsequent.completed
+        assert not fresh_runtime._active_tokens
+
+
+async def test_evidence_flush_failure_without_cancellation_remains_failure(tmp_path, monkeypatch):
+    from looplet import RunEnvelope
+    from looplet.provenance import ProvenanceSink
+
+    def fail_flush(self):
+        raise OSError("injected evidence flush failure")
+
+    preset = _preset(use_native_tools=False)
+    preset.config.harness_profile = "execution-v1"
+    preset.config.run_dir = str(tmp_path / "evidence")
+    store = MemoryRunStore()
+    monkeypatch.setattr(ProvenanceSink, "flush", fail_flush)
+    with AgentRuntime(preset, store=store) as runtime:
+        result = await runtime.run_async(
+            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"finished"}}']),
+            envelope=RunEnvelope(run_id="flush-failure"),
+        )
+    assert result.status is RunStatus.FAILED
+    assert store.load("flush-failure").status == "failed"
 
 
 def _preset(*, use_native_tools: bool = True) -> AgentPreset:

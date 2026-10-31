@@ -415,6 +415,8 @@ Check required modules and run the exported agent's tests on its receiving host.
 Without `to_config()`, hook constructor settings are inferred from matching public or private attributes.
 Nested JSON/YAML values and declared resource references are retained.
 Values that cannot round-trip raise in strict mode and produce a warning otherwise.
+Inferred literals matching resource references or runtime placeholders are unsupported.
+Construct these literal settings in a parameterless, importable recipe instead.
 
 ### What does not round-trip (and what happens)
 

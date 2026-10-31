@@ -566,6 +566,7 @@ async def async_composable_loop(
 
     finalizer = _LoopFinalizer()
     iterator = None
+    original_cancellation: asyncio.CancelledError | None = None
     try:
         prepared.enable_async_persistence()
         tokens = _set_context_overrides(effective_config)
@@ -590,7 +591,8 @@ async def async_composable_loop(
     except GeneratorExit:
         _mark_terminal_state(finalizer.state, status="stopped", reason="stream_closed")
         raise
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
+        original_cancellation = exc
         _mark_terminal_state(
             finalizer.state if finalizer.state is not None else prepared.state,
             status="cancelled",
@@ -609,7 +611,14 @@ async def async_composable_loop(
                 await finalizer.finish_async(suppress_errors=True)
         finally:
             try:
-                await _run_persistence(prepared.persist)
+                try:
+                    await _run_persistence(prepared.persist)
+                except (Exception, asyncio.CancelledError) as exc:
+                    if original_cancellation is None:
+                        raise
+                    logger.warning(
+                        "Persistence failed during async cancellation (%s)", type(exc).__name__
+                    )
             finally:
                 try:
                     prepared.release()

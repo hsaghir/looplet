@@ -43,11 +43,13 @@ from looplet.cartridge._layout import (
 )
 from looplet.cartridge._manifest import Cartridge, CartridgeCompatibility
 from looplet.cartridge._render import (
+    _RUNTIME_PLACEHOLDER,
     _DataclassReprFailed,
     _hook_class,
     _render_dataclass_kwargs,
     _safe_filename,
 )
+from looplet.cartridge._resources import _REF_PATTERN
 from looplet.cartridge._yaml import _dump_yaml, _load_yaml
 from looplet.refs import _REF_PREFIX, _resource_origin, resource_ref_for
 
@@ -1304,6 +1306,17 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
     (hook_dir / "config.yaml").write_text(_dump_yaml(cfg_payload) + "\n", encoding="utf-8")
 
 
+def _contains_literal_reference(value: Any) -> bool:
+    """Check inferred JSON values for the loader's reserved reference tokens."""
+    if isinstance(value, str):
+        return value.startswith(_REF_PREFIX) or _REF_PATTERN.match(value) is not None
+    if isinstance(value, dict):
+        return any(_contains_literal_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_literal_reference(item) for item in value)
+    return False
+
+
 def _infer_hook_kwargs_from_init(
     hook: Any, *, warnings: list[str] | None = None, strict: bool = False
 ) -> dict[str, Any]:
@@ -1319,6 +1332,7 @@ def _infer_hook_kwargs_from_init(
 
     Nested JSON values use the existing YAML codec. Unsupported values
     raise in strict mode or produce a serialization warning.
+    Literal reference tokens and runtime placeholders are unsupported inferred values.
     Parameters without matching attributes are skipped.
     """
     kwargs: dict[str, Any] = {}
@@ -1351,8 +1365,11 @@ def _infer_hook_kwargs_from_init(
         try:
             json.dumps(candidate, allow_nan=False)
             payload = {"value": candidate}
-            if _load_yaml(_dump_yaml(payload)) != payload:
+            encoded = _dump_yaml(payload)
+            if _load_yaml(encoded) != payload:
                 raise ValueError("YAML encoding changes the constructor value")
+            if _contains_literal_reference(candidate) or _RUNTIME_PLACEHOLDER.search(encoded):
+                raise ValueError("Reference resolution changes the constructor value")
         except (TypeError, ValueError, RecursionError, CartridgeSerializationError) as exc:
             msg = (
                 f"hook {type(hook).__name__!r} parameter {p_name!r} "

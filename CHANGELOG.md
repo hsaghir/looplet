@@ -33,6 +33,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Strict constructor inference rejects literal reference tokens and runtime placeholders that would change during loading.
+- Evidence-flush failures retain original external cancellation and cancelled run status. Ordinary persistence failures still propagate. Cancelled persistence callbacks no longer loop indefinitely.
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.

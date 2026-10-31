@@ -81,6 +81,17 @@ def _tool_step(number: int, tool: str = "search") -> Step:
 
 
 class TestIsRejectedDone:
+    @pytest.mark.parametrize("accepted", [False, True])
+    @pytest.mark.parametrize("payload", [{"rejected": True}, {"rejected": "domain"}, {}])
+    def test_explicit_acceptance_overrides_business_payload(self, accepted, payload):
+        step = _make_step(1, "done", data=payload)
+        step.metadata["terminal_accepted"] = accepted
+        state = DefaultState()
+        state.steps = [step]
+        assert is_rejected_done(step) is not accepted
+        assert last_accepted_done(state) is (step if accepted else None)
+        assert last_rejected_done(state) is (None if accepted else step)
+
     def test_rejected_marker_detected(self) -> None:
         assert is_rejected_done(_rejected_done(1)) is True
 

@@ -1020,16 +1020,9 @@ def test_loop_isolates_memory_source_that_raises(tmp_path: Path) -> None:
 # ── fix 17: LLMResponsesExhausted is not retried ─────────────────
 
 
-def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
-    """MockLLMBackend(cycle=False) raises LLMResponsesExhausted when a
-    test scripted fewer responses than the loop asked for. Before the
-    fix, the retry-with-backoff loop in scaffolding waited 1s + 2s
-    before giving up - making test failures slow and noisy. The new
-    type-name check short-circuits the retry, surfacing the clear
-    error immediately.
-    """
+def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path, monkeypatch) -> None:
+    """Exhausted scripts stop without another request or retry backoff."""
     import json as _json  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
 
     from looplet import (  # noqa: PLC0415
         DefaultState,
@@ -1052,7 +1045,10 @@ def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
     cfg = LoopConfig(max_steps=10)
     state = DefaultState(max_steps=10)
 
-    t0 = _time.monotonic()
+    def unexpected_backoff(delay):
+        pytest.fail(f"Exhausted mocks must not retry after {delay}s")
+
+    monkeypatch.setattr("looplet.scaffolding.time.sleep", unexpected_backoff)
     steps = list(
         composable_loop(
             llm=backend,
@@ -1062,15 +1058,7 @@ def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
             task={"description": "spin"},
         )
     )
-    elapsed = _time.monotonic() - t0
-    # Without the fix, retry waited ~3s of backoff; with the fix it
-    # short-circuits, so a generous bound of 1s catches regressions.
-    assert elapsed < 1.0, (
-        f"loop took {elapsed:.2f}s before surfacing exhaustion; "
-        f"the retry-with-backoff path probably ran (regressed)."
-    )
-    # The loop should still surface the error as a step (existing
-    # behaviour) - we only changed how fast.
+    assert backend.calls == 2
     assert any(s.tool_call.tool == "__llm_error__" for s in steps), (
         f"expected an __llm_error__ step; got tools {[s.tool_call.tool for s in steps]}"
     )

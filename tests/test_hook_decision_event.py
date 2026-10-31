@@ -18,6 +18,251 @@ from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
 
 
+@pytest.mark.parametrize("mode", ["sync", "async", "async_hooks"])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("writer_kind", ["method", "event"])
+@pytest.mark.parametrize("observer_kind", ["method", "event"])
+@pytest.mark.parametrize("case", ["permission", "result"])
+async def test_tool_hooks_compose_in_registration_order(
+    mode, native, writer_kind, observer_kind, case
+):
+    import json
+    from types import SimpleNamespace
+
+    from looplet import Deny, HookDecision, ToolResult, run_result, run_result_async
+
+    effects = []
+    observed = []
+    audit = []
+
+    class Audit:
+        def on_event(self, payload):
+            if payload.event is LifecycleEvent.HOOK_DECISION:
+                audit.append(payload)
+
+    def read_resource(scope: str) -> dict:
+        effects.append(scope)
+        return {"scope": scope, "secret": "synthetic-private-value"}
+
+    class Backend:
+        calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            return json.dumps(
+                {"tool": "read_resource", "args": {"scope": "public"}}
+                if self.calls == 1
+                else {"tool": "done", "args": {"summary": "finished"}}
+            )
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            return [
+                {
+                    "type": "tool_use",
+                    "id": str(self.calls),
+                    "name": "read_resource" if self.calls == 1 else "done",
+                    "input": {"scope": "public"} if self.calls == 1 else {"summary": "finished"},
+                }
+            ]
+
+    def rewrite(tool_call, tool_result=None):
+        if case == "permission":
+            return HookDecision(updated_args={"scope": "private"})
+        return HookDecision(
+            updated_result=ToolResult(
+                tool=tool_result.tool,
+                args_summary=tool_result.args_summary,
+                data={"scope": tool_result.data["scope"]},
+            )
+        )
+
+    def inspect_result(tool_call, tool_result=None):
+        if case == "permission":
+            observed.append(tool_call.args["scope"])
+            if tool_call.args["scope"] != "public":
+                return Deny("private scope is not authorized")
+        else:
+            observed.append(dict(tool_result.data))
+
+    def make_hook(kind, effect):
+        if kind == "event":
+            slot = "on_event"
+
+            def callback(payload):
+                event = (
+                    LifecycleEvent.PRE_TOOL_USE
+                    if case == "permission"
+                    else LifecycleEvent.POST_TOOL_USE
+                )
+                if payload.event is event and payload.tool_call.tool == "read_resource":
+                    return effect(payload.tool_call, payload.tool_result)
+        elif case == "permission":
+            slot = "pre_dispatch"
+
+            def callback(state, session_log, tool_call, step_num):
+                if tool_call.tool == "read_resource":
+                    return effect(tool_call)
+        else:
+            slot = "post_dispatch"
+
+            def callback(state, session_log, tool_call, tool_result, step_num):
+                if tool_call.tool == "read_resource":
+                    return effect(tool_call, tool_result)
+
+        if mode == "async_hooks":
+            synchronous = callback
+
+            async def callback(*args, **kwargs):
+                return synchronous(*args, **kwargs)
+
+        hook = SimpleNamespace(**{slot: callback})
+        if kind == "method":
+
+            def reject_duplicate(payload):
+                event = (
+                    LifecycleEvent.PRE_TOOL_USE
+                    if case == "permission"
+                    else LifecycleEvent.POST_TOOL_USE
+                )
+                if payload.event is event:
+                    pytest.fail("A method-style hook must not receive its equivalent event")
+
+            hook.on_event = reject_duplicate
+        return hook
+
+    backend = Backend()
+    options = dict(
+        tools=[read_resource],
+        hooks=[Audit(), make_hook(writer_kind, rewrite), make_hook(observer_kind, inspect_result)],
+        task="Read only an authorized public resource.",
+        config=LoopConfig(harness_profile="minimal", max_steps=2, use_native_tools=native),
+    )
+    result = (
+        run_result(backend, **options)
+        if mode == "sync"
+        else await run_result_async(backend, **options)
+    )
+    assert result.completed and backend.calls == 2
+    assert len(audit) == (2 if case == "permission" else 1)
+    if case == "permission":
+        assert effects == []
+        assert observed == ["private"]
+        assert result.steps[0].tool_result.data is None
+        assert "Permission denied" in result.steps[0].tool_result.error
+    else:
+        assert effects == ["public"]
+        assert observed == [{"scope": "public"}]
+        assert result.steps[0].tool_result.data == {"scope": "public"}
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "async_hooks"])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("policy_first", [False, True])
+@pytest.mark.parametrize("policy", ["deny", "allow", "failure"])
+async def test_cached_result_checks_later_event_authorization(mode, native, policy_first, policy):
+    import json
+    from types import SimpleNamespace
+
+    from looplet import Deny, HookDecision, ToolResult, run_result, run_result_async
+
+    effects = []
+    checked = []
+
+    def read_resource(scope: str) -> dict:
+        effects.append(scope)
+        return {"scope": scope}
+
+    class Backend:
+        calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            return json.dumps(
+                {"tool": "read_resource", "args": {"scope": "private"}}
+                if self.calls == 1
+                else {"tool": "done", "args": {"summary": "finished"}}
+            )
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            return [
+                {
+                    "type": "tool_use",
+                    "id": str(self.calls),
+                    "name": "read_resource" if self.calls == 1 else "done",
+                    "input": {"scope": "private"} if self.calls == 1 else {"summary": "finished"},
+                }
+            ]
+
+    class Cache:
+        def pre_dispatch(self, state, session_log, tool_call, step_num):
+            if tool_call.tool == "read_resource":
+                return HookDecision(
+                    updated_result=ToolResult(
+                        tool="read_resource", args_summary="", data={"cached_private_value": 42}
+                    )
+                )
+
+    class Authorization:
+        def on_event(self, payload):
+            if (
+                payload.event is LifecycleEvent.PRE_TOOL_USE
+                and payload.tool_call.tool == "read_resource"
+            ):
+                checked.append(payload.tool_call.args["scope"])
+                if policy == "failure":
+                    raise RuntimeError("authorization unavailable")
+                if policy == "deny":
+                    return Deny("Private data is not authorized")
+
+    cache = Cache()
+    authorization = Authorization()
+    if mode == "async_hooks":
+
+        async def cache_callback(*args):
+            return cache.pre_dispatch(*args)
+
+        async def authorization_callback(payload):
+            return authorization.on_event(payload)
+
+        cache_hook = SimpleNamespace(pre_dispatch=cache_callback)
+        authorization_hook = SimpleNamespace(on_event=authorization_callback)
+    else:
+        cache_hook = cache
+        authorization_hook = authorization
+    hooks = [authorization_hook, cache_hook] if policy_first else [cache_hook, authorization_hook]
+    backend = Backend()
+    options = dict(
+        tools=[read_resource],
+        hooks=hooks,
+        task="Read only authorized data.",
+        config=LoopConfig(harness_profile="minimal", max_steps=2, use_native_tools=native),
+    )
+    if policy == "failure":
+        with pytest.raises(RuntimeError, match="authorization unavailable"):
+            if mode == "sync":
+                run_result(backend, **options)
+            else:
+                await run_result_async(backend, **options)
+        assert checked == ["private"] and not effects and backend.calls == 1
+        return
+    result = (
+        run_result(backend, **options)
+        if mode == "sync"
+        else await run_result_async(backend, **options)
+    )
+    assert result.completed and backend.calls == 2
+    assert checked == ["private"] and not effects
+    tool_result = result.steps[0].tool_result
+    if policy == "deny":
+        assert tool_result.data is None
+        assert "Private data is not authorized" in tool_result.error
+    else:
+        assert tool_result.error is None
+        assert tool_result.data == {"cached_private_value": 42}
+
+
 @pytest.mark.parametrize("async_mode", ["sync", "async", "async_hooks"])
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize(

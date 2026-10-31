@@ -758,6 +758,34 @@ class TestReplayLoopSmoke:
         )
         assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_replay_method_mismatch_returns_failed_state(self, tmp_path, asynchronous):
+        from looplet import RunResult, async_replay_loop
+
+        backend = MockLLMBackend([])
+        backend.generate_with_tools = lambda prompt, **kwargs: [
+            {"type": "tool_use", "id": "add-1", "name": "add", "input": {"a": 1, "b": 2}}
+        ]
+        capture = ProvenanceSink(dir=tmp_path / "capture")
+        capture.wrap_llm(backend).generate_with_tools("prompt", tools=[])
+        trace = capture.flush()
+        before = {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()}
+        state = DefaultState(max_steps=2)
+        options = dict(
+            tools=_make_tools(),
+            state=state,
+            config=LoopConfig(max_steps=2, use_native_tools=False),
+        )
+        if asynchronous:
+            steps = [step async for step in async_replay_loop(trace, **options)]
+        else:
+            steps = list(replay_loop(trace, **options))
+        result = RunResult.from_state(state)
+        assert result.status.value == "failed" and not result.completed
+        assert result.termination_reason == "llm_error"
+        assert len(steps) == 1 and "replay mismatch" in steps[0].tool_result.error
+        assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
+
     def test_fallback_without_manifest(self, tmp_path: Path):
         """Replay should work from call_NN_response.txt even without manifest."""
         trace_dir = _captured_dir(tmp_path)

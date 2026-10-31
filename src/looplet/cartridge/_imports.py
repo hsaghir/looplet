@@ -1,7 +1,8 @@
 """Load cartridge Python source without bytecode caches.
 
 Direct tool, hook, and resource loading uses :func:`_import_module_from_path`.
-Ordinary helper imports use a source-only loader scoped to the cartridge.
+Ordinary helper imports use source-only loading for Python's standard loader.
+Custom host loaders retain their behavior.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ class _CartridgeSourceFinder:
         target: ModuleType | None = None,
     ) -> ModuleSpec | None:
         spec = PathFinder.find_spec(fullname, path)
-        if spec is None or spec.origin is None or not isinstance(spec.loader, SourceFileLoader):
+        if spec is None or spec.origin is None or type(spec.loader) is not SourceFileLoader:
             return None
         if not Path(spec.origin).resolve().is_relative_to(self.root):
             return None

@@ -33,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge helper loading preserves custom host path-entry loaders instead of replacing their source transformations.
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.

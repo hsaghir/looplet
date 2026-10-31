@@ -216,6 +216,57 @@ def test_cartridge_helper_import_preserves_host_finder_precedence(tmp_path: Path
         sys.modules.pop(module_name, None)
 
 
+@pytest.mark.parametrize("custom_loader", [False, True])
+@pytest.mark.parametrize("package", [False, True])
+def test_helper_reload_preserves_host_path_loader(
+    tmp_path: Path, monkeypatch, custom_loader: bool, package: bool
+) -> None:
+    from importlib.machinery import SOURCE_SUFFIXES, FileFinder, SourceFileLoader
+
+    workspace = _scaffold(tmp_path / "path-loader.workspace", name="path-loader")
+    module_name = "host_path_loader_policy"
+    if package:
+        helper_dir = workspace / module_name
+        helper_dir.mkdir()
+        helper = helper_dir / "__init__.py"
+    else:
+        helper = workspace / f"{module_name}.py"
+    helper.write_text("VALUE = 11\n")
+    (workspace / "tools/greet/tool.yaml").write_text("name: greet\nparameters: {}\n")
+    (workspace / "tools/greet/execute.py").write_text(
+        f"from {module_name} import VALUE\ndef execute():\n    return {{'value': VALUE}}\n"
+    )
+    loader_calls = []
+
+    class HostLoader(SourceFileLoader):
+        def get_code(self, fullname):
+            loader_calls.append(fullname)
+            source = self.get_data(self.get_filename(fullname)).decode("utf-8")
+            return compile(source + "\nVALUE = 29\n", self.path, "exec")
+
+    if custom_loader:
+        monkeypatch.setitem(
+            sys.path_importer_cache,
+            str(workspace),
+            FileFinder(str(workspace), (HostLoader, SOURCE_SUFFIXES)),
+        )
+    original_meta_path = list(sys.meta_path)
+    try:
+        with WorkspaceWatcher(workspace, strict=True) as watcher:
+            initial = watcher.preset().tools.dispatch(ToolCall(tool="greet", args={}))
+            assert initial.error is None
+            assert initial.data == {"value": 29 if custom_loader else 11}
+            helper.write_text("VALUE = 17\n")
+            replacement = watcher.force_reload()
+            updated = replacement.tools.dispatch(ToolCall(tool="greet", args={}))
+            assert updated.error is None
+            assert updated.data == {"value": 29 if custom_loader else 17}
+        assert loader_calls == ([module_name, module_name] if custom_loader else [])
+        assert sys.meta_path == original_meta_path
+    finally:
+        sys.modules.pop(module_name, None)
+
+
 def test_force_reload_works_without_changes(tmp_path: Path) -> None:
     ws = _scaffold(tmp_path / "w.workspace", name="w")
     w = WorkspaceWatcher(ws, runtime={"workspace": str(tmp_path)})

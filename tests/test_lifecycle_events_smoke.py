@@ -205,12 +205,13 @@ class TestLifecycleEventDecisions:
 
 
 class TestLifecycleEventSafety:
-    def test_exceptions_in_on_event_do_not_break_loop(self):
+    def test_observer_exceptions_in_on_event_do_not_break_loop(self):
         class Angry:
             def on_event(self, payload):
+                if payload.event == LifecycleEvent.PRE_TOOL_USE:
+                    return None
                 raise RuntimeError("boom")
 
-        # Loop completes normally even though every event dispatch raises.
         steps = _run_simple(Angry())
         assert len(steps) == 2
 

@@ -10,7 +10,7 @@ import inspect
 import logging
 import time
 import warnings
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
@@ -1214,6 +1214,8 @@ def _record_run_stats(
                 "done_tool",
             )
         }
+        if config.done_tools:
+            stats["model_turn_config"]["done_tools"] = list(config.done_tools)
         for name in ("max_model_calls", "max_assistant_turns"):
             if getattr(config, name) is not None:
                 stats["model_turn_config"][name] = getattr(config, name)
@@ -1480,13 +1482,24 @@ def emit_event(
     on ``block`` / ``stop`` / ``updated_*`` fields; ``None`` returns
     are filtered out.
 
-    Exceptions from a hook are swallowed and logged - event dispatch
-    must never break the loop.
+    Observer errors are logged. The loop separately applies fail-closed
+    handling when these hooks act as tool gates.
     """
+    return list(_iter_event_decisions(hooks, event, **payload_kwargs))
+
+
+def _iter_event_decisions(
+    hooks: list[Any],
+    event: Any,
+    *,
+    fail_closed: bool = False,
+    **payload_kwargs: Any,
+) -> Generator[Any, None, None]:
+    """Yield each decision before invoking the next event subscriber."""
     from looplet.events import EventPayload  # noqa: PLC0415
+    from looplet.events import LifecycleEvent as _LE
     from looplet.hook_decision import HookDecision  # noqa: PLC0415
 
-    decisions: list[Any] = []
     state = payload_kwargs.get("state")
     if state is not None:
         from looplet.context_projection import model_turn_context
@@ -1506,12 +1519,12 @@ def emit_event(
         try:
             result = fn(payload)
         except Exception:  # noqa: BLE001
+            if fail_closed:
+                raise
             logger.exception("on_event hook raised; continuing")
             continue
         if isinstance(result, HookDecision):
-            from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
-
-            normalize_hook_return(result, slot=getattr(event, "value", str(event)))
+            decision = normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 _emit_hook_decision_event(
                     hooks,
@@ -1524,8 +1537,7 @@ def emit_event(
                     context=payload.context,
                     extra={"originating_event": getattr(event, "value", str(event))},
                 )
-            decisions.append(result)
-    return decisions
+            yield decision
 
 
 async def emit_event_async(
@@ -1538,12 +1550,25 @@ async def emit_event_async(
     Hooks are awaited in registration order so decisions retain the same
     precedence and mutation semantics as the synchronous loop.
     """
+    return [
+        decision async for decision in _iter_event_decisions_async(hooks, event, **payload_kwargs)
+    ]
+
+
+async def _iter_event_decisions_async(
+    hooks: list[Any],
+    event: Any,
+    *,
+    fail_closed: bool = False,
+    **payload_kwargs: Any,
+) -> AsyncIterator[Any]:
+    """Await and yield each decision before invoking the next subscriber."""
     import inspect as _inspect  # noqa: PLC0415
 
     from looplet.events import EventPayload  # noqa: PLC0415
+    from looplet.events import LifecycleEvent as _LE
     from looplet.hook_decision import HookDecision  # noqa: PLC0415
 
-    decisions: list[Any] = []
     state = payload_kwargs.get("state")
     if state is not None:
         from looplet.context_projection import model_turn_context
@@ -1565,12 +1590,12 @@ async def emit_event_async(
             if _inspect.isawaitable(result):
                 result = await result
         except Exception:  # noqa: BLE001
+            if fail_closed:
+                raise
             logger.exception("async on_event hook raised; continuing")
             continue
         if isinstance(result, HookDecision):
-            from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
-
-            normalize_hook_return(result, slot=getattr(event, "value", str(event)))
+            decision = normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 await _emit_hook_decision_event_async(
                     hooks,
@@ -1583,8 +1608,7 @@ async def emit_event_async(
                     context=payload.context,
                     extra={"originating_event": getattr(event, "value", str(event))},
                 )
-            decisions.append(result)
-    return decisions
+            yield decision
 
 
 async def _emit_hook_decision_event_async(
@@ -1656,17 +1680,18 @@ async def _intercept_tool_calls_async(
     result = _InterceptResult()
     for tc_idx, tc in enumerate(calls):
         cur_step = step_num + tc_idx
-        decisions = await emit_event_async(
+        decisions = _iter_event_decisions_async(
             hooks,
             _LE.PRE_TOOL_USE,
+            fail_closed=True,
             step_num=cur_step,
             state=state,
             session_log=session_log,
             context=context,
             tool_call=tc,
         )
-        handled = False
-        for decision in decisions:
+        denied = False
+        async for decision in decisions:
             if decision.updated_args is not None:
                 tc.args = decision.updated_args
             if decision.permission == "deny":
@@ -1682,19 +1707,20 @@ async def _intercept_tool_calls_async(
                     error=message,
                     error_detail=error,
                 )
-                handled = True
+                denied = True
                 break
             if decision.updated_result is not None:
                 result.intercepted[tc_idx] = decision.updated_result
-                handled = True
                 break
             if decision.additional_context:
                 result.extra_context.append(decision.additional_context)
-        if handled:
+        if denied:
             continue
 
         pre_dispatch_denied = False
         for hook in hooks:
+            if tc_idx in result.intercepted:
+                break
             method = getattr(hook, "pre_dispatch", None)
             if method is None:
                 continue
@@ -2311,16 +2337,17 @@ def _intercept_tool_calls(
         cur_step = step_num + tc_idx
 
         # ── Event-style hooks (on_event) ────────────────────
-        _pre_tool_decisions = emit_event(
+        _pre_tool_decisions = _iter_event_decisions(
             hooks,
             _LE.PRE_TOOL_USE,
+            fail_closed=True,
             step_num=cur_step,
             state=state,
             session_log=session_log,
             context=context,
             tool_call=tc,
         )
-        _handled = False
+        _denied = False
         for _d in _pre_tool_decisions:
             if _d.updated_args is not None:
                 tc.args = _d.updated_args
@@ -2340,20 +2367,21 @@ def _intercept_tool_calls(
                     error=_te.message,
                     error_detail=_te,
                 )
-                _handled = True
+                _denied = True
                 break
             if _d.updated_result is not None:
                 result.intercepted[tc_idx] = _d.updated_result
-                _handled = True
                 break
             if _d.additional_context:
                 result.extra_context.append(_d.additional_context)
-        if _handled:
+        if _denied:
             continue
 
         # ── Per-method pre_dispatch hooks ───────────────────
         pre_dispatch_denied = False
         for hook in hooks:
+            if tc_idx in result.intercepted:
+                break
             if not hasattr(hook, "pre_dispatch"):
                 continue
             cached = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)

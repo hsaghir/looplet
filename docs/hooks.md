@@ -140,6 +140,12 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 - `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
 - `should_stop`: The first stop decision or legacy True stops the loop.
 
+**Source preview:** Event-style `pre_tool_use` hooks apply rewrites before the next hook runs.
+Cached event results still pass through `check_permission`.
+Exceptions at tool gates stop dispatch.
+Exceptions in other lifecycle observers are logged.
+Standalone `emit_event()` calls still log observer failures and continue.
+
 Checking cached `pre_dispatch` results requires the permission fix in `0.4.1`.
 See [versioned safety fixes](install.md#unreleased-safety-fixes).
 

@@ -96,6 +96,22 @@ async def test_event_dispatch_preserves_deduplication_errors_and_live_order(is_a
     assert "observer failure" in caplog.text
 
 
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("event", [LifecycleEvent.PRE_TOOL_USE, LifecycleEvent.HOOK_DECISION])
+@pytest.mark.parametrize("decision", [HookDecision(), InjectContext("observed")])
+async def test_event_dispatch_returns_noop_and_audit_decisions(is_async, event, decision):
+    from looplet.loop import emit_event, emit_event_async
+
+    class Observer:
+        def on_event(self, payload):
+            return decision if payload.event is event else None
+
+    hooks = [Observer()]
+    decisions = await emit_event_async(hooks, event) if is_async else emit_event(hooks, event)
+    assert decisions == [decision]
+    assert decisions[0] is decision
+
+
 class TestHookDecisionDataclass:
     def test_defaults_are_noop(self):
         d = HookDecision()

@@ -610,6 +610,14 @@ Long-running tools must poll `ctx.cancel_token.is_cancelled` or call
 `raise_if_cancelled()` at safe points. Cancellation does not terminate an
 arbitrary blocking system call.
 
+External `asyncio.Task.cancel()` still raises `CancelledError` to the host.
+An unfinished async run becomes cancelled rather than failed.
+`AgentRuntime.run_async()` attempts to save that terminal result and any configured runtime checkpoint before propagation.
+Evidence-flush failures do not replace an external cancellation.
+They emit a warning with the exception type.
+Cancellation does not prove that an interrupted tool had no effects.
+Reconcile any `effect_unknown` record before retrying.
+
 Checkpoint and trace files may contain prompts, tool results, and task data.
 Apply explicit access, redaction, retention, and deletion policies.
 
@@ -641,6 +649,16 @@ The loop reports `deadline_exceeded` when it observes expiry at a cancellation b
 This control is cooperative; it does not interrupt a provider or tool call already running.
 Configure provider timeouts and cooperative tool cancellation separately.
 Use a supervised process when the host requires forced termination.
+
+## Coding test freshness
+
+With `require_tests=True`, `coding_agent_preset` requires a fresh passing pytest command before completion.
+Any write, edit, or shell attempt clears earlier evidence.
+Read-only tools leave evidence unchanged.
+The hook does not run automatic mid-edit checks.
+Its pytest-name and exit-status checks are best effort, not independent correctness grading.
+Use host-owned completion gates and protected outcome graders when a stronger contract is required.
+Container or VM isolation remains the security boundary.
 
 ## Release checklist
 

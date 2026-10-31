@@ -484,6 +484,174 @@ class TestAgentPreset:
         # Without tests: only budget hook = 1
         assert len(preset_with.hooks) > len(preset_without.hooks)
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_coding_preset_rejects_done_after_a_breaking_write(self, tmp_path, asynchronous):
+        import json
+        import shlex
+        import subprocess
+        import sys
+
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, RunStatus
+        from looplet.presets import coding_agent_preset
+
+        source = tmp_path / "calculator.py"
+        source.write_text("def add(left, right):\n    return left + right\n")
+        (tmp_path / "test_calculator.py").write_text(
+            "from calculator import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+        )
+        broken = "def add(left, right):\n    return left - right + 0\n"
+        responses = [
+            json.dumps(
+                {
+                    "tool": "bash",
+                    "args": {
+                        "command": f"{shlex.quote(sys.executable)} -m pytest -q test_calculator.py"
+                    },
+                }
+            ),
+            json.dumps(
+                {"tool": "write", "args": {"file_path": "calculator.py", "content": broken}}
+            ),
+            '{"tool":"done","args":{"summary":"finished"}}',
+        ]
+        backend = (AsyncMockLLMBackend if asynchronous else MockLLMBackend)(responses, cycle=False)
+        with coding_agent_preset(workspace=str(tmp_path), max_steps=len(responses)) as preset:
+            preset.config.use_native_tools = False
+            result = (
+                await preset.run_result_async(backend, task="Update the calculator.")
+                if asynchronous
+                else preset.run_result(backend, task="Update the calculator.")
+            )
+        assert backend.calls == len(responses)
+        assert result.steps[0].tool_result.data["exit_code"] == 0
+        assert result.status is RunStatus.STOPPED
+        assert result.output is None
+        assert source.read_text() == broken
+        grade = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "test_calculator.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert grade.returncode == 1, grade.stdout + grade.stderr
+
+    @pytest.mark.parametrize("mutation", ["write", "edit", "bash"])
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_coding_guardrail_invalidates_test_evidence(self, mutation, failed):
+        from looplet.presets import _CodingGuardrailHook
+        from looplet.types import ErrorKind, ToolCall, ToolError, ToolResult
+
+        hook = _CodingGuardrailHook()
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool="bash", args={"command": "python -m pytest -q"}),
+            ToolResult(tool="bash", args_summary="", data={"exit_code": 0}),
+            1,
+        )
+        assert hook.check_done(None, None, None, 1) is None
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(
+                tool=mutation,
+                args={"command": "python update_source.py"}
+                if mutation == "bash"
+                else {"file_path": "module.py"},
+            ),
+            ToolResult(
+                tool=mutation,
+                args_summary="",
+                data={"exit_code": 1 if failed else 0},
+                error=ToolError(kind=ErrorKind.EXECUTION, message="mutation failed")
+                if failed
+                else None,
+            ),
+            2,
+        )
+        blocked = hook.check_done(None, None, None, 2)
+        assert blocked is not None
+        assert blocked.block
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool="bash", args={"command": "python -m pytest -q"}),
+            ToolResult(tool="bash", args_summary="", data={"exit_code": 0}),
+            3,
+        )
+        assert hook.check_done(None, None, None, 3) is None
+
+    @pytest.mark.parametrize("tool_name", ["read", "glob", "grep", "think"])
+    def test_coding_guardrail_keeps_evidence_for_read_only_tools(self, tool_name):
+        from looplet.presets import _CodingGuardrailHook
+        from looplet.types import ToolCall, ToolResult
+
+        hook = _CodingGuardrailHook()
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool="bash", args={"command": "python -m pytest -q"}),
+            ToolResult(tool="bash", args_summary="", data={"exit_code": 0}),
+            1,
+        )
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool=tool_name, args={}),
+            ToolResult(tool=tool_name, args_summary="", data={}),
+            2,
+        )
+        assert hook.check_done(None, None, None, 2) is None
+
+    @pytest.mark.parametrize("failure", ["nonzero", "error", "timeout"])
+    def test_coding_guardrail_rejects_unsuccessful_test_results(self, failure):
+        from looplet.presets import _CodingGuardrailHook
+        from looplet.types import ErrorKind, ToolCall, ToolError, ToolResult
+
+        hook = _CodingGuardrailHook()
+        error = (
+            ToolError(
+                kind=ErrorKind.TIMEOUT if failure == "timeout" else ErrorKind.EXECUTION,
+                message="test execution failed",
+            )
+            if failure != "nonzero"
+            else None
+        )
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool="bash", args={"command": "python -m pytest -q"}),
+            ToolResult(
+                tool="bash",
+                args_summary="",
+                data={"exit_code": 1 if error is None else 0},
+                error=error,
+            ),
+            1,
+        )
+        blocked = hook.check_done(None, None, None, 1)
+        assert blocked is not None
+        assert blocked.block
+
+    def test_coding_guardrail_starts_each_run_without_test_evidence(self):
+        from looplet.presets import _CodingGuardrailHook
+        from looplet.types import ToolCall, ToolResult
+
+        hook = _CodingGuardrailHook()
+        hook.post_dispatch(
+            None,
+            None,
+            ToolCall(tool="bash", args={"command": "python -m pytest -q"}),
+            ToolResult(tool="bash", args_summary="", data={"exit_code": 0}),
+            1,
+        )
+        assert hook.check_done(None, None, None, 1) is None
+        hook.bind(None)
+        blocked = hook.check_done(None, None, None, 1)
+        assert blocked is not None
+        assert blocked.block
+
     def test_coding_preset_memory_sources(self, tmp_path):
         from looplet.presets import coding_agent_preset
 

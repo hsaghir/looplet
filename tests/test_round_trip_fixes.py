@@ -7,14 +7,24 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
+
 import looplet
-from looplet import cartridge_to_preset, preset_to_cartridge
+from looplet import CartridgeSerializationError, cartridge_to_preset, preset_to_cartridge
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _uses_cache(ctx):
     return {"cache": ctx.resources["cache"]}
+
+
+class ConstructorSettingsHook:
+    def __init__(self, settings=None):
+        self.settings = settings
+
+    def pre_dispatch(self, *args):
+        return None
 
 
 def test_nonempty_done_tools_are_not_serialized_into_v2_cartridge(tmp_path: Path) -> None:
@@ -278,7 +288,23 @@ def test_tool_required_resource_written_back(tmp_path: Path) -> None:
     )
 
 
-def test_hook_kwargs_inferred_from_init_when_no_to_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "budget",
+    [
+        100,
+        {"limits": [3, None], "rules": [{"tool": "bash", "allow": False}]},
+        [{"tool": "bash", "settings": {"enabled": False}}],
+        [None, "null", "false", "001", {}, []],
+        [[{"value": "quoted: value"}]],
+        "plain-account",
+        "${literal:not-a-reference}",
+        {"@runtime": "ordinary-value"},
+    ],
+)
+def test_hook_kwargs_inferred_from_init_when_no_to_config(
+    tmp_path: Path, strict: bool, budget
+) -> None:
     """A hook whose constructor takes resource kwargs but does NOT
     implement ``to_config()`` should still round-trip those kwargs by
     introspecting the ``__init__`` signature."""
@@ -319,20 +345,70 @@ def test_hook_kwargs_inferred_from_init_when_no_to_config(tmp_path: Path) -> Non
     audit_a = next(h for h in p1.hooks if type(h).__name__ == "AuditHook")
     assert audit_a.log is not None  # resource was injected
     assert audit_a.budget == 100
+    audit_a.budget = budget
 
     out = tmp_path / "rt.cartridge"
-    preset_to_cartridge(p1, out, strict=False)
+    preset_to_cartridge(p1, out, strict=strict)
 
     # Read the round-tripped hook config.
     cfg_path = out / "hooks" / "00_AuditHook" / "config.yaml"
     assert cfg_path.is_file()
     cfg_text = cfg_path.read_text()
-    assert "budget: 100" in cfg_text, (
-        f"hook scalar kwarg 'budget' lost on round-trip; got: {cfg_text}"
-    )
+    from looplet.cartridge._yaml import _load_yaml
+
+    assert _load_yaml(cfg_text)["kwargs"]["budget"] == budget
     assert "@my_log" in cfg_text, (
         f"hook resource kwarg 'log' should be re-emitted as @my_log; got: {cfg_text}"
     )
+    with cartridge_to_preset(out, strict=True) as restored:
+        audit_b = next(h for h in restored.hooks if type(h).__name__ == "AuditHook")
+        assert audit_b.budget == budget
+        assert audit_b.log is not None
+    p1.close()
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "settings",
+    [
+        object(),
+        {"unsupported"},
+        float("nan"),
+        {1: "value"},
+        "@runtime",
+        "${runtime.identity:-fallback}",
+        "${ref:cache}",
+        "${py:math:pi}",
+        {"policy": {"account": "@runtime"}},
+        [{"policy": {"account": "${runtime.identity:-fallback}"}}],
+        "prefix ${runtime.identity:-fallback} suffix",
+        {"${runtime.identity:-fallback}": "ordinary-value"},
+    ],
+)
+def test_export_reports_unrepresentable_hook_constructor_settings(
+    tmp_path: Path, strict: bool, settings
+) -> None:
+    with looplet.minimal_preset() as preset:
+        preset.hooks = [ConstructorSettingsHook(settings)]
+        if strict:
+            with pytest.raises(
+                CartridgeSerializationError, match="ConstructorSettingsHook.*settings"
+            ):
+                preset_to_cartridge(preset, tmp_path / "agent", strict=True)
+            assert not (tmp_path / "agent").exists()
+        else:
+            written = preset_to_cartridge(preset, tmp_path / "agent")
+            assert any(
+                "ConstructorSettingsHook" in warning and "settings" in warning
+                for warning in written.serialization_warnings
+            )
+            with cartridge_to_preset(written.path, strict=True) as restored:
+                hook = next(
+                    hook
+                    for hook in restored.hooks
+                    if type(hook).__name__ == "ConstructorSettingsHook"
+                )
+                assert hook.settings is None
 
 
 def test_round_trip_preserves_summary_for_every_shipped_example() -> None:

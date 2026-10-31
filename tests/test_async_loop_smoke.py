@@ -121,10 +121,10 @@ async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(
     assert any(key == "model_turn" for key, _ in writes) == (model_limit is not None)
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("fault", ["none", "oserror", "cancelled"])
 @pytest.mark.parametrize("cancel_helpers", [False, True])
 async def test_persistence_drains_inflight_write_before_propagating_cancellation(
-    fail, cancel_helpers
+    fault, cancel_helpers
 ):
     from contextvars import ContextVar
     from threading import Event
@@ -143,8 +143,10 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         assert release.wait(5)
         assert marker.get() == "caller"
         events.append("written")
-        if fail:
+        if fault == "oserror":
             raise OSError("storage failed")
+        if fault == "cancelled":
+            raise asyncio.CancelledError("worker cancellation")
 
     async def drive():
         try:
@@ -169,9 +171,25 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         assert not pending.done()
     finally:
         release.set()
-    with pytest.raises(OSError if fail else asyncio.CancelledError):
+    with pytest.raises(OSError if fault == "oserror" else asyncio.CancelledError):
         await pending
     assert events == ["written", "finalized"]
+
+
+@pytest.mark.timeout(5)
+async def test_persistence_callback_cancellation_propagates_without_retry():
+    from looplet.checkpoint import _run_persistence
+
+    calls = []
+
+    def write():
+        calls.append("written")
+        raise asyncio.CancelledError("worker cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await _run_persistence(write)
+    assert caught.value.args == ("worker cancellation",)
+    assert calls == ["written"]
 
 
 class TestAsyncLlmCall:
@@ -1000,28 +1018,38 @@ class TestAsyncComposableLoop:
         assert checkpoint.metadata["status"] == "done"
         assert len(checkpoint.session_log_data["entries"]) == 1
 
-    async def test_interrupted_dispatch_blocks_implicit_retry(self, tmp_path):
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_interrupted_dispatch_blocks_implicit_retry(self, tmp_path, cancelled):
+        from asyncio import CancelledError
+
+        from looplet import RunResult, RunStatus
         from looplet.checkpoint import FileCheckpointStore
 
         effects = []
         tools = BaseToolRegistry()
+        interruption = CancelledError if cancelled else KeyboardInterrupt
 
         def interrupt():
             effects.append("started")
-            raise KeyboardInterrupt
+            raise interruption
 
         tools.register(ToolSpec("effect", "Side effect", {}, interrupt))
+        register_done_tool(tools)
         config = LoopConfig(max_steps=2, checkpoint_dir=tmp_path, use_native_tools=False)
         response = '{"tool":"effect","args":{},"call_id":"effect-1"}'
-        with pytest.raises(KeyboardInterrupt):
+        state = DefaultState(max_steps=2)
+        with pytest.raises(interruption):
             async for _ in async_composable_loop(
                 llm=AsyncMockLLMBackend(responses=[response]),
                 tools=tools,
-                state=DefaultState(max_steps=2),
+                state=state,
                 config=config,
             ):
                 pass
 
+        assert RunResult.from_state(state).status is (
+            RunStatus.CANCELLED if cancelled else RunStatus.FAILED
+        )
         pending = FileCheckpointStore(tmp_path).load_latest_for_resume()
         assert pending is not None
         assert pending.metadata["pending_calls"][0]["execution_status"] == "effect_unknown"

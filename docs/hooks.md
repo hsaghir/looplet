@@ -134,7 +134,7 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 ```
 
 - `pre_prompt`: All non-None returns are concatenated into the briefing
-- `pre_dispatch`: Argument rewrites flow in order; the first denial or cached result short-circuits dispatch.
+- `pre_dispatch`: Argument rewrites flow in order. Cached results skip tool execution, but remaining hooks still run. A denial stops the pass.
 - `check_permission`: All permission gates must allow; an allow does not override another denial.
 - `post_dispatch`: Result rewrites flow in order; context accumulates and stop requests retain their reasons.
 - `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
@@ -143,7 +143,8 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 **Source preview:** `pre_dispatch` and event-style `pre_tool_use` share one pass in registration order.
 Each argument rewrite is visible to the next hook, regardless of its style.
 If a hook implements both forms, only its method-style callback runs for that point.
-A denial or cached result stops this pass.
+A denial stops this pass.
+Cached results remain subject to later hooks, including event-style permission policies.
 
 `check_permission` runs afterward on the final arguments, including cached calls.
 Use it for policies that must check the final arguments.

@@ -1741,7 +1741,7 @@ async def _intercept_tool_calls_async(
                     break
                 if decision.additional_context:
                     result.extra_context.append(decision.additional_context)
-            if denied or tc_idx in result.intercepted:
+            if denied:
                 break
         if denied:
             continue
@@ -2370,7 +2370,7 @@ def _intercept_tool_calls(
                     break
                 if decision.additional_context:
                     result.extra_context.append(decision.additional_context)
-            if denied or tc_idx in result.intercepted:
+            if denied:
                 break
         if denied:
             continue

@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Cached tool results remain subject to later registered pre-dispatch hooks and event-style permission gates in sync and async loops.
 - Cartridge YAML loading rejects unconsumed lines instead of silently dropping later budgets or permissions. Comments before nested lists remain supported.
 - MCP structured arguments are prepared before sync/async permission hooks and sent without later type conversion. Direct registry dispatch retains JSON-string repair; raw tool executors reject structured arguments that still need repair.
 - MCP adapter and cartridge imports reject duplicate tool names before registering any tool from that server. Rejected cartridge servers are closed, including in permissive loading mode.

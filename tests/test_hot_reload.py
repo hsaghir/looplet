@@ -182,6 +182,40 @@ def test_cartridge_source_finder_does_not_replace_host_module_loader(tmp_path: P
     assert cache.read_bytes() == original_cache
 
 
+def test_cartridge_helper_import_preserves_host_finder_precedence(tmp_path: Path) -> None:
+    from importlib.util import spec_from_file_location
+
+    workspace = _scaffold(tmp_path / "host.workspace", name="host")
+    module_name = "host_override_policy"
+    (workspace / f"{module_name}.py").write_text('def policy():\n    return "local"\n')
+    host_helper = tmp_path / "host_policy.py"
+    host_helper.write_text('def policy():\n    return "host"\n')
+    (workspace / "tools/greet/tool.yaml").write_text("name: greet\nparameters: {}\n")
+    (workspace / "tools/greet/execute.py").write_text(
+        f'from {module_name} import policy\ndef execute():\n    return {{"policy": policy()}}\n'
+    )
+
+    class HostFinder:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == module_name:
+                return spec_from_file_location(fullname, host_helper)
+
+    host_finder = HostFinder()
+    sys.meta_path.insert(0, host_finder)
+    original_meta_path = list(sys.meta_path)
+    try:
+        with WorkspaceWatcher(
+            workspace, runtime={"workspace": str(tmp_path)}, strict=True
+        ) as watcher:
+            result = watcher.preset().tools.dispatch(ToolCall(tool="greet", args={}))
+            assert result.error is None
+            assert result.data == {"policy": "host"}
+            assert sys.meta_path == original_meta_path
+    finally:
+        sys.meta_path.remove(host_finder)
+        sys.modules.pop(module_name, None)
+
+
 def test_force_reload_works_without_changes(tmp_path: Path) -> None:
     ws = _scaffold(tmp_path / "w.workspace", name="w")
     w = WorkspaceWatcher(ws, runtime={"workspace": str(tmp_path)})

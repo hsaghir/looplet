@@ -21,6 +21,7 @@ import inspect
 import logging
 import shutil
 import sys
+from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -378,7 +379,10 @@ def cartridge_to_preset(
                 sys.path.insert(0, p)
                 pushed_paths.append(p)
     load_resources = _LoadResourceTracker()
-    sys.meta_path.insert(0, source_finder)
+    finder_index = (
+        sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
+    )
+    sys.meta_path.insert(finder_index, source_finder)
     try:
         try:
             preset = _workspace_to_preset_inner(

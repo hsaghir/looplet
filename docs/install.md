@@ -14,7 +14,7 @@ Use the [published package](#install-the-published-package) when you need that r
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/bfe4e477229a05c4430acb9cce98ee77fcf79538.zip"
 ```
 
 Installation needs network access, but no Git checkout.
@@ -37,7 +37,7 @@ Install the adapter from the same preview revision.
 For OpenAI or a compatible endpoint:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/bfe4e477229a05c4430acb9cce98ee77fcf79538.zip"
 ```
 
 Use `[anthropic]` for Anthropic or `[all]` for both adapters.

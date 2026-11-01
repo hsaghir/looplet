@@ -549,10 +549,10 @@ class LoopConfig:
     """Additional terminal sentinel tools for host-side configuration.
 
     By default the loop ends only when the agent invokes the single
-    ``done_tool``. Cartridges that need multiple distinct outcomes
-    (e.g. ``report`` for the normal path AND ``escalate`` for the
-    alternative path) declare ``done_tools: [report, escalate]`` in
-    ``config.yaml`` to let the loop terminate on either.
+    ``done_tool``. Host code may add tools such as ``report`` and
+    ``escalate`` through ``LoopConfig(done_tools=[...])``. Schema-v2
+    cartridges declare one ``done_tool`` and express distinct outcomes
+    in its payload and output schema; ``done_tools`` is not a cartridge field.
 
     The legacy ``done_tool`` is always treated as terminal too;
     ``done_tools`` is *additive*. Empty list (the default) preserves
@@ -560,8 +560,8 @@ class LoopConfig:
     """
 
     done_tool_schemas: dict[str, OutputSchema] = field(default_factory=dict)
-    """Per-sentinel ``OutputSchema`` map for plural-sentinel cartridges
-    (cartridge-spec v2). Keyed by sentinel tool name.
+    """Per-sentinel ``OutputSchema`` map for host-configured terminal tools.
+    Keyed by sentinel tool name.
 
     When a secondary sentinel from :attr:`done_tools` is invoked and an
     entry exists here, the loop validates the call's args against the
@@ -569,9 +569,9 @@ class LoopConfig:
     :attr:`output_schema` on the primary :attr:`done_tool`. Sentinels
     without an entry are unvalidated.
 
-    Populated by the cartridge loader from each sentinel's
-    ``tool.yaml: output_schema:`` block; can also be set directly on
-    ``LoopConfig`` for hand-built loops.
+    Set directly on ``LoopConfig`` for hand-built loops. Schema-v2
+    cartridges express outcomes through their primary terminal tool's
+    ``tool.yaml: output_schema:`` block.
     """
 
     @property
@@ -3024,7 +3024,10 @@ def _composable_loop_impl(
         else None
     )
     if _turns is not None:
-        checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
+        checkpoint_state = _turns.wrap_checkpoint(
+            checkpoint_state,
+            capture_backend_state=getattr(_ckpt_store, "checkpoint_owner", False) is not True,
+        )
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
         loop_ctx.llm = _turns.wrap(llm)

@@ -209,19 +209,10 @@ async def _maybe_await(value: Any) -> Any:
 
 
 class _SyncBridgeLLM:
-    """Wraps an async LLM backend so sync tools can call generate().
+    """Provide synchronous model access to tools running in worker threads.
 
-    When tools receive ``ctx.llm`` in the async loop, the underlying
-    backend has ``async def generate()``. Tools are sync, so they
-    can't ``await``. This bridge runs the coroutine on the current
-    event loop via ``asyncio.get_event_loop().run_until_complete()``
-    when called from a non-async context, or falls through if the
-    backend is already sync.
-
-    This is intentionally simple - it covers the common case of
-    single-call tool-internal LLM use (summarize, classify). For
-    complex async tool workflows, users should write async tools
-    and await directly (future feature).
+    The async loop supplies its running loop so async backend calls stay
+    on that loop. Async tools use ``ctx.async_llm`` directly.
     """
 
     def __init__(self, backend: Any, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -244,6 +235,17 @@ class _SyncBridgeLLM:
         )
         if inspect.isawaitable(result):
             if self._loop is not None:
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+                if running_loop is self._loop:
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise RuntimeError(
+                        "Synchronous model calls cannot block their owner event loop. "
+                        "Use await ctx.async_llm.generate() instead."
+                    )
 
                 async def resolve() -> str:
                     return await result
@@ -877,7 +879,10 @@ async def _async_composable_loop_impl(
         else None
     )
     if _turns is not None:
-        checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
+        checkpoint_state = _turns.wrap_checkpoint(
+            checkpoint_state,
+            capture_backend_state=getattr(_ckpt_store, "checkpoint_owner", False) is not True,
+        )
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
         _turns.async_checkpoint = lambda: _turns.save_async(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
@@ -930,10 +935,7 @@ async def _async_composable_loop_impl(
     post_dispatch_parts: list[str] = []
     recovery_state: dict[str, Any] = {}
     all_step_entities: list[str] = []
-    # Wrap async LLM in a sync bridge so tools can use ctx.llm.generate()
-    # without needing to await. The bridge handles the async→sync
-    # translation via a thread pool when running inside an event loop.
-    _sync_llm = _SyncBridgeLLM(llm)
+    _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop())
 
     def _get_llm() -> Any:
         if config.router is not None:
@@ -1141,7 +1143,7 @@ async def _async_composable_loop_impl(
             effective_llm.prepare_conversation(
                 _conv, _prepared.conversation_prompt, request_prompt=prompt
             )
-        _sync_llm = _SyncBridgeLLM(effective_llm)
+        _sync_llm = _SyncBridgeLLM(effective_llm, loop=asyncio.get_running_loop())
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(effective_llm, tools)
@@ -1437,8 +1439,8 @@ async def _async_composable_loop_impl(
                     )
                 )
             _history.record_host_feedback(decision.feedback, model_turn_id=_turns.turn_id)
-            if _turns.checkpoint is not None:
-                _turns.checkpoint()
+            if _turns.async_checkpoint is not None:
+                await _turns.async_checkpoint()
             consecutive_parse_failures = 0
             interruption = _turns.interruption_reason(_assistant_decisions)
             if interruption is not None:

@@ -7,13 +7,16 @@ import asyncio
 import pytest
 
 from looplet import (
+    AssistantTurnDecision,
     BaseToolRegistry,
     ContextProjection,
     DefaultState,
     InjectContext,
     LoopConfig,
+    RunStatus,
     ToolSpec,
     register_done_tool,
+    run_result_async,
 )
 from looplet.async_loop import async_composable_loop, async_llm_call
 from looplet.cache import CacheControl, CachePolicy
@@ -21,6 +24,73 @@ from looplet.testing import AsyncMockLLMBackend
 from looplet.types import ToolContext
 
 pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
+
+
+@pytest.mark.parametrize("backend_kind", ["future", "coroutine"])
+async def test_sync_model_bridge_refuses_owner_loop_wait(monkeypatch, backend_kind):
+    from looplet.async_loop import _SyncBridgeLLM
+
+    owner_loop = asyncio.get_running_loop()
+
+    async def nested_response():
+        return "nested summary"
+
+    if backend_kind == "coroutine":
+        response = nested_response()
+    else:
+        response = owner_loop.create_future()
+        response.set_result("nested summary")
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return response
+
+    def refuse_owner_loop_schedule(coroutine, loop):
+        coroutine.close()
+        raise AssertionError("Synchronous bridge scheduled work onto its owner loop")
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", refuse_owner_loop_schedule)
+    with pytest.raises(RuntimeError, match=r"ctx\.async_llm"):
+        _SyncBridgeLLM(Backend(), loop=owner_loop).generate("Summarize")
+    if asyncio.iscoroutine(response):
+        assert response.cr_frame is None
+
+
+async def test_sync_model_bridge_preserves_sync_backend_on_owner_loop():
+    from looplet.async_loop import _SyncBridgeLLM
+    from looplet.testing import MockLLMBackend
+
+    backend = MockLLMBackend(["nested summary"])
+    bridge = _SyncBridgeLLM(backend, loop=asyncio.get_running_loop())
+    assert bridge.generate("Summarize") == "nested summary"
+    assert backend.calls == 1
+
+
+@pytest.mark.parametrize("native", [False, True])
+async def test_async_tool_sync_model_access_fails_without_deadlock(tmp_path, native):
+    from looplet import tools_from
+
+    async def summarize(ctx: ToolContext):
+        return {"summary": ctx.llm.generate("Summarize")}
+
+    backend = AsyncMockLLMBackend(
+        ['{"tool":"summarize","args":{}}', '{"tool":"done","args":{"summary":"ok"}}']
+    )
+    result = await run_result_async(
+        backend,
+        tools=tools_from([summarize], include_done=True, done_parameters={"summary": "Outcome"}),
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=3,
+            use_native_tools=native,
+            run_dir=str(tmp_path),
+        ),
+    )
+    assert result.completed
+    assert backend.calls == 2
+    assert len(result.steps) == 2
+    assert "ctx.async_llm" in result.steps[0].tool_result.error
+    assert result.steps[1].tool_call.tool == "done"
 
 
 @pytest.mark.parametrize("native", [False, True])
@@ -121,6 +191,56 @@ async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(
     assert any(key == "model_turn" for key, _ in writes) == (model_limit is not None)
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("action", ["continue", "complete", "stop"])
+async def test_assistant_decision_persistence_keeps_io_off_owner_loop(
+    tmp_path, monkeypatch, native, action
+):
+    from threading import get_ident
+
+    from looplet import tools_from
+    from looplet.checkpoint import FileCheckpointStore
+
+    owner = get_ident()
+    writes = []
+    captures = []
+    original = FileCheckpointStore.save
+
+    def save(store, checkpoint, key):
+        writes.append((key, get_ident()))
+        return original(store, checkpoint, key)
+
+    def capture(context):
+        captures.append(get_ident())
+        return {"cursor": context.step_num}
+
+    def source():
+        return {"value": 17}
+
+    monkeypatch.setattr(FileCheckpointStore, "save", save)
+    backend = AsyncMockLLMBackend(
+        ["A short progress note.", '{"tool":"done","args":{"summary":"ok"}}'],
+        cycle=False,
+    )
+    result = await run_result_async(
+        backend,
+        tools=tools_from([source], include_done=True, done_parameters={"summary": "Outcome"}),
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=4,
+            use_native_tools=native,
+            allow_text_completion=True,
+            assistant_turn_policy=lambda context: AssistantTurnDecision(action),
+            checkpoint_state=capture,
+            run_dir=str(tmp_path),
+        ),
+    )
+    assert result.status is (RunStatus.STOPPED if action == "stop" else RunStatus.COMPLETED)
+    assert backend.calls == (2 if action == "continue" else 1)
+    assert writes and all(thread != owner for _, thread in writes)
+    assert captures and all(thread == owner for thread in captures)
+
+
 @pytest.mark.parametrize("fault", ["none", "oserror", "cancelled"])
 @pytest.mark.parametrize("cancel_helpers", [False, True])
 async def test_persistence_drains_inflight_write_before_propagating_cancellation(
@@ -190,6 +310,65 @@ async def test_persistence_callback_cancellation_propagates_without_retry():
         await _run_persistence(write)
     assert caught.value.args == ("worker cancellation",)
     assert calls == ["written"]
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("profile", ["minimal", "execution-v1"])
+@pytest.mark.parametrize("model_limit", [None, 3])
+@pytest.mark.parametrize("tool_mode", ["async", "sync"])
+async def test_nested_tool_model_calls_stay_on_owner_loop(
+    tmp_path, native, profile, model_limit, tool_mode
+):
+    owner = asyncio.get_running_loop()
+    nested_calls = []
+
+    class LoopBoundBackend(AsyncMockLLMBackend):
+        async def generate(self, prompt, **kwargs):
+            assert asyncio.get_running_loop() is owner
+            if prompt == "nested summary":
+                nested_calls.append(prompt)
+            return await super().generate(prompt, **kwargs)
+
+    async def async_nested(ctx: ToolContext):
+        return {"summary": await ctx.async_llm.generate("nested summary")}
+
+    def sync_nested(ctx: ToolContext):
+        return {"summary": ctx.llm.generate("nested summary")}
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(
+            name="nested",
+            description="Summarize using the supplied model",
+            parameters={},
+            execute=async_nested if tool_mode == "async" else sync_nested,
+        )
+    )
+    register_done_tool(tools)
+    backend = LoopBoundBackend(
+        [
+            '{"tool":"nested","args":{}}',
+            "nested value",
+            '{"tool":"done","args":{"summary":"ok"}}',
+        ],
+        cycle=False,
+    )
+    result = await run_result_async(
+        backend,
+        tools=tools,
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            harness_profile=profile,
+            run_dir=str(tmp_path),
+        ),
+    )
+    assert result.steps[0].tool_result.error is None
+    assert result.steps[0].tool_result.data == {"summary": "nested value"}
+    assert nested_calls == ["nested summary"]
+    assert backend.calls == 3
+    assert result.status is RunStatus.COMPLETED
 
 
 class TestAsyncLlmCall:

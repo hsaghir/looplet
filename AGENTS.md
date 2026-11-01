@@ -226,7 +226,7 @@ compact_service: "@compact_service"   # resolves to resources/compact_service.py
 Field tiers (spec v2):
 
 - **CONTRACT** (`config.yaml`): `max_steps`, `system_prompt`, `done_tool`,
-  `done_tools`, `permissions`, `memory`, `model`, `extends`,
+  `permissions`, `memory`, `model`, `extends`,
   `builtin_tools`, `builtin_hooks`, `mcp_servers`. (`tool_metadata` rides along but
   is auto-populated by the loader - do not author.)
 - **RUNTIME** (`runtime.yaml`): `max_tokens`, `temperature`,
@@ -237,11 +237,14 @@ Field tiers (spec v2):
   `recovery_registry`, `compact_service`, `cache_policy`,
   `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
 - **HOST** (never serialised; runtime-supplied): `approval_handler`,
-  `cancel_token`, `render_messages_override`.
+  `cancel_token`, `render_messages_override`, `done_tools`, `done_tool_schemas`.
 
 Schema v2 is the current and only supported cartridge contract. Runtime keys
 belong in `runtime.yaml`; use `looplet migrate` to convert older cartridges.
 `scaffold_cartridge()` and `preset_to_cartridge()` emit the split shape.
+Cartridges declare one terminal tool with `done_tool`; express distinct outcomes
+in its payload and output schema. Additional terminal tools remain a host-only
+`LoopConfig` choice, not a schema-v2 cartridge declaration.
 
 `tool.yaml` for a tool that needs a shared resource:
 

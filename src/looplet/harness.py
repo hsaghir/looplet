@@ -217,24 +217,35 @@ class _HarnessRun:
     registry_token: object | None = None
     run_dir: Path | None = None
 
-    def bind_checkpoint(self, config: LoopConfig) -> None:
+    def bind_checkpoint(self, config: LoopConfig) -> LoopConfig:
         self.initial_checkpoint = config.initial_checkpoint
-        if config.checkpoint_dir is None:
-            return
-        if self.checkpoint_store is None:
-            from looplet.checkpoint import FileCheckpointStore
+        if config.checkpoint_dir is not None:
+            if self.checkpoint_store is None:
+                from looplet.checkpoint import FileCheckpointStore
 
-            self.checkpoint_store = FileCheckpointStore(config.checkpoint_dir)
-        if self.initial_checkpoint is None:
-            self.initial_checkpoint = self.checkpoint_store.load_latest_for_resume(
-                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
-            )
-            if self.initial_checkpoint is not None:
-                logging.getLogger(__name__).info(
-                    "Resuming run from checkpoint at step %d", self.initial_checkpoint.step_number
+                self.checkpoint_store = FileCheckpointStore(config.checkpoint_dir)
+            if self.initial_checkpoint is None:
+                self.initial_checkpoint = self.checkpoint_store.load_latest_for_resume(
+                    run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
                 )
+                if self.initial_checkpoint is not None:
+                    logging.getLogger(__name__).info(
+                        "Resuming run from checkpoint at step %d",
+                        self.initial_checkpoint.step_number,
+                    )
+        for hook in self.hooks:
+            binder = getattr(hook, "bind_checkpoint_store", None)
+            if getattr(hook, "checkpoint_owner", False) is True and callable(binder):
+                binder(self.checkpoint_store, config.resolve_callable("checkpoint_state"))
+                self.checkpoint_store = hook.checkpoint_store
+                config = replace(config, checkpoint_state=hook.capture_state)
+                break
+        return config
 
     def enable_async_persistence(self) -> None:
+        enable = getattr(self.checkpoint_store, "enable_async_persistence", None)
+        if callable(enable):
+            enable()
         owned = {id(hook) for hook in self.persistence_hooks}
         self.hooks = [
             _AsyncPersistenceHook(hook) if id(hook) in owned else hook for hook in self.hooks
@@ -343,7 +354,7 @@ def _prepare_harness_run(
         or "persistence" in disabled
         or not callable(getattr(tools, "set_resources", None))
     ):
-        prepared.bind_checkpoint(config)
+        prepared.config = prepared.bind_checkpoint(config)
         return prepared
     root = Path(config.run_dir or Path(".looplet/runs") / uuid4().hex).resolve()
     prepared.run_dir = root
@@ -371,7 +382,7 @@ def _prepare_harness_run(
     ):
         effective.checkpoint_dir = str(root / "checkpoints")
         prepared.checkpoint_store = _IncrementalCheckpointStore(effective.checkpoint_dir)
-    prepared.bind_checkpoint(effective)
+    effective = prepared.bind_checkpoint(effective)
     prepared.state = state if state is not None else DefaultState(max_steps=effective.max_steps)
     if type(prepared.state) is DefaultState and "history" not in disabled:
         prepared.state.steps = DiskBackedList(

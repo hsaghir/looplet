@@ -171,11 +171,13 @@ class _AssistantTurns:
         self.checkpoint: Callable[[], None] | None = None
         self.async_checkpoint: Callable[[], Any] | None = None
 
-    def wrap_checkpoint(self, domain_checkpoint: Any) -> Callable[[Any], dict[str, Any]]:
+    def wrap_checkpoint(
+        self, domain_checkpoint: Any, *, capture_backend_state: bool = True
+    ) -> Callable[[Any], dict[str, Any]]:
         def snapshot(loop_ctx: Any) -> dict[str, Any]:
             domain = copy.deepcopy(domain_checkpoint(loop_ctx) if domain_checkpoint else {})
             method = getattr(getattr(self, "backend", None), "checkpoint_state", None)
-            if callable(method):
+            if capture_backend_state and callable(method):
                 backend_state = method()
                 if inspect.isawaitable(backend_state):
                     if inspect.iscoroutine(backend_state):

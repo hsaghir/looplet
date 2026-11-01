@@ -585,6 +585,262 @@ def test_runtime_store_can_checkpoint_each_step() -> None:
     assert checkpoint.session_log_data["entries"]
 
 
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+@pytest.mark.parametrize("profile", ["minimal", "execution-v1"])
+async def test_runtime_checkpoint_capture_is_detached_and_io_respects_owner(
+    tmp_path, monkeypatch, async_run, store_kind, profile
+):
+    from threading import get_ident
+
+    from looplet import FileRunStore, tools_from
+
+    owner = get_ident()
+    ledger = {"remaining": 17}
+    retained_capture = {"host_ledger": ledger}
+    capture_threads = []
+    write_threads = []
+    backend_threads = []
+
+    def spend():
+        ledger["remaining"] -= 6
+        return {"spent": 6}
+
+    def capture(context):
+        capture_threads.append(get_ident())
+        return retained_capture
+
+    class Backend(AsyncMockLLMBackend if async_run else MockLLMBackend):
+        def checkpoint_state(self):
+            backend_threads.append(get_ident())
+            assert get_ident() == owner
+            return {"calls": self.calls}
+
+    preset = AgentPreset(
+        tools=tools_from([spend], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            use_native_tools=False,
+            harness_profile=profile,
+            run_dir=str(tmp_path / "evidence"),
+            checkpoint_state=capture,
+        ),
+    )
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    original_save = store.save_checkpoint
+
+    def save(run_id, checkpoint):
+        write_threads.append(get_ident())
+        return original_save(run_id, checkpoint)
+
+    monkeypatch.setattr(store, "save_checkpoint", save)
+    backend = Backend(['{"tool":"spend","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'])
+    with AgentRuntime(preset, store=store, checkpoint_every_n_steps=9) as runtime:
+        result = await runtime.run_async(backend) if async_run else runtime.run(backend)
+    assert result.completed
+    assert "persistence_warnings" not in result.metadata
+    assert ledger == {"remaining": 11}
+    assert set(retained_capture) == {"host_ledger"}
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_2")
+    assert checkpoint is not None and checkpoint.is_terminal
+    assert checkpoint.domain_state == {"host_ledger": {"remaining": 11}, "llm": {"calls": 2}}
+    assert "pending_calls" not in checkpoint.metadata
+    ledger["remaining"] = 0
+    assert checkpoint.domain_state["host_ledger"] == {"remaining": 11}
+    assert capture_threads and all(thread == owner for thread in capture_threads)
+    assert backend_threads and all(thread == owner for thread in backend_threads)
+    assert write_threads
+    assert all((thread != owner) is async_run for thread in write_threads)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+@pytest.mark.parametrize("mirror", [False, True])
+async def test_runtime_checkpoint_keeps_unknown_effect_until_acknowledged(
+    tmp_path, native, store_kind, mirror
+):
+    from looplet import FileRunStore, RunEnvelope, tools_from
+    from looplet.checkpoint import FileCheckpointStore, UncertainToolEffect, resume_loop_state
+
+    entered = asyncio.Event()
+    marker = tmp_path / "effect.txt"
+    ledger = {"effects": 0}
+
+    async def effect():
+        marker.write_text("effect applied\n", encoding="ascii")
+        ledger["effects"] += 1
+        entered.set()
+        await asyncio.get_running_loop().create_future()
+
+    envelope = RunEnvelope(run_id="interrupted-effect")
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    preset = AgentPreset(
+        tools=tools_from([effect], include_done=True),
+        state=DefaultState(max_steps=1),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=1,
+            use_native_tools=native,
+            run_dir=str(tmp_path / "evidence"),
+            checkpoint_dir=str(tmp_path / "checkpoints") if mirror else None,
+            checkpoint_state=lambda context: {"host_ledger": dict(ledger)},
+        ),
+    )
+    runtime = AgentRuntime(preset, store=store, checkpoint_every_n_steps=9)
+    pending = asyncio.create_task(
+        runtime.run_async(AsyncMockLLMBackend(['{"tool":"effect","args":{}}']), envelope=envelope)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel("host interruption")
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("host interruption",)
+        assert not runtime._active_tokens
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        runtime.close()
+    assert marker.read_text(encoding="ascii") == "effect applied\n"
+    assert ledger == {"effects": 1}
+    record = store.load(envelope.run_id)
+    assert record is not None and record.status == "cancelled"
+    checkpoint = store.load_checkpoint(envelope.run_id, record.checkpoint_keys[-1])
+    assert checkpoint is not None and checkpoint.is_terminal
+    assert checkpoint.run_status == "cancelled"
+    assert checkpoint.domain_state["host_ledger"] == {"effects": 1}
+    assert checkpoint.metadata["pending_calls"][0]["execution_status"] == "effect_unknown"
+    with pytest.raises(UncertainToolEffect):
+        resume_loop_state(checkpoint)
+    if mirror:
+        mirrored = FileCheckpointStore(tmp_path / "checkpoints").load_latest(run_id=envelope.run_id)
+        assert mirrored is not None and mirrored.is_terminal
+        with pytest.raises(UncertainToolEffect):
+            resume_loop_state(mirrored)
+
+
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+@pytest.mark.parametrize("mirror", [False, True])
+async def test_runtime_checkpoint_preserves_interrupted_model_admission(
+    tmp_path, store_kind, mirror
+):
+    from looplet import FileRunStore, RunEnvelope
+    from looplet.assistant_turns import TURN_STATE_KEY
+    from looplet.checkpoint import UncertainModelCall, resume_loop_state
+
+    entered = asyncio.Event()
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            entered.set()
+            await asyncio.get_running_loop().create_future()
+
+    envelope = RunEnvelope(run_id="interrupted-model")
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    preset = _preset(use_native_tools=False)
+    preset.config.max_model_calls = 3
+    preset.config.run_dir = str(tmp_path / "evidence")
+    preset.config.checkpoint_dir = str(tmp_path / "checkpoints") if mirror else None
+    runtime = AgentRuntime(preset, store=store, checkpoint_every_n_steps=9)
+    pending = asyncio.create_task(runtime.run_async(Backend(), envelope=envelope))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending_record = store.load(envelope.run_id)
+        assert pending_record is not None and pending_record.checkpoint_keys
+        uncertain = store.load_checkpoint(envelope.run_id, pending_record.checkpoint_keys[-1])
+        assert uncertain is not None
+        assert uncertain.metadata[TURN_STATE_KEY]["pending_model_call"]
+        pending.cancel("host interruption")
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        runtime.close()
+    record = store.load(envelope.run_id)
+    assert record is not None and record.status == "cancelled"
+    checkpoint = store.load_checkpoint(envelope.run_id, record.checkpoint_keys[-1])
+    assert checkpoint is not None and checkpoint.is_terminal
+    assert checkpoint.config_snapshot["max_model_calls"] == 3
+    assert checkpoint.metadata[TURN_STATE_KEY]["model_calls"] == 1
+    assert "pending_model_call" not in checkpoint.metadata[TURN_STATE_KEY]
+    with pytest.raises(UncertainModelCall):
+        resume_loop_state(uncertain)
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+@pytest.mark.parametrize("abrupt", [False, True])
+async def test_runtime_request_guard_distinguishes_abrupt_from_observed_failure(
+    tmp_path, async_run, store_kind, abrupt
+):
+    from looplet import FileRunStore, RunEnvelope
+    from looplet.assistant_turns import TURN_STATE_KEY
+    from looplet.checkpoint import UncertainModelCall, resume_loop_state
+
+    class Crash(BaseException):
+        pass
+
+    marker = tmp_path / "request.txt"
+
+    class Backend(MockLLMBackend):
+        def fail(self):
+            self.calls += 1
+            marker.write_text("request admitted\n", encoding="ascii")
+            if abrupt:
+                raise Crash("abrupt request interruption")
+            raise RuntimeError("observed backend failure")
+
+        if async_run:
+
+            async def generate(self, prompt, **kwargs):
+                return self.fail()
+
+        else:
+
+            def generate(self, prompt, **kwargs):
+                return self.fail()
+
+    envelope = RunEnvelope(run_id="request-failure")
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    preset = _preset(use_native_tools=False)
+    preset.config.max_model_calls = 1
+    preset.config.run_dir = str(tmp_path / "evidence")
+    backend = Backend([])
+    with AgentRuntime(preset, store=store, checkpoint_every_n_steps=9) as runtime:
+        if abrupt:
+            with pytest.raises(Crash):
+                if async_run:
+                    await runtime.run_async(backend, envelope=envelope)
+                else:
+                    runtime.run(backend, envelope=envelope)
+        else:
+            result = (
+                await runtime.run_async(backend, envelope=envelope)
+                if async_run
+                else runtime.run(backend, envelope=envelope)
+            )
+            assert not result.completed
+        assert not runtime._active_tokens
+    assert backend.calls == 1
+    assert marker.read_text(encoding="ascii") == "request admitted\n"
+    record = store.load(envelope.run_id)
+    assert record is not None and record.checkpoint_keys
+    checkpoint = store.load_checkpoint(envelope.run_id, record.checkpoint_keys[-1])
+    assert checkpoint is not None
+    assert checkpoint.metadata[TURN_STATE_KEY]["model_calls"] == 1
+    assert checkpoint.config_snapshot["max_model_calls"] == 1
+    if abrupt:
+        with pytest.raises(UncertainModelCall):
+            resume_loop_state(checkpoint)
+    else:
+        assert "pending_model_call" not in checkpoint.metadata[TURN_STATE_KEY]
+
+
 def test_runtime_failed_run_persists_terminal_checkpoint() -> None:
     class FailingBackend:
         def generate(self, prompt, **kwargs):

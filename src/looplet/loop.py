@@ -2703,6 +2703,80 @@ def run_result(
     return RunResult.from_state(state)
 
 
+@dataclass(frozen=True)
+class _ToolTurnPlan:
+    calls: list[ToolCall]
+    terminal_index: int | None
+
+
+def _prepare_tool_turn(
+    tools: BaseToolRegistry,
+    calls: list[ToolCall],
+    config: LoopConfig,
+    state: AgentState,
+    *,
+    turn_id: str,
+) -> _ToolTurnPlan | None:
+    remaining = max(0, int(getattr(state, "budget_remaining", 0)))
+    if remaining <= 0:
+        return None
+    admitted = calls[:remaining]
+    for call in admitted:
+        tools.prepare_call(call)
+    if len(calls) > 1:
+        _annotate_tool_turn(
+            admitted,
+            turn_id=turn_id,
+            batch_size=len(calls),
+            budget_skipped=calls[remaining:],
+        )
+    outcomes = config.resolve_terminal_outcomes()
+    terminal_index = next(
+        (index for index, call in enumerate(admitted) if call.tool in outcomes), None
+    )
+    return _ToolTurnPlan(admitted, terminal_index)
+
+
+def _completion_gate_warning(config: LoopConfig, call: ToolCall, warning: str | None) -> str | None:
+    if warning is not None:
+        return warning
+    schema = config.resolve_terminal_outcomes().get(call.tool)
+    if schema is not None:
+        validation = _validate_args(schema, call.args)
+        if not validation.valid:
+            return f"Output schema validation failed: {'; '.join(validation.errors)}"
+    return None
+
+
+def _terminal_step_metadata(call: ToolCall, ignored_calls: list[ToolCall]) -> dict[str, Any]:
+    return _step_metadata(
+        call,
+        dispatch_mode="serial",
+        extra=(
+            {"ignored_after_terminal": [_call_reference(ignored) for ignored in ignored_calls]}
+            if ignored_calls
+            else None
+        ),
+    )
+
+
+def _rejected_terminal_step(
+    call: ToolCall, step_number: int, warning: str, metadata: dict[str, Any]
+) -> Step:
+    metadata["terminal_accepted"] = False
+    return Step(
+        number=step_number,
+        tool_call=call,
+        tool_result=ToolResult(
+            tool=call.tool,
+            args_summary="rejected",
+            data={"rejected": True, "reason": warning},
+            error=warning,
+        ),
+        metadata=metadata,
+    )
+
+
 def _composable_loop_impl(
     llm: Any,
     task: Any = None,
@@ -3770,42 +3844,15 @@ def _composable_loop_impl(
         ):
             stream.emit(_StepStartEvent(step_num=step_num))
 
-        # A provider response is one model turn even when it contains many
-        # calls. Bound the number of calls consumed by the remaining step
-        # budget before terminal handling or dispatch can overshoot it.
-        available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
-        if available_steps <= 0:
+        turn_plan = _prepare_tool_turn(
+            tools, tool_calls, config, state, turn_id=f"turn-{llm_calls}"
+        )
+        if turn_plan is None:
             stop_reason = "budget_exhausted"
             done = True
             break
-        original_tool_calls = tool_calls
-        budget_skipped = original_tool_calls[available_steps:]
-        tool_calls = original_tool_calls[:available_steps]
-        for call in tool_calls:
-            tools.prepare_call(call)
-        if len(original_tool_calls) > 1:
-            _annotate_tool_turn(
-                tool_calls,
-                turn_id=f"turn-{llm_calls}",
-                batch_size=len(original_tool_calls),
-                budget_skipped=budget_skipped,
-            )
-
-        # Effective set of terminal sentinels: legacy ``done_tool``
-        # plus the host-side ``done_tools`` list. The first one the agent
-        # invokes ends the loop; the legacy field stays the canonical
-        # name used in error messages and pretty-printers.
-        done_tool_name = config.done_tool
-        terminal_set = config.resolve_terminal_outcomes()
-        done_idx = None
-        for i, tc in enumerate(tool_calls):
-            if tc.tool in terminal_set:
-                done_idx = i
-                # Pin the canonical name to the actual tool that fired so
-                # downstream code (eval ctx, trace builders) reports the
-                # specific terminal sentinel, not just the legacy default.
-                done_tool_name = tc.tool
-                break
+        tool_calls = turn_plan.calls
+        done_idx = turn_plan.terminal_index
 
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
@@ -4081,32 +4128,8 @@ def _composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            _schema_for_call = (
-                config.resolve_terminal_outcomes().get(tool_call.tool)
-                if gate_warning is None
-                else None
-            )
-            if _schema_for_call is not None:
-                validation = _validate_args(_schema_for_call, tool_call.args)
-                if not validation.valid:
-                    gate_warning = (
-                        f"Output schema validation failed: {'; '.join(validation.errors)}"
-                    )
-
-            ignored_after_terminal = tool_calls[done_idx + 1 :]
-            done_metadata = _step_metadata(
-                tool_call,
-                dispatch_mode="serial",
-                extra=(
-                    {
-                        "ignored_after_terminal": [
-                            _call_reference(call) for call in ignored_after_terminal
-                        ]
-                    }
-                    if ignored_after_terminal
-                    else None
-                ),
-            )
+            gate_warning = _completion_gate_warning(config, tool_call, gate_warning)
+            done_metadata = _terminal_step_metadata(tool_call, tool_calls[done_idx + 1 :])
 
             # Emit ToolDispatchEvent for done
             if stream is not None and _ToolDispatchEvent is not None:
@@ -4122,23 +4145,8 @@ def _composable_loop_impl(
             if gate_warning is not None:
                 logger.info("Quality gate rejected done() at step %d", step_num)
                 quality_gate_message = gate_warning
-                done_metadata["terminal_accepted"] = False
-                # Mirror the gate reason into ``error`` as well as
-                # ``data['rejected']``: builders grepping for errors
-                # otherwise miss schema-level rejections entirely (a
-                # frequent friction surfaced during dogfooding).
-                tool_result = ToolResult(
-                    tool=done_tool_name,
-                    args_summary="rejected",
-                    data={"rejected": True, "reason": gate_warning},
-                    error=gate_warning,
-                )
-                step = Step(
-                    number=cur_step,
-                    tool_call=tool_call,
-                    tool_result=tool_result,
-                    metadata=done_metadata,
-                )
+                step = _rejected_terminal_step(tool_call, cur_step, gate_warning, done_metadata)
+                tool_result = step.tool_result
                 state.steps.append(step)
                 yield step
                 _history.record_step(

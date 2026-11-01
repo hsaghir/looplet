@@ -92,6 +92,9 @@ class _AssistantTurns:
         self.state = state
         self.backend: Any = None
         self.admission_lock = threading.RLock()
+        self._pending_calls: dict[int, dict[str, Any]] = {}
+        self._active_calls: set[int] = set()
+        self._overlap_safe_calls: set[int] = set()
         saved = metadata.get(TURN_STATE_KEY)
         if saved is None:
             saved = {
@@ -304,8 +307,13 @@ class _AssistantTurns:
             return "cancelled"
         return next((decision.stop for decision in decisions if decision.stop is not None), None)
 
-    def check_admission(self) -> None:
-        if "pending_model_call" in self.data:
+    def check_admission(self, *, allow_inflight: bool = False) -> None:
+        if "pending_model_call" in self.data and not (
+            allow_inflight
+            and self._active_calls
+            and self._active_calls == self._pending_calls.keys()
+            and self._active_calls == self._overlap_safe_calls
+        ):
             raise _AdmissionDenied("unsupported_context")
         token = self.config.cancel_token
         if token is not None and token.is_cancelled:
@@ -320,20 +328,51 @@ class _AssistantTurns:
         ):
             raise _AdmissionDenied("model_call_budget")
 
-    def admit(self, backend: Any = None) -> None:
-        self.check_admission()
+    def _update_pending_calls(self) -> None:
+        calls = list(self._pending_calls.values())
+        if not calls:
+            self.data.pop("pending_model_call", None)
+        elif len(calls) == 1:
+            self.data["pending_model_call"] = copy.deepcopy(calls[0])
+        else:
+            self.data["pending_model_call"] = {
+                **copy.deepcopy(calls[0]),
+                "calls": copy.deepcopy(calls),
+            }
+
+    def admit(self, backend: Any = None, *, allow_inflight: bool = False) -> int:
+        self.check_admission(allow_inflight=allow_inflight)
         if backend is not None:
             self.backend = backend
         self.data["model_calls"] += 1
-        self.data["pending_model_call"] = {
+        call_number = self.data["model_calls"]
+        self._pending_calls[call_number] = {
             "model_turn_id": self.turn_id,
-            "model_call_number": self.data["model_calls"],
+            "model_call_number": call_number,
         }
+        self._active_calls.add(call_number)
+        if allow_inflight:
+            self._overlap_safe_calls.add(call_number)
+        self._update_pending_calls()
         if self.checkpoint is not None and self.async_checkpoint is None:
-            self.checkpoint()
+            try:
+                self.checkpoint()
+            except BaseException:
+                self.abandon(call_number)
+                raise
+        return call_number
 
-    def acknowledge(self) -> None:
-        self.data.pop("pending_model_call", None)
+    def abandon(self, call_number: int) -> None:
+        with self.admission_lock:
+            self._active_calls.discard(call_number)
+            self._overlap_safe_calls.discard(call_number)
+
+    def acknowledge(self, call_number: int) -> None:
+        with self.admission_lock:
+            self._active_calls.discard(call_number)
+            self._overlap_safe_calls.discard(call_number)
+            self._pending_calls.pop(call_number, None)
+            self._update_pending_calls()
 
     def wrap(self, backend: Any) -> Any:
         return _AdmissionBackend(backend, self)
@@ -479,24 +518,29 @@ class _AdmissionBackend:
 
     def _begin(
         self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], int]:
         with self.turns.admission_lock:
             return self._begin_locked(args, kwargs, native_tools=native_tools)
 
     def _begin_locked(
         self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
-    ) -> dict[str, Any]:
-        self.turns.check_admission()
+    ) -> tuple[dict[str, Any], int]:
+        prompt = args[0] if args else kwargs.get("prompt")
+        is_helper = self.conversation_input is not None and prompt != self.request_prompt
+        mode = getattr(self.backend, "conversation_mode", "text")
+        allow_inflight = not native_tools and (
+            mode in {"text", "messages"}
+            or (
+                is_helper
+                and getattr(self.backend, "supports_stateless_text_generation", False) is True
+            )
+        )
+        self.turns.check_admission(allow_inflight=allow_inflight)
         if self.context_error:
             raise _AdmissionDenied("unsupported_context")
         policy = backend_request_policy(self.backend)
         if policy.manages_retries and not policy.supports_single_model_request:
             raise _AdmissionDenied("unsupported_context")
-        if "pending_model_call" in self.turns.data:
-            raise _AdmissionDenied("unsupported_context")
-        prompt = args[0] if args else kwargs.get("prompt")
-        is_helper = self.conversation_input is not None and prompt != self.request_prompt
-        mode = getattr(self.backend, "conversation_mode", "text")
         if mode == "stateful" and self.turns.enabled and self.conversation_input is None:
             raise _AdmissionDenied("unsupported_context")
         if (
@@ -556,7 +600,7 @@ class _AdmissionBackend:
                     "assistant_policy_required": self.turns.enabled,
                 }
             )
-        self.turns.admit(backend=self.backend)
+        call_number = self.turns.admit(backend=self.backend, allow_inflight=allow_inflight)
         record = {
             "model_turn_id": self.turns.turn_id,
             "model_call_id": f"{self.turns.turn_id}:call-{self.turns.data['model_calls']}",
@@ -566,7 +610,7 @@ class _AdmissionBackend:
         }
         self.request_records.append(record)
         self.turns.data["requests"].append(record)
-        return record
+        return record, call_number
 
     def _finish(self, record: dict[str, Any], response: Any) -> None:
         record["response_chars"] = (
@@ -595,9 +639,15 @@ class _AdmissionBackend:
 
             @wraps(method)
             async def invoke_async(*args: Any, **kwargs: Any) -> Any:
-                record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
+                record, call_number = self._begin(
+                    args, kwargs, native_tools=name == "generate_with_tools"
+                )
                 if self.turns.async_checkpoint is not None:
-                    await self.turns.async_checkpoint()
+                    try:
+                        await self.turns.async_checkpoint()
+                    except BaseException:
+                        self.turns.abandon(call_number)
+                        raise
                 try:
                     with single_model_request():
                         response = method(*args, **kwargs)
@@ -606,13 +656,15 @@ class _AdmissionBackend:
                     self._finish(record, response)
                     return response
                 finally:
-                    self.turns.acknowledge()
+                    self.turns.acknowledge(call_number)
 
             return invoke_async
 
         @wraps(method)
         def invoke(*args: Any, **kwargs: Any) -> Any:
-            record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
+            record, call_number = self._begin(
+                args, kwargs, native_tools=name == "generate_with_tools"
+            )
             response: Any = None
             try:
                 with single_model_request():
@@ -626,13 +678,13 @@ class _AdmissionBackend:
                             self._finish(record, resolved)
                             return resolved
                         finally:
-                            self.turns.acknowledge()
+                            self.turns.acknowledge(call_number)
 
                     return finish_response()
                 self._finish(record, response)
                 return response
             finally:
                 if not inspect.isawaitable(response):
-                    self.turns.acknowledge()
+                    self.turns.acknowledge(call_number)
 
         return invoke

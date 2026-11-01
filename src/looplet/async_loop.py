@@ -33,11 +33,13 @@ When NOT to use this:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import logging
 import time
 from contextlib import aclosing
 from dataclasses import replace as _dc_replace
+from threading import RLock
 from typing import Any, AsyncGenerator, Callable, Sequence
 
 from looplet._backend_contract import TerminalLLMError
@@ -58,11 +60,10 @@ from looplet.loop import (
     RunEnvelope,
     RunPhase,
     RunStatus,
-    _annotate_tool_turn,
     _bind_loop_context_async,
     _build_tool_ctx,
     _call_check_done,
-    _call_reference,
+    _completion_gate_warning,
     _deadline_expired,
     _default_build_briefing,
     _default_extract_entities,
@@ -73,7 +74,9 @@ from looplet.loop import (
     _notify_post_step_async,
     _policy_checkpoint_metadata,
     _post_step_stop_reason_async,
+    _prepare_tool_turn,
     _record_run_stats,
+    _rejected_terminal_step,
     _reset_context_overrides,
     _resolve_loop_config,
     _resolve_loop_state,
@@ -81,6 +84,7 @@ from looplet.loop import (
     _set_context_overrides,
     _set_run_lifecycle,
     _step_metadata,
+    _terminal_step_metadata,
     _validate_hooks,
     _validate_loop_inputs,
     emit_event_async,
@@ -111,7 +115,6 @@ from looplet.scaffolding import (
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, ToolSpec, _summarize_args_dict
 from looplet.types import AgentState, RunResult, Step, ToolCall, ToolResult
-from looplet.validation import validate_args as _validate_args
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +211,122 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+class _NestedModelRequest:
+    def __init__(self, owner: _NestedModelRequests, response: Any) -> None:
+        self.owner = owner
+        self.response = response
+        self.future: concurrent.futures.Future[str] | None = None
+        self.completed: concurrent.futures.Future[None] = concurrent.futures.Future()
+        self.started = False
+        self.aborted = False
+
+    def _settle(self, _task: Any = None) -> None:
+        with self.owner.lock:
+            if not self.completed.done():
+                self.completed.set_result(None)
+            self.owner.pending.discard(self)
+
+    def close_unstarted(self, future: concurrent.futures.Future[str] | None = None) -> None:
+        if future is not None and not future.cancelled():
+            return
+        with self.owner.lock:
+            if self.started:
+                return
+            self.aborted = True
+            if isinstance(self.response, asyncio.Future):
+
+                def cancel_response() -> None:
+                    self.response.add_done_callback(self._settle)
+                    self.response.cancel()
+
+                self.owner.loop.call_soon_threadsafe(cancel_response)
+            else:
+                if inspect.iscoroutine(self.response):
+                    self.response.close()
+                self._settle()
+
+    async def resolve(self) -> str:
+        with self.owner.lock:
+            if self.aborted:
+                raise asyncio.CancelledError
+            self.started = True
+        task = asyncio.current_task()
+        assert task is not None
+        task.add_done_callback(self._settle)
+        return await self.response
+
+
+class _NestedModelRequests:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.lock = RLock()
+        self.pending: set[_NestedModelRequest] = set()
+        self.closed = False
+
+    def invoke(self, generate: Callable[[], Any]) -> Any:
+        with self.lock:
+            if self.closed:
+                raise concurrent.futures.CancelledError
+            request = _NestedModelRequest(self, None)
+            self.pending.add(request)
+        try:
+            response = generate()
+        except BaseException:
+            request._settle()
+            raise
+        request.response = response
+        if not inspect.isawaitable(response):
+            with self.lock:
+                request._settle()
+                closed = self.closed
+            if closed:
+                raise concurrent.futures.CancelledError
+            return response
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is self.loop:
+            request.close_unstarted()
+            raise RuntimeError(
+                "Synchronous model calls cannot block their owner event loop. "
+                "Use await ctx.async_llm.generate() instead."
+            )
+        return self.run(response, request=request)
+
+    def run(self, response: Any, *, request: _NestedModelRequest | None = None) -> str:
+        with self.lock:
+            request = request if request is not None else _NestedModelRequest(self, response)
+            if self.closed:
+                request.close_unstarted()
+                raise concurrent.futures.CancelledError
+            self.pending.add(request)
+            resolver = request.resolve()
+            try:
+                future = asyncio.run_coroutine_threadsafe(resolver, self.loop)
+            except BaseException:
+                resolver.close()
+                request.close_unstarted()
+                raise
+            request.future = future
+            future.add_done_callback(request.close_unstarted)
+        return future.result()
+
+    def _drain(self, requests: tuple[_NestedModelRequest, ...]) -> None:
+        for request in requests:
+            request.completed.result()
+
+    async def cancel_pending(self) -> None:
+        with self.lock:
+            self.closed = True
+            requests = tuple(self.pending)
+            for request in requests:
+                if request.future is not None:
+                    request.future.cancel()
+        if requests:
+            await _run_persistence(self._drain, requests)
+
+
 class _SyncBridgeLLM:
     """Provide synchronous model access to tools running in worker threads.
 
@@ -215,9 +334,16 @@ class _SyncBridgeLLM:
     on that loop. Async tools use ``ctx.async_llm`` directly.
     """
 
-    def __init__(self, backend: Any, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
+    def __init__(
+        self,
+        backend: Any,
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+        requests: _NestedModelRequests | None = None,
+    ) -> None:
         self._backend = backend
         self._loop = loop
+        self._requests = requests
 
     def generate(
         self,
@@ -227,12 +353,17 @@ class _SyncBridgeLLM:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> str:
-        result = self._backend.generate(
-            prompt,
-            max_tokens=max_tokens,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        )
+        def generate() -> Any:
+            return self._backend.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        if self._requests is not None:
+            return self._requests.invoke(generate)
+        result = generate()
         if inspect.isawaitable(result):
             if self._loop is not None:
                 try:
@@ -253,8 +384,6 @@ class _SyncBridgeLLM:
                 return asyncio.run_coroutine_threadsafe(resolve(), self._loop).result()
             # We're inside an event loop (async context). Use a thread
             # to run the coroutine without blocking the loop.
-            import concurrent.futures  # noqa: PLC0415
-
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -567,6 +696,7 @@ async def async_composable_loop(
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
     finalizer = _LoopFinalizer()
+    nested_requests = _NestedModelRequests(asyncio.get_running_loop())
     iterator = None
     original_cancellation: asyncio.CancelledError | None = None
     try:
@@ -587,6 +717,7 @@ async def async_composable_loop(
             _checkpoint_store=prepared.checkpoint_store,
             _initial_checkpoint=prepared.initial_checkpoint,
             _compact_service=prepared.compact_service,
+            _nested_requests=nested_requests,
         )
         async for step in iterator:
             yield step
@@ -610,7 +741,13 @@ async def async_composable_loop(
                 if iterator is not None:
                     await iterator.aclose()
             finally:
-                await finalizer.finish_async(suppress_errors=True)
+                try:
+                    await nested_requests.cancel_pending()
+                except asyncio.CancelledError:
+                    if original_cancellation is None:
+                        raise
+                finally:
+                    await finalizer.finish_async(suppress_errors=True)
         finally:
             try:
                 try:
@@ -675,6 +812,7 @@ async def _async_composable_loop_impl(
     _checkpoint_store: Any = None,
     _initial_checkpoint: Any = None,
     _compact_service: Any = None,
+    _nested_requests: _NestedModelRequests | None = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -935,7 +1073,7 @@ async def _async_composable_loop_impl(
     post_dispatch_parts: list[str] = []
     recovery_state: dict[str, Any] = {}
     all_step_entities: list[str] = []
-    _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop())
+    _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop(), requests=_nested_requests)
 
     def _get_llm() -> Any:
         if config.router is not None:
@@ -1143,7 +1281,9 @@ async def _async_composable_loop_impl(
             effective_llm.prepare_conversation(
                 _conv, _prepared.conversation_prompt, request_prompt=prompt
             )
-        _sync_llm = _SyncBridgeLLM(effective_llm, loop=asyncio.get_running_loop())
+        _sync_llm = _SyncBridgeLLM(
+            effective_llm, loop=asyncio.get_running_loop(), requests=_nested_requests
+        )
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(effective_llm, tools)
@@ -1587,31 +1727,15 @@ async def _async_composable_loop_impl(
             and not _has_streaming_hook
         ):
             stream.emit(_StepStartEvent(step_num=step_num))
-        available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
-        if available_steps <= 0:
+        turn_plan = _prepare_tool_turn(
+            tools, tool_calls, config, state, turn_id=f"turn-{llm_calls}"
+        )
+        if turn_plan is None:
             stop_reason = "budget_exhausted"
             done = True
             break
-        original_tool_calls = tool_calls
-        budget_skipped = original_tool_calls[available_steps:]
-        tool_calls = original_tool_calls[:available_steps]
-        for call in tool_calls:
-            tools.prepare_call(call)
-        if len(original_tool_calls) > 1:
-            _annotate_tool_turn(
-                tool_calls,
-                turn_id=f"turn-{llm_calls}",
-                batch_size=len(original_tool_calls),
-                budget_skipped=budget_skipped,
-            )
-        done_tool_name = config.done_tool
-        terminal_set = config.resolve_terminal_outcomes()
-        done_idx = None
-        for i, tc in enumerate(tool_calls):
-            if tc.tool in terminal_set:
-                done_idx = i
-                done_tool_name = tc.tool  # pin canonical to the firing sentinel
-                break
+        tool_calls = turn_plan.calls
+        done_idx = turn_plan.terminal_index
 
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
@@ -1896,47 +2020,12 @@ async def _async_composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            schema_for_call = (
-                config.resolve_terminal_outcomes().get(tool_call.tool)
-                if gate_warning is None
-                else None
-            )
-            if schema_for_call is not None:
-                validation = _validate_args(schema_for_call, tool_call.args)
-                if not validation.valid:
-                    gate_warning = (
-                        f"Output schema validation failed: {'; '.join(validation.errors)}"
-                    )
-
-            ignored_after_terminal = tool_calls[done_idx + 1 :]
-            done_metadata = _step_metadata(
-                tool_call,
-                dispatch_mode="serial",
-                extra=(
-                    {
-                        "ignored_after_terminal": [
-                            _call_reference(call) for call in ignored_after_terminal
-                        ]
-                    }
-                    if ignored_after_terminal
-                    else None
-                ),
-            )
+            gate_warning = _completion_gate_warning(config, tool_call, gate_warning)
+            done_metadata = _terminal_step_metadata(tool_call, tool_calls[done_idx + 1 :])
 
             if gate_warning is not None:
-                done_metadata["terminal_accepted"] = False
-                tool_result = ToolResult(
-                    tool=done_tool_name,
-                    args_summary="rejected",
-                    data={"rejected": True, "reason": gate_warning},
-                    error=gate_warning,
-                )
-                step = Step(
-                    number=cur_step,
-                    tool_call=tool_call,
-                    tool_result=tool_result,
-                    metadata=done_metadata,
-                )
+                step = _rejected_terminal_step(tool_call, cur_step, gate_warning, done_metadata)
+                tool_result = step.tool_result
                 state.steps.append(step)
                 yield step
                 if stream is not None and _ToolResultEvent is not None:

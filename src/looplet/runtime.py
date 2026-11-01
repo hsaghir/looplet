@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import threading
 import time
 from collections.abc import Iterator, MutableSequence
@@ -13,7 +14,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from looplet._storage import DiskBackedList
-from looplet.checkpoint import Checkpoint
+from looplet.checkpoint import Checkpoint, _capture_checkpoint
 from looplet.events import EventPayload
 from looplet.execution_session import ExecutionSession
 from looplet.presets import AgentPreset, ShutdownReport
@@ -96,13 +97,95 @@ class _RunStoreCheckpointHook:
         self.persistence_errors = persistence_errors
         self._loop_ctx: Any = None
         self._terminal_saved = False
+        self.checkpoint_store = self
+        self._checkpoint_mirror: Any = None
+        self._pending_checkpoint: Checkpoint | None = None
+        self._pending_model_call: dict[str, Any] | None = None
+        self._latest_checkpoint: Checkpoint | None = None
+        self._checkpoint_state: Any = None
+        self._async_persistence = False
+
+    def bind_checkpoint_store(self, store: Any, checkpoint_state: Any) -> None:
+        self._checkpoint_mirror = store
+        self._checkpoint_state = checkpoint_state
+
+    def enable_async_persistence(self) -> None:
+        self._async_persistence = True
+
+    def capture_state(self, loop_ctx: Any) -> dict[str, Any]:
+        domain_state = dict(self._checkpoint_state(loop_ctx) if self._checkpoint_state else {})
+        llm_checkpoint = getattr(self.llm, "checkpoint_state", None)
+        if "llm" not in domain_state and callable(llm_checkpoint):
+            try:
+                domain_state["llm"] = llm_checkpoint()
+            except Exception as exc:
+                self.persistence_errors.append(f"checkpoint: {type(exc).__name__}: {exc}")
+        return copy.deepcopy(domain_state)
+
+    def save(self, checkpoint: Checkpoint, key: str) -> None:
+        from looplet.assistant_turns import TURN_STATE_KEY
+
+        pending = self._pending_checkpoint
+        acknowledged = key.startswith("step_") and (
+            key.endswith("_done") or key == f"step_{checkpoint.step_number}"
+        )
+        turns = checkpoint.metadata.get(TURN_STATE_KEY, {})
+        if turns.get("pending_model_call"):
+            self._pending_model_call = copy.deepcopy(turns["pending_model_call"])
+        elif (
+            key == "model_turn"
+            or acknowledged
+            or checkpoint.metadata.get("pending_calls")
+            or checkpoint.run_status == "cancelled"
+        ):
+            self._pending_model_call = None
+        elif self._pending_model_call is not None:
+            checkpoint = replace(
+                checkpoint,
+                metadata={
+                    **checkpoint.metadata,
+                    TURN_STATE_KEY: {**turns, "pending_model_call": self._pending_model_call},
+                },
+            )
+        if checkpoint.metadata.get("pending_calls"):
+            self._pending_checkpoint = checkpoint
+        elif acknowledged:
+            self._pending_checkpoint = None
+        elif pending is not None:
+            checkpoint = replace(
+                checkpoint,
+                metadata={
+                    **checkpoint.metadata,
+                    "pending_calls": pending.metadata["pending_calls"],
+                },
+            )
+        self._latest_checkpoint = checkpoint
+        if (
+            checkpoint.metadata.get("pending_calls")
+            or self._pending_model_call is not None
+            or (acknowledged and pending is not None)
+            or key == "model_turn"
+            or checkpoint.is_terminal
+            or checkpoint.step_number % self.every == 0
+        ):
+            try:
+                self.store.save_checkpoint(self.run_id, checkpoint)
+            except Exception as exc:
+                self.persistence_errors.append(f"checkpoint: {type(exc).__name__}: {exc}")
+        if self._checkpoint_mirror is not None:
+            self._checkpoint_mirror.save(checkpoint, key)
+
+    def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
+        if self._checkpoint_mirror is not None:
+            return self._checkpoint_mirror.load(key, run_id=run_id)
+        if run_id is not None and run_id != self.run_id:
+            from looplet.checkpoint import CheckpointIdentityError
+
+            raise CheckpointIdentityError("checkpoint belongs to a different runtime run")
+        return self.store.load_checkpoint(self.run_id, key)
 
     def bind(self, loop_ctx: Any) -> None:
         self._loop_ctx = loop_ctx
-
-    def post_step(self, state: Any, session_log: Any, step_num: int) -> None:
-        if step_num % self.every == 0:
-            self._save(state, session_log, step_num)
 
     def on_loop_end(
         self,
@@ -110,15 +193,14 @@ class _RunStoreCheckpointHook:
         session_log: Any,
         context: Any,
         llm: Any,
-    ) -> int:
+    ) -> Any:
         del context, llm
         steps = getattr(state, "steps", ())
         step_num = getattr(steps[-1], "number", 0) if steps else 0
-        self._save(state, session_log, step_num)
         self._terminal_saved = True
-        return 0
+        return self._save(state, session_log, step_num)
 
-    def finalize(self, result: RunResult) -> None:
+    def finalize(self, result: RunResult) -> Any:
         """Persist a terminal snapshot when the loop raised before cleanup."""
         if self._terminal_saved or self._loop_ctx is None:
             return
@@ -138,38 +220,47 @@ class _RunStoreCheckpointHook:
             metadata.update({"run_status": result.status.value, "run_phase": result.phase.value})
             if result.termination_reason is not None:
                 metadata["termination_reason"] = result.termination_reason
-        self._save(state, session_log, getattr(self._loop_ctx, "step_num", 0))
         self._terminal_saved = True
+        return self._save(state, session_log, getattr(self._loop_ctx, "step_num", 0))
 
-    def _save(self, state: Any, session_log: Any, step_num: int) -> None:
+    async def finalize_async(self, result: RunResult) -> None:
+        pending = self.finalize(result)
+        if pending is not None:
+            await pending
+
+    def _save(self, state: Any, session_log: Any, step_num: int) -> Any:
         try:
-            conversation = getattr(state, "conversation", None)
-            run_envelope = getattr(state, "run_envelope", None)
-            domain_state: dict[str, Any] = {}
-            llm_checkpoint = getattr(self.llm, "checkpoint_state", None)
-            if callable(llm_checkpoint):
-                domain_state["llm"] = llm_checkpoint()
-            checkpoint = Checkpoint(
-                step_number=step_num,
-                session_log_data={
-                    "entries": session_log.to_list() if hasattr(session_log, "to_list") else [],
-                    "current_theory": getattr(session_log, "current_theory", ""),
-                },
-                conversation_data=conversation.serialize() if conversation is not None else None,
-                config_snapshot={
-                    "max_steps": getattr(state, "max_steps", None),
+            from looplet.assistant_turns import assistant_checkpoint_metadata
+
+            config_snapshot = None
+            if self._latest_checkpoint is not None:
+                step_num = max(step_num, self._latest_checkpoint.step_number)
+                config_snapshot = {
+                    **self._latest_checkpoint.config_snapshot,
                     "queries_used": getattr(state, "queries_used", 0),
-                    "budget_remaining": getattr(state, "budget_remaining", None),
+                    "budget_remaining": getattr(state, "budget_remaining", 0),
+                }
+            checkpoint = _capture_checkpoint(
+                self._loop_ctx,
+                step_number=step_num,
+                checkpoint_state=self.capture_state,
+                config_snapshot=config_snapshot,
+                metadata={
+                    **dict(getattr(state, "metadata", {}) or {}),
+                    **assistant_checkpoint_metadata(state, checkpoint_store=self),
                 },
-                tool_results_store=self.tools.checkpoint_results(),
-                domain_state=domain_state,
-                metadata=dict(getattr(state, "metadata", {}) or {}),
+            )
+            checkpoint = replace(
+                checkpoint,
                 run_status=str(getattr(state, "run_status", "running")),
                 run_phase=str(getattr(state, "run_phase", "dispatching")),
                 termination_reason=getattr(state, "termination_reason", None),
-                run_envelope=run_envelope.to_dict() if run_envelope is not None else None,
             )
-            self.store.save_checkpoint(self.run_id, checkpoint)
+            if self._async_persistence:
+                from looplet.checkpoint import _run_persistence
+
+                return _run_persistence(self.save, checkpoint, key=f"step_{step_num}_terminal")
+            self.save(checkpoint, key=f"step_{step_num}_terminal")
         except Exception as exc:  # noqa: BLE001 - persistence is best effort
             self.persistence_errors.append(f"checkpoint: {type(exc).__name__}: {exc}")
 
@@ -230,6 +321,7 @@ class RunHandle:
 class _RuntimeExecution:
     hooks: list[Any]
     result: RunResult | None = None
+    checkpoint_hook: _RunStoreCheckpointHook | None = None
 
 
 class AgentRuntime:
@@ -298,7 +390,8 @@ class AgentRuntime:
                 else None
             )
             execution = _RuntimeExecution(
-                [observer, *([checkpoint_hook] if checkpoint_hook is not None else [])]
+                [observer, *([checkpoint_hook] if checkpoint_hook is not None else [])],
+                checkpoint_hook=checkpoint_hook,
             )
             old_envelope = self.preset.config.run_envelope
             old_token = self.preset.config.cancel_token
@@ -393,6 +486,10 @@ class AgentRuntime:
                 raise
             except Exception as exc:  # noqa: BLE001
                 execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
+            finally:
+                if execution.checkpoint_hook is not None and execution.result is not None:
+                    await execution.checkpoint_hook.finalize_async(execution.result)
+            assert execution.result is not None
             return execution.result
 
     def start(

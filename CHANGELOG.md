@@ -104,6 +104,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Runtime run-store checkpoints capture configured host state, retain pending tool-effect reconciliation guards, and preserve model-admission settings. Host and backend capture stays on the owning thread; async checkpoint writes are drained in workers.
+- Synchronous tools in async loops can use `ctx.llm` through the owning event loop, including shared model-call admission.
+- Async assistant-turn decisions await checkpoint persistence instead of writing on the event loop.
+- Cartridge authoring guidance describes additional terminal tools as host-only configuration, not a schema-v2 field.
 - Method-style and event-style tool hooks apply argument and result rewrites in registration order. Cached results still pass permission checks, and tool-gate callback failures stop dispatch.
 - Terminal acceptance uses step metadata instead of business output fields. Payloads containing `rejected` or `status` no longer cause false retries or hide accepted output. History helpers retain the legacy marker for older steps.
 - Replay documentation describes failed run states for exhausted captures and protocol divergence instead of promising caller-visible exceptions.

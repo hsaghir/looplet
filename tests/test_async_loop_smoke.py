@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from functools import wraps
+from threading import Event
 
 import pytest
 
@@ -91,6 +94,454 @@ async def test_async_tool_sync_model_access_fails_without_deadlock(tmp_path, nat
     assert len(result.steps) == 2
     assert "ctx.async_llm" in result.steps[0].tool_result.error
     assert result.steps[1].tool_call.tool == "done"
+
+
+class _NestedResponseBackend(AsyncMockLLMBackend):
+    def __init__(self, responses, nested_response):
+        super().__init__(responses, cycle=False)
+        self.nested_response = nested_response
+
+    @wraps(AsyncMockLLMBackend.generate)
+    async def generate(self, prompt, **kwargs):
+        if prompt.startswith("nested "):
+            self.calls += 1
+            return await self.nested_response(prompt)
+        return await super().generate(prompt, **kwargs)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 3])
+@pytest.mark.parametrize("tool_mode", ["sync", "async"])
+async def test_nested_tool_inference_stops_before_runtime_cancellation_returns(
+    tmp_path, native, model_limit, tool_mode
+):
+    from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
+
+    owner = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    cancelled = asyncio.Event()
+    tool_finished = asyncio.Event()
+    active = []
+    effects = []
+
+    async def nested_response(prompt):
+        active.append(prompt)
+        entered.set()
+        try:
+            await released.wait()
+            return "nested result"
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            active.remove(prompt)
+
+    def sync_tool(ctx: ToolContext):
+        try:
+            answer = ctx.llm.generate("nested blocked")
+            effects.append(answer)
+            return {"answer": answer}
+        finally:
+            owner.call_soon_threadsafe(tool_finished.set)
+
+    async def async_tool(ctx: ToolContext):
+        try:
+            answer = await ctx.async_llm.generate("nested blocked")
+            effects.append(answer)
+            return {"answer": answer}
+        finally:
+            tool_finished.set()
+
+    selected = sync_tool if tool_mode == "sync" else async_tool
+    backend = _NestedResponseBackend(
+        [f'{{"tool":"{selected.__name__}","args":{{}}}}'], nested_response
+    )
+    store = MemoryRunStore()
+    preset = AgentPreset(
+        tools=tools_from([selected], include_done=True),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    )
+    runtime = AgentRuntime(preset, store=store)
+    pending = asyncio.create_task(runtime.run_async(backend))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel("host interruption")
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("host interruption",)
+        assert not runtime._active_tokens
+        assert active == []
+        assert cancelled.is_set()
+        assert effects == []
+    finally:
+        released.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        try:
+            if entered.is_set():
+                await asyncio.wait_for(tool_finished.wait(), timeout=5)
+        finally:
+            runtime.close()
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 4])
+@pytest.mark.parametrize("tool_mode", ["sync", "async"])
+async def test_concurrent_nested_tools_preserve_sufficient_model_budget(
+    tmp_path, native, model_limit, tool_mode
+):
+    from looplet import tools_from
+
+    owner = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    worker_entered = Event()
+    released = asyncio.Event()
+    requests = []
+
+    async def nested_response(prompt):
+        requests.append(prompt)
+        if prompt == "nested first":
+            entered.set()
+            worker_entered.set()
+            await released.wait()
+        return prompt + " result"
+
+    async def async_helper(label: str, ctx: ToolContext):
+        if label == "second":
+            await entered.wait()
+        try:
+            return {"answer": await ctx.async_llm.generate("nested " + label)}
+        finally:
+            if label == "second":
+                released.set()
+
+    def sync_helper(label: str, ctx: ToolContext):
+        if label == "second":
+            assert worker_entered.wait(timeout=5)
+        try:
+            return {"answer": ctx.llm.generate("nested " + label)}
+        finally:
+            if label == "second":
+                owner.call_soon_threadsafe(released.set)
+
+    selected = sync_helper if tool_mode == "sync" else async_helper
+    name = selected.__name__
+    tools = tools_from([selected], include_done=True)
+    tools._tools[name] = replace(tools._tools[name], concurrent_safe=True)
+    backend = _NestedResponseBackend(
+        [
+            f'{{"tools":[{{"tool":"{name}","args":{{"label":"first"}}}},'
+            f'{{"tool":"{name}","args":{{"label":"second"}}}}]}}',
+            '{"tool":"done","args":{"summary":"ok"}}',
+        ],
+        nested_response,
+    )
+    pending = asyncio.create_task(
+        run_result_async(
+            backend,
+            tools=tools,
+            config=LoopConfig(
+                max_steps=3,
+                max_model_calls=model_limit,
+                concurrent_dispatch=True,
+                max_parallel_calls=2,
+                use_native_tools=native,
+                harness_profile="minimal",
+                run_dir=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await asyncio.wait_for(asyncio.shield(pending), timeout=5)
+        assert result.completed
+        helper_steps = [step for step in result.steps if step.tool_call.tool == name]
+        assert [step.tool_result.error for step in helper_steps] == [None, None]
+        assert [step.tool_result.data for step in helper_steps] == [
+            {"answer": "nested first result"},
+            {"answer": "nested second result"},
+        ]
+        assert requests == ["nested first", "nested second"]
+        assert backend.calls == 4
+    finally:
+        released.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 4])
+async def test_sync_loop_concurrent_tools_preserve_model_admission(tmp_path, native, model_limit):
+    from looplet import run_result, tools_from
+    from looplet.testing import MockLLMBackend
+
+    entered = Event()
+    released = Event()
+
+    class Backend(MockLLMBackend):
+        @wraps(MockLLMBackend.generate)
+        def generate(self, prompt, **kwargs):
+            if prompt.startswith("nested "):
+                self.calls += 1
+                if prompt == "nested first":
+                    entered.set()
+                    assert released.wait(timeout=5)
+                return prompt + " result"
+            return super().generate(prompt, **kwargs)
+
+    def helper(label: str, ctx: ToolContext):
+        if label == "second":
+            assert entered.wait(timeout=5)
+        try:
+            return {"answer": ctx.llm.generate("nested " + label)}
+        finally:
+            if label == "second":
+                released.set()
+
+    tools = tools_from([helper], include_done=True)
+    tools._tools["helper"] = replace(tools._tools["helper"], concurrent_safe=True)
+    backend = Backend(
+        [
+            '{"tools":[{"tool":"helper","args":{"label":"first"}},'
+            '{"tool":"helper","args":{"label":"second"}}]}',
+            '{"tool":"done","args":{"summary":"ok"}}',
+        ],
+        cycle=False,
+    )
+    try:
+        result = await asyncio.to_thread(
+            run_result,
+            backend,
+            tools=tools,
+            config=LoopConfig(
+                max_steps=3,
+                max_model_calls=model_limit,
+                concurrent_dispatch=True,
+                max_parallel_calls=2,
+                use_native_tools=native,
+                harness_profile="minimal",
+                run_dir=str(tmp_path),
+            ),
+        )
+        assert result.completed
+        helper_steps = [step for step in result.steps if step.tool_call.tool == "helper"]
+        assert [step.tool_result.error for step in helper_steps] == [None, None]
+        assert [step.tool_result.data for step in helper_steps] == [
+            {"answer": "nested first result"},
+            {"answer": "nested second result"},
+        ]
+        assert backend.calls == 4
+    finally:
+        released.set()
+
+
+@pytest.mark.parametrize("response_kind", ["coroutine", "future"])
+async def test_nested_model_cancellation_before_start_disposes_response(monkeypatch, response_kind):
+    from looplet.async_loop import _NestedModelRequests
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+    entered = []
+    cancellations = []
+    original_schedule = asyncio.run_coroutine_threadsafe
+
+    async def response_body():
+        entered.append("started")
+        return "nested result"
+
+    response = response_body() if response_kind == "coroutine" else owner.create_future()
+
+    def schedule(coroutine, loop):
+        def cancel_before_start():
+            cancellations.append(loop.create_task(requests.cancel_pending()))
+
+        loop.call_soon_threadsafe(cancel_before_start)
+        return original_schedule(coroutine, loop)
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", schedule)
+    worker = asyncio.create_task(asyncio.to_thread(requests.run, response))
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        await asyncio.gather(*cancellations)
+        assert entered == []
+        assert requests.closed
+        assert not requests.pending
+        if response_kind == "coroutine":
+            assert response.cr_frame is None
+        else:
+            assert response.cancelled()
+    finally:
+        await requests.cancel_pending()
+        await asyncio.gather(worker, *cancellations, return_exceptions=True)
+        if asyncio.iscoroutine(response):
+            response.close()
+
+
+async def test_runtime_nested_model_cleanup_drains_before_terminal_checkpoint(tmp_path):
+    from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
+
+    owner = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    cleanup_released = asyncio.Event()
+    tool_finished = asyncio.Event()
+    active = []
+    terminal_snapshots = []
+    saved_snapshots = []
+    completion_metadata = []
+
+    async def nested_response(prompt):
+        active.append(prompt)
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cleanup_entered.set()
+            await cleanup_released.wait()
+            active.remove(prompt)
+
+    def helper(ctx: ToolContext):
+        try:
+            return ctx.llm.generate("nested blocked")
+        finally:
+            owner.call_soon_threadsafe(tool_finished.set)
+
+    class Store(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            saved_snapshots.append({"status": checkpoint.run_status, "phase": checkpoint.run_phase})
+            if checkpoint.is_terminal:
+                terminal_snapshots.append(checkpoint.domain_state)
+            return super().save_checkpoint(run_id, checkpoint)
+
+        def complete(self, run_id, result, *, artifacts=()):
+            completion_metadata.append(result.metadata)
+            return super().complete(run_id, result, artifacts=artifacts)
+
+    preset = AgentPreset(
+        tools=tools_from([helper], include_done=True),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=3,
+            use_native_tools=False,
+            harness_profile="minimal",
+            checkpoint_state=lambda context: {"nested_active": bool(active)},
+            run_dir=str(tmp_path),
+        ),
+    )
+    runtime = AgentRuntime(preset, store=Store(), checkpoint_every_n_steps=1)
+    backend = _NestedResponseBackend(['{"tool":"helper","args":{}}'], nested_response)
+    pending = asyncio.create_task(runtime.run_async(backend))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel("original interruption")
+        await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
+        assert not pending.done()
+        assert terminal_snapshots == []
+        pending.cancel("second interruption")
+        cleanup_released.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("original interruption",)
+        assert active == []
+        assert terminal_snapshots, (saved_snapshots, completion_metadata)
+        assert all(snapshot["nested_active"] is False for snapshot in terminal_snapshots)
+        assert not runtime._active_tokens
+    finally:
+        cleanup_released.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        try:
+            if entered.is_set():
+                await asyncio.wait_for(tool_finished.wait(), timeout=5)
+        finally:
+            runtime.close()
+
+
+async def test_concurrent_admission_acknowledges_only_its_call_and_blocks_resume():
+    import copy
+
+    from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
+    from looplet.backend_contract import TerminalLLMError
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def nested_response(prompt):
+        if prompt == "nested first":
+            entered.set()
+            await released.wait()
+        return prompt
+
+    state = DefaultState(max_steps=1)
+    config = LoopConfig(max_steps=1, max_model_calls=2)
+    turns = _AssistantTurns(state, config)
+    turns.begin_turn()
+    backend = _NestedResponseBackend([], nested_response)
+    bounded = turns.wrap(backend)
+    first = asyncio.create_task(bounded.generate("nested first"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert await bounded.generate("nested second") == "nested second"
+        pending = turns.data["pending_model_call"]
+        assert pending == {"model_turn_id": turns.turn_id, "model_call_number": 1}
+        assert turns.data["model_calls"] == 2
+        assert len({record["model_call_id"] for record in turns.data["requests"]}) == 2
+        with pytest.raises(TerminalLLMError, match=r"model_call_budget"):
+            await bounded.generate("nested third")
+        assert backend.calls == 2
+
+        restored_state = DefaultState(max_steps=1)
+        restored_state.metadata[TURN_STATE_KEY] = copy.deepcopy(turns.data)
+        restored = _AssistantTurns(restored_state, config).wrap(backend)
+        with pytest.raises(TerminalLLMError, match=r"unsupported_context"):
+            await restored.generate("nested restored")
+        assert backend.calls == 2
+        released.set()
+        assert await first == "nested first"
+        assert "pending_model_call" not in turns.data
+    finally:
+        released.set()
+        await asyncio.gather(first, return_exceptions=True)
+
+
+@pytest.mark.parametrize("interruption", ["error", "cancelled"])
+async def test_failed_admission_checkpoint_keeps_reconciliation_guard(interruption):
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.backend_contract import TerminalLLMError
+
+    turns = _AssistantTurns(DefaultState(max_steps=1), LoopConfig(max_model_calls=3))
+    backend = AsyncMockLLMBackend(["unused"])
+    bounded = turns.wrap(backend)
+
+    async def fail_checkpoint():
+        if interruption == "cancelled":
+            raise asyncio.CancelledError("checkpoint interrupted")
+        raise OSError("checkpoint unavailable")
+
+    turns.async_checkpoint = fail_checkpoint
+    expected = asyncio.CancelledError if interruption == "cancelled" else OSError
+    with pytest.raises(expected):
+        await bounded.generate("first request")
+    turns.async_checkpoint = None
+    with pytest.raises(TerminalLLMError, match=r"unsupported_context"):
+        await bounded.generate("second request")
+    assert backend.calls == 0
+    assert turns.data["model_calls"] == 1
+    assert turns.data["pending_model_call"]["model_call_number"] == 1
 
 
 @pytest.mark.parametrize("native", [False, True])

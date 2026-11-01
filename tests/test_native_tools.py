@@ -381,7 +381,10 @@ def test_trace_builder_inference_uses_same_admission(limit):
     )
 
 
-async def test_overlapping_model_admission_fails_before_second_invocation():
+@pytest.mark.parametrize(
+    "request_mode", ["native", "stateful", "native_then_helper", "stateful_then_helper"]
+)
+async def test_unsafe_overlapping_model_admission_fails_before_second_invocation(request_mode):
     import asyncio
 
     from looplet.assistant_turns import _AssistantTurns
@@ -391,24 +394,49 @@ async def test_overlapping_model_admission_fails_before_second_invocation():
     requests = []
 
     class Backend:
+        conversation_mode = "stateful" if request_mode.startswith("stateful") else "text"
+        supports_stateless_text_generation = True
+
+        def set_conversation_input(self, value):
+            pass
+
         async def generate(self, prompt):
             requests.append(prompt)
-            started.set()
-            await finish.wait()
+            if prompt == "first":
+                started.set()
+                await finish.wait()
             return "Recorded"
+
+        async def generate_with_tools(self, prompt, *, tools):
+            return await self.generate(prompt)
 
     turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=3))
     turns.begin_turn()
     backend = turns.wrap(Backend())
-    first = asyncio.create_task(backend.generate("first"))
-    await started.wait()
-    with pytest.raises(RuntimeError, match="unsupported_context"):
-        await backend.generate("second")
-    assert "pending_model_call" in turns.data
-    finish.set()
-    assert await first == "Recorded"
-    assert requests == ["first"]
-    assert turns.data["model_calls"] == 1
+    if request_mode == "stateful_then_helper":
+        backend.prepare_conversation(SimpleNamespace(serialize=lambda: []), "first")
+    first = asyncio.create_task(
+        backend.generate_with_tools("first", tools=[])
+        if request_mode == "native_then_helper"
+        else backend.generate("first")
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        with pytest.raises(RuntimeError, match=r"unsupported_context"):
+            second = (
+                backend.generate_with_tools("second", tools=[])
+                if request_mode == "native"
+                else backend.generate("second")
+            )
+            await asyncio.wait_for(second, timeout=5)
+        assert "pending_model_call" in turns.data
+        finish.set()
+        assert await first == "Recorded"
+        assert requests == ["first"]
+        assert turns.data["model_calls"] == 1
+    finally:
+        finish.set()
+        await asyncio.gather(first, return_exceptions=True)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

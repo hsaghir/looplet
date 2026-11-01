@@ -7,6 +7,7 @@ import re
 import shlex
 import tomllib
 from datetime import date
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,6 +42,7 @@ def test_package_version_is_consistent_with_its_release_stage() -> None:
     assert published is not None
 
     assert version == looplet.__version__
+    assert distribution_version("looplet") == version
     if ".dev" in version:
         source_base = tuple(int(part) for part in version.split(".dev", 1)[0].split("."))
         published_base = tuple(int(part) for part in published.group(1).split("."))
@@ -90,6 +92,8 @@ def test_optional_published_installs_use_the_current_published_version() -> None
 def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     cli = (ROOT / "docs" / "cli.md").read_text()
     install = (ROOT / "docs" / "install.md").read_text()
+    assert "The pin does not track later changes on master." in install
+    assert "current run ownership fixes" not in install
     assert "install.md#install-the-current-build" in cli
     assert "shared pinned source install" not in cli
     assert "source additions" not in cli
@@ -101,6 +105,13 @@ def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
         "## Install the published package"
     )
     assert install.index("## Install the published package") < install.index("## Develop Looplet")
+    source_pattern = (
+        r"looplet(?:\[[a-z,]+\])? @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)"
+    )
+    pins = set(re.findall(source_pattern, install))
+    assert len(pins) == 1
+    for document in ("README.md", "docs/python.md", "docs/quickstart.md"):
+        assert set(re.findall(source_pattern, (ROOT / document).read_text())) == pins
 
 
 def test_release_qualification_uses_declared_source_version() -> None:

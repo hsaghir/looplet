@@ -36,7 +36,8 @@ public issue.
 | A new API is missing | Compare the build fingerprint, not only `looplet.__version__`. Use the preview required by the guide. |
 | Run evidence cannot be saved | Choose a writable `run_dir` or disable automatic persistence. See the remedies below. |
 
-The published package and source preview can report the same version.
+Development source builds use `0.5.0.dev0`; the published package remains `0.4.1`.
+Older pinned source archives may also report `0.4.1`.
 A version number alone does not identify their APIs.
 Use the selected guide's exact install command.
 Record the installed code's fingerprint without selecting or calling a provider:

@@ -7,22 +7,24 @@ Model provider adapters are optional extras.
 ## Install the current build
 
 Use this **unreleased source preview** for the [Python quickstart](python.md).
-It includes the Python-first API and current run ownership fixes.
+It includes the Python-first API and the run ownership fixes at the pinned revision.
+The pin does not track later changes on master.
 Those additions are not in PyPI `0.4.1`.
 Use the [published package](#install-the-published-package) when you need that released API.
 
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
 ```
 
 Installation needs network access, but no Git checkout.
 The examples with fixed responses need no model key or model service.
 On Windows, activate `.venv-looplet\Scripts\Activate.ps1` in PowerShell.
 
-Both the preview and release report version `0.4.1`.
-The version alone does not identify their APIs.
+Development source builds use `0.5.0.dev0`.
+This preview is not a PyPI release.
+The version alone does not identify an archive's APIs.
 Record the source fingerprint to distinguish them:
 
 ```bash
@@ -37,7 +39,7 @@ Install the adapter from the same preview revision.
 For OpenAI or a compatible endpoint:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
 ```
 
 Use `[anthropic]` for Anthropic or `[all]` for both adapters.
@@ -249,7 +251,7 @@ Maintainers can qualify a distribution without publishing.
 Use the version declared in the selected revision:
 
 ```bash
-gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.1
+gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.5.0.dev0
 ```
 
 A non-tag dispatch runs tests, builds distributions, and checks an installed wheel.

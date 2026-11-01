@@ -165,6 +165,63 @@ async def test_shared_turn_policy_preserves_world_state_and_terminal_metadata(
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_model_response_cannot_dispatch_after_host_budget_exhaustion(
+    tmp_path, asynchronous, native
+):
+    from looplet import run_result, run_result_async
+
+    state = DefaultState(max_steps=1)
+    writes = []
+    requests = []
+
+    def write(label: str):
+        writes.append(label)
+        return {"written": label}
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append("text")
+            state.max_steps = 0
+            return '{"tool":"write","args":{"label":"unadmitted"}}'
+
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            requests.append("native")
+            state.max_steps = 0
+            return [{"type": "tool_use", "name": "write", "input": {"label": "unadmitted"}}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, *, tools, **kwargs):
+            return super().generate_with_tools(prompt, tools=tools, **kwargs)
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    arguments = {
+        "state": state,
+        "tools": tools_from([write], include_done=True),
+        "config": LoopConfig(
+            max_steps=1,
+            use_native_tools=native,
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    }
+    result = (
+        await run_result_async(backend, **arguments)
+        if asynchronous
+        else run_result(backend, **arguments)
+    )
+    assert requests == ["native" if native else "text"]
+    assert writes == []
+    assert result.steps == ()
+    assert result.output is None
+    assert not result.completed
+    assert state.termination_reason == "budget_exhausted"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 async def test_model_call_admission_charges_started_calls_once(asynchronous):
     from looplet.assistant_turns import _AssistantTurns
 

@@ -36,7 +36,7 @@ This example uses a Python function and fixed model responses.
 It needs no model key or model service.
 Install the [source preview from the quickstart](python.md#install) first.
 The Python-first API is unreleased and is not in PyPI `0.4.1`.
-Development source builds identify as `0.5.0.dev0`; the older pinned preview predates this identity.
+Development source builds identify as `0.5.0.dev0`.
 
 ```python title="first_loop.py"
 from looplet import MockLLMBackend, composable_loop

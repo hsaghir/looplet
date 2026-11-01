@@ -448,14 +448,14 @@ Use a separate environment so you can keep your released-package project unchang
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
 looplet doctor --no-backend --json
 ```
 
 This install uses the same fixed preview as the [Python quickstart](python.md).
 It needs no Git checkout.
 Keep this preview environment active for the remaining experiment and factory recipes.
-Both builds report version `0.4.1`; the preview's `looplet --version` also prints its source fingerprint.
+The preview reports `0.5.0.dev0`, distinct from the published `0.4.1`.
 Keep the commit and the doctor's library source fingerprint with your results.
 Add provider extras from the same archive, not from the published package.
 On Windows, activate `.venv-looplet-preview\Scripts\Activate.ps1` in PowerShell.
@@ -646,7 +646,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment

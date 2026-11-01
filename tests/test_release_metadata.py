@@ -103,6 +103,13 @@ def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
         "## Install the published package"
     )
     assert install.index("## Install the published package") < install.index("## Develop Looplet")
+    source_pattern = (
+        r"looplet(?:\[[a-z,]+\])? @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)"
+    )
+    pins = set(re.findall(source_pattern, install))
+    assert len(pins) == 1
+    for document in ("README.md", "docs/python.md", "docs/quickstart.md"):
+        assert set(re.findall(source_pattern, (ROOT / document).read_text())) == pins
 
 
 def test_release_qualification_uses_declared_source_version() -> None:

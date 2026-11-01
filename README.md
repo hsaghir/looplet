@@ -29,7 +29,7 @@ It is not in PyPI `0.4.1`.
 Install this fixed revision in a virtual environment:
 
 ```bash
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
 ```
 
 This example uses fixed model responses.
@@ -186,7 +186,7 @@ See [SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md) fo
 The latest PyPI release is `0.4.1`.
 Its API differs from the preview above.
 Source builds identify as `0.5.0.dev0`.
-The older pinned preview above still reports `0.4.1`; retain its build fingerprint with the archive revision.
+Retain the build fingerprint with the archive revision.
 Use the [released walkthrough](https://hsaghir.com/looplet/quickstart/) with this install:
 
 ```bash

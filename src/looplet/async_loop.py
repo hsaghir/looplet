@@ -262,9 +262,40 @@ class _NestedModelRequests:
         self.pending: set[_NestedModelRequest] = set()
         self.closed = False
 
-    def run(self, response: Any) -> str:
+    def invoke(self, generate: Callable[[], Any]) -> Any:
         with self.lock:
-            request = _NestedModelRequest(self, response)
+            if self.closed:
+                raise concurrent.futures.CancelledError
+            request = _NestedModelRequest(self, None)
+            self.pending.add(request)
+        try:
+            response = generate()
+        except BaseException:
+            request._settle()
+            raise
+        request.response = response
+        if not inspect.isawaitable(response):
+            with self.lock:
+                request._settle()
+                closed = self.closed
+            if closed:
+                raise concurrent.futures.CancelledError
+            return response
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is self.loop:
+            request.close_unstarted()
+            raise RuntimeError(
+                "Synchronous model calls cannot block their owner event loop. "
+                "Use await ctx.async_llm.generate() instead."
+            )
+        return self.run(response, request=request)
+
+    def run(self, response: Any, *, request: _NestedModelRequest | None = None) -> str:
+        with self.lock:
+            request = request if request is not None else _NestedModelRequest(self, response)
             if self.closed:
                 request.close_unstarted()
                 raise concurrent.futures.CancelledError
@@ -321,12 +352,17 @@ class _SyncBridgeLLM:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> str:
-        result = self._backend.generate(
-            prompt,
-            max_tokens=max_tokens,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        )
+        def generate() -> Any:
+            return self._backend.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        if self._requests is not None:
+            return self._requests.invoke(generate)
+        result = generate()
         if inspect.isawaitable(result):
             if self._loop is not None:
                 try:
@@ -340,8 +376,6 @@ class _SyncBridgeLLM:
                         "Synchronous model calls cannot block their owner event loop. "
                         "Use await ctx.async_llm.generate() instead."
                     )
-                if self._requests is not None:
-                    return self._requests.run(result)
 
                 async def resolve() -> str:
                     return await result
@@ -349,8 +383,6 @@ class _SyncBridgeLLM:
                 return asyncio.run_coroutine_threadsafe(resolve(), self._loop).result()
             # We're inside an event loop (async context). Use a thread
             # to run the coroutine without blocking the loop.
-            import concurrent.futures  # noqa: PLC0415
-
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

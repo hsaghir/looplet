@@ -226,7 +226,10 @@ An optional positive `max_assistant_turns` limits consecutive assistant-only tur
 Only a genuine tool proposal resets that counter. Rejected text completion does not reset it.
 Tool-step budgets and `max_turn_continuations` retain their separate meanings.
 Host aggregate budgets, child restrictions, and the original deadline remain authoritative.
-Async cancellation stops and drains nested async model calls from synchronous tools before terminal checkpoints.
+Async cancellation closes nested request admission before backend invocation.
+Admitted backend invocations and their async responses settle before terminal checkpoints.
+Later calls from surviving tool threads are refused without invoking the backend.
+Blocking synchronous backends still need their own I/O deadlines.
 It does not terminate arbitrary Python threads or undo completed external effects.
 Use an isolated backend for stateful helper or child inference, together with the host's shared budget.
 An adapter may expose `supports_stateless_text_generation=True` for an isolated text helper request.

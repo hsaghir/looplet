@@ -194,6 +194,110 @@ async def test_nested_tool_inference_stops_before_runtime_cancellation_returns(
             runtime.close()
 
 
+@pytest.mark.parametrize("after_cancel", [False, True])
+@pytest.mark.parametrize("response_kind", ["sync", "future"])
+async def test_surviving_sync_tool_cannot_start_model_request_after_cancellation(
+    tmp_path, after_cancel, response_kind
+):
+    import concurrent.futures
+
+    from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
+    from looplet.testing import MockLLMBackend
+
+    owner = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+    released = Event()
+    response_released = asyncio.Event()
+    children = []
+    helper_requests = []
+    helper_errors = []
+
+    class Backend(MockLLMBackend):
+        @wraps(MockLLMBackend.generate)
+        def generate(self, prompt, **kwargs):
+            if prompt != "nested late":
+                return super().generate(prompt, **kwargs)
+            helper_requests.append(prompt)
+            if response_kind == "sync":
+                return "nested result"
+            returned = concurrent.futures.Future()
+
+            async def response():
+                returned.set_result(asyncio.current_task())
+                await response_released.wait()
+                return "nested result"
+
+            def start_response():
+                children.append(owner.create_task(response()))
+
+            owner.call_soon_threadsafe(start_response)
+            return returned.result(timeout=5)
+
+    def helper(ctx: ToolContext):
+        owner.call_soon_threadsafe(entered.set)
+        assert released.wait(timeout=5)
+        try:
+            return {"answer": ctx.llm.generate("nested late")}
+        except concurrent.futures.CancelledError:
+            helper_errors.append("cancelled")
+            raise
+        finally:
+            owner.call_soon_threadsafe(finished.set)
+
+    backend = Backend(
+        ['{"tool":"helper","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'],
+        cycle=False,
+    )
+    preset = AgentPreset(
+        tools=tools_from([helper], include_done=True),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            use_native_tools=False,
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    )
+    runtime = AgentRuntime(preset, store=MemoryRunStore())
+    pending = asyncio.create_task(runtime.run_async(backend))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        if after_cancel:
+            pending.cancel("host interruption")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await pending
+            assert caught.value.args == ("host interruption",)
+            assert not runtime._active_tokens
+        else:
+            response_released.set()
+        released.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        if not after_cancel:
+            result = await asyncio.wait_for(pending, timeout=5)
+            assert result.completed
+            assert result.steps[0].tool_result.data == {"answer": "nested result"}
+        assert helper_requests == ([] if after_cancel else ["nested late"])
+        assert helper_errors == (["cancelled"] if after_cancel else [])
+        assert all(child.done() for child in children)
+    finally:
+        released.set()
+        response_released.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        try:
+            if entered.is_set():
+                await asyncio.wait_for(finished.wait(), timeout=5)
+            for child in children:
+                if not child.done():
+                    child.cancel()
+            await asyncio.gather(*children, return_exceptions=True)
+        finally:
+            runtime.close()
+
+
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("model_limit", [None, 4])
 @pytest.mark.parametrize("tool_mode", ["sync", "async"])
@@ -388,6 +492,94 @@ async def test_nested_model_cancellation_before_start_disposes_response(monkeypa
             response.close()
 
 
+async def test_nested_model_cancellation_tracks_backend_invocation():
+    from looplet.async_loop import _NestedModelRequests, _SyncBridgeLLM
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+    entered = asyncio.Event()
+    released = Event()
+    response = owner.create_future()
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            owner.call_soon_threadsafe(entered.set)
+            assert released.wait(timeout=5)
+            return response
+
+    bridge = _SyncBridgeLLM(Backend(), loop=owner, requests=requests)
+    worker = asyncio.create_task(asyncio.to_thread(bridge.generate, "nested creation"))
+    cancellation = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        cancellation = asyncio.create_task(requests.cancel_pending())
+        scheduled = owner.create_future()
+        owner.call_soon(scheduled.set_result, None)
+        await scheduled
+        assert requests.closed
+        assert not cancellation.done()
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        await asyncio.wait_for(cancellation, timeout=5)
+        assert response.cancelled()
+        assert not requests.pending
+    finally:
+        released.set()
+        response.cancel()
+        await asyncio.gather(
+            worker,
+            *([cancellation] if cancellation is not None else []),
+            return_exceptions=True,
+        )
+        await requests.cancel_pending()
+
+
+@pytest.mark.parametrize("response_kind", ["coroutine", "future"])
+async def test_nested_model_scheduling_failure_disposes_response(monkeypatch, response_kind):
+    from looplet.async_loop import _NestedModelRequests, _SyncBridgeLLM
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+    started = []
+
+    async def nested_response():
+        started.append("nested")
+        return "unexpected"
+
+    response = nested_response() if response_kind == "coroutine" else owner.create_future()
+    failure = RuntimeError("owner refused scheduling")
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return response
+
+    def refuse_scheduling(coroutine, loop):
+        assert loop is owner
+        raise failure
+
+    bridge = _SyncBridgeLLM(Backend(), loop=owner, requests=requests)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(asyncio, "run_coroutine_threadsafe", refuse_scheduling)
+            with pytest.raises(RuntimeError) as caught:
+                await asyncio.to_thread(bridge.generate, "nested")
+            assert caught.value is failure
+        await requests.cancel_pending()
+        assert started == []
+        assert not requests.pending
+        if response_kind == "future":
+            assert response.cancelled()
+        else:
+            assert response.cr_frame is None
+    finally:
+        if response_kind == "future":
+            response.cancel()
+        else:
+            response.close()
+        await requests.cancel_pending()
+
+
 async def test_runtime_nested_model_cleanup_drains_before_terminal_checkpoint(tmp_path):
     from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
 
@@ -519,7 +711,10 @@ async def test_concurrent_admission_acknowledges_only_its_call_and_blocks_resume
 
 
 @pytest.mark.parametrize("interruption", ["error", "cancelled"])
-async def test_failed_admission_checkpoint_keeps_reconciliation_guard(interruption):
+@pytest.mark.parametrize("checkpoint_mode", ["sync", "async"])
+async def test_failed_admission_checkpoint_keeps_reconciliation_guard(
+    interruption, checkpoint_mode
+):
     from looplet.assistant_turns import _AssistantTurns
     from looplet.backend_contract import TerminalLLMError
 
@@ -527,16 +722,23 @@ async def test_failed_admission_checkpoint_keeps_reconciliation_guard(interrupti
     backend = AsyncMockLLMBackend(["unused"])
     bounded = turns.wrap(backend)
 
-    async def fail_checkpoint():
+    def fail_checkpoint():
         if interruption == "cancelled":
             raise asyncio.CancelledError("checkpoint interrupted")
         raise OSError("checkpoint unavailable")
 
-    turns.async_checkpoint = fail_checkpoint
+    async def fail_checkpoint_async():
+        fail_checkpoint()
+
+    if checkpoint_mode == "async":
+        turns.async_checkpoint = fail_checkpoint_async
+    else:
+        turns.checkpoint = fail_checkpoint
     expected = asyncio.CancelledError if interruption == "cancelled" else OSError
     with pytest.raises(expected):
         await bounded.generate("first request")
     turns.async_checkpoint = None
+    turns.checkpoint = None
     with pytest.raises(TerminalLLMError, match=r"unsupported_context"):
         await bounded.generate("second request")
     assert backend.calls == 0

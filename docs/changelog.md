@@ -106,6 +106,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Runtime run-store checkpoints capture configured host state, retain pending tool-effect reconciliation guards, and preserve model-admission settings. Host and backend capture stays on the owning thread; async checkpoint writes are drained in workers.
 - Synchronous tools in async loops can use `ctx.llm` through the owning event loop, including shared model-call admission.
+- Async tools get a clear error instead of deadlocking when they use synchronous model access with an async backend.
 - Async assistant-turn decisions await checkpoint persistence instead of writing on the event loop.
 - Cartridge authoring guidance describes additional terminal tools as host-only configuration, not a schema-v2 field.
 - Method-style and event-style tool hooks apply argument and result rewrites in registration order. Cached results still pass permission checks, and tool-gate callback failures stop dispatch.

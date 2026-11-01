@@ -235,6 +235,17 @@ class _SyncBridgeLLM:
         )
         if inspect.isawaitable(result):
             if self._loop is not None:
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+                if running_loop is self._loop:
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise RuntimeError(
+                        "Synchronous model calls cannot block their owner event loop. "
+                        "Use await ctx.async_llm.generate() instead."
+                    )
 
                 async def resolve() -> str:
                     return await result

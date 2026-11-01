@@ -66,6 +66,105 @@ def test_assistant_text_classification_is_separate_from_completion(response, rea
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("max_steps", [1, 2, 4])
+@pytest.mark.parametrize("rejection", ["none", "hook", "schema", "hook_schema"])
+async def test_shared_turn_policy_preserves_world_state_and_terminal_metadata(
+    tmp_path, asynchronous, native, max_steps, rejection
+):
+    import json
+
+    from looplet import Block, run_result, run_result_async
+    from looplet.validation import FieldSpec, OutputSchema
+
+    writes = []
+    reports = []
+
+    def write(label: str):
+        writes.append(label)
+        return {"written": label}
+
+    def report(summary: str, answer: Any = None):
+        reports.append(summary)
+        return {"summary": summary, "answer": answer}
+
+    class Gate:
+        rejected = False
+
+        def check_done(self, state, session_log, context, step_num):
+            if rejection in {"hook", "hook_schema"} and not self.rejected:
+                self.rejected = True
+                return Block("First report rejected")
+            return None
+
+    first_args = {
+        "summary": "accepted" if rejection == "none" else "rejected",
+        "answer": "invalid" if rejection in {"schema", "hook_schema"} else 7,
+    }
+    responses = [
+        json.dumps(
+            {
+                "tools": [
+                    {"tool": "write", "args": {"label": "first"}},
+                    {"tool": "report", "args": first_args},
+                    {"tool": "write", "args": {"label": "ignored"}},
+                    {"tool": "done", "args": {"summary": "ignored"}},
+                ]
+            }
+        ),
+        '{"tool":"report","args":{"summary":"accepted","answer":7}}',
+    ]
+    backend = (
+        AsyncMockLLMBackend(responses, cycle=False)
+        if asynchronous
+        else MockLLMBackend(responses, cycle=False)
+    )
+    arguments = {
+        "tools": tools_from([write, report], include_done=True),
+        "hooks": [Gate()],
+        "config": LoopConfig(
+            max_steps=max_steps,
+            use_native_tools=native,
+            done_tools=["report"],
+            done_tool_schemas={
+                "report": OutputSchema(fields={"answer": FieldSpec("answer", "int")})
+            },
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    }
+    result = (
+        await run_result_async(backend, **arguments)
+        if asynchronous
+        else run_result(backend, **arguments)
+    )
+    accepted = max_steps >= 2 and (rejection == "none" or max_steps == 4)
+    assert writes == ["first"]
+    assert reports == (["accepted"] if accepted else [])
+    assert result.completed is accepted
+    assert result.output == ({"summary": "accepted", "answer": 7} if accepted else None)
+    assert backend.calls == (2 if rejection != "none" and max_steps == 4 else 1)
+    assert [step.number for step in result.steps] == list(range(1, len(result.steps) + 1))
+    if max_steps < 4:
+        assert len(result.steps[0].metadata["turn"]["budget_skipped"]) == 4 - max_steps
+    if max_steps >= 2:
+        initial_terminal = result.steps[1]
+        assert initial_terminal.tool_call.tool == "report"
+        assert initial_terminal.metadata["terminal_accepted"] is (rejection == "none")
+        if rejection in {"hook", "hook_schema"}:
+            assert initial_terminal.tool_result.error == "First report rejected"
+        elif rejection == "schema":
+            assert initial_terminal.tool_result.error.startswith("Output schema validation failed:")
+        if max_steps == 4:
+            assert [
+                call["tool"] for call in initial_terminal.metadata["turn"]["ignored_after_terminal"]
+            ] == [
+                "write",
+                "done",
+            ]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 async def test_model_call_admission_charges_started_calls_once(asynchronous):
     from looplet.assistant_turns import _AssistantTurns
 

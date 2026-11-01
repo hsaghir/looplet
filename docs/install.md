@@ -21,8 +21,9 @@ Installation needs network access, but no Git checkout.
 The examples with fixed responses need no model key or model service.
 On Windows, activate `.venv-looplet\Scripts\Activate.ps1` in PowerShell.
 
-Both the preview and release report version `0.4.1`.
-The version alone does not identify their APIs.
+Development source builds use `0.5.0.dev0`.
+The older pinned preview above still reports `0.4.1`, like the release.
+The version alone does not identify an archive's APIs.
 Record the source fingerprint to distinguish them:
 
 ```bash
@@ -249,7 +250,7 @@ Maintainers can qualify a distribution without publishing.
 Use the version declared in the selected revision:
 
 ```bash
-gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.1
+gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.5.0.dev0
 ```
 
 A non-tag dispatch runs tests, builds distributions, and checks an installed wheel.

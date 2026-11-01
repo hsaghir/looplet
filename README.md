@@ -185,6 +185,8 @@ See [SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md) fo
 
 The latest PyPI release is `0.4.1`.
 Its API differs from the preview above.
+Source builds identify as `0.5.0.dev0`.
+The older pinned preview above still reports `0.4.1`; retain its build fingerprint with the archive revision.
 Use the [released walkthrough](https://hsaghir.com/looplet/quickstart/) with this install:
 
 ```bash

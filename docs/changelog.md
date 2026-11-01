@@ -44,6 +44,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The settlement example identifies the retained `/body` field and its exact final-section header instead of historical mentions.
 - Ordinary Python loops accept task strings and typed function sequences. Sequences get fresh validated registries and non-conflicting completion defaults. Explicit registries remain authoritative.
 - Source-build onboarding starts with functions and a loop. The published `0.4.1` walkthrough stays separate from the commit-pinned Python-first preview.
+- Development source builds identify as `0.5.0.dev0`; published `0.4.1` remains unchanged. This metadata change does not publish a release.
 - Async persistence drains workers during shutdown-wide task cancellation and preserves caller context.
 - Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
 - Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and registry release remain on the loop thread.

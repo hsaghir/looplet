@@ -7,6 +7,7 @@ import re
 import shlex
 import tomllib
 from datetime import date
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,6 +42,7 @@ def test_package_version_is_consistent_with_its_release_stage() -> None:
     assert published is not None
 
     assert version == looplet.__version__
+    assert distribution_version("looplet") == version
     if ".dev" in version:
         source_base = tuple(int(part) for part in version.split(".dev", 1)[0].split("."))
         published_base = tuple(int(part) for part in published.group(1).split("."))

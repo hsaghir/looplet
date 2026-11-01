@@ -264,6 +264,8 @@ def test_quickstart_provider_extra_keeps_the_released_version():
 
 
 def test_factory_shell_workflow_has_a_pinned_preview_install():
+    from looplet import __version__
+
     docs = Path(__file__).resolve().parents[1] / "docs"
     install = (docs / "install.md").read_text()
     section = install.split("## Try unreleased factory commands\n", 1)[1].split("\n## ", 1)[0]
@@ -280,7 +282,7 @@ def test_factory_shell_workflow_has_a_pinned_preview_install():
     )
     assert "same fixed revision" in section
     assert "source fingerprint" in current
-    assert "Both the preview and release report version `0.4.1`" in current
+    assert f"Development source builds use `{__version__}`" in current
     assert "(install.md#try-unreleased-factory-commands)" in (docs / "quickstart.md").read_text()
 
 

@@ -60,11 +60,10 @@ from looplet.loop import (
     RunEnvelope,
     RunPhase,
     RunStatus,
-    _annotate_tool_turn,
     _bind_loop_context_async,
     _build_tool_ctx,
     _call_check_done,
-    _call_reference,
+    _completion_gate_warning,
     _deadline_expired,
     _default_build_briefing,
     _default_extract_entities,
@@ -75,7 +74,9 @@ from looplet.loop import (
     _notify_post_step_async,
     _policy_checkpoint_metadata,
     _post_step_stop_reason_async,
+    _prepare_tool_turn,
     _record_run_stats,
+    _rejected_terminal_step,
     _reset_context_overrides,
     _resolve_loop_config,
     _resolve_loop_state,
@@ -83,6 +84,7 @@ from looplet.loop import (
     _set_context_overrides,
     _set_run_lifecycle,
     _step_metadata,
+    _terminal_step_metadata,
     _validate_hooks,
     _validate_loop_inputs,
     emit_event_async,
@@ -113,7 +115,6 @@ from looplet.scaffolding import (
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, ToolSpec, _summarize_args_dict
 from looplet.types import AgentState, RunResult, Step, ToolCall, ToolResult
-from looplet.validation import validate_args as _validate_args
 
 logger = logging.getLogger(__name__)
 
@@ -1726,31 +1727,15 @@ async def _async_composable_loop_impl(
             and not _has_streaming_hook
         ):
             stream.emit(_StepStartEvent(step_num=step_num))
-        available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
-        if available_steps <= 0:
+        turn_plan = _prepare_tool_turn(
+            tools, tool_calls, config, state, turn_id=f"turn-{llm_calls}"
+        )
+        if turn_plan is None:
             stop_reason = "budget_exhausted"
             done = True
             break
-        original_tool_calls = tool_calls
-        budget_skipped = original_tool_calls[available_steps:]
-        tool_calls = original_tool_calls[:available_steps]
-        for call in tool_calls:
-            tools.prepare_call(call)
-        if len(original_tool_calls) > 1:
-            _annotate_tool_turn(
-                tool_calls,
-                turn_id=f"turn-{llm_calls}",
-                batch_size=len(original_tool_calls),
-                budget_skipped=budget_skipped,
-            )
-        done_tool_name = config.done_tool
-        terminal_set = config.resolve_terminal_outcomes()
-        done_idx = None
-        for i, tc in enumerate(tool_calls):
-            if tc.tool in terminal_set:
-                done_idx = i
-                done_tool_name = tc.tool  # pin canonical to the firing sentinel
-                break
+        tool_calls = turn_plan.calls
+        done_idx = turn_plan.terminal_index
 
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
@@ -2035,47 +2020,12 @@ async def _async_composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            schema_for_call = (
-                config.resolve_terminal_outcomes().get(tool_call.tool)
-                if gate_warning is None
-                else None
-            )
-            if schema_for_call is not None:
-                validation = _validate_args(schema_for_call, tool_call.args)
-                if not validation.valid:
-                    gate_warning = (
-                        f"Output schema validation failed: {'; '.join(validation.errors)}"
-                    )
-
-            ignored_after_terminal = tool_calls[done_idx + 1 :]
-            done_metadata = _step_metadata(
-                tool_call,
-                dispatch_mode="serial",
-                extra=(
-                    {
-                        "ignored_after_terminal": [
-                            _call_reference(call) for call in ignored_after_terminal
-                        ]
-                    }
-                    if ignored_after_terminal
-                    else None
-                ),
-            )
+            gate_warning = _completion_gate_warning(config, tool_call, gate_warning)
+            done_metadata = _terminal_step_metadata(tool_call, tool_calls[done_idx + 1 :])
 
             if gate_warning is not None:
-                done_metadata["terminal_accepted"] = False
-                tool_result = ToolResult(
-                    tool=done_tool_name,
-                    args_summary="rejected",
-                    data={"rejected": True, "reason": gate_warning},
-                    error=gate_warning,
-                )
-                step = Step(
-                    number=cur_step,
-                    tool_call=tool_call,
-                    tool_result=tool_result,
-                    metadata=done_metadata,
-                )
+                step = _rejected_terminal_step(tool_call, cur_step, gate_warning, done_metadata)
+                tool_result = step.tool_result
                 state.steps.append(step)
                 yield step
                 if stream is not None and _ToolResultEvent is not None:

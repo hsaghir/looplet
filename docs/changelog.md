@@ -40,6 +40,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Strict constructor inference rejects literal reference tokens and runtime placeholders that would change during loading.
 - Evidence-flush failures retain original external cancellation and cancelled run status. Ordinary persistence failures still propagate. Cancelled persistence callbacks no longer loop indefinitely.
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
+- Sync and async drivers share tool-turn budget admission, terminal selection, completion-schema rejection, and terminal metadata decisions. Dispatch, awaiting, and persistence remain driver-owned.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.
 - Retained-result tools clarify that JSON pointers address original return values, not preview wrappers.

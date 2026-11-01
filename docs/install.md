@@ -7,7 +7,8 @@ Model provider adapters are optional extras.
 ## Install the current build
 
 Use this **unreleased source preview** for the [Python quickstart](python.md).
-It includes the Python-first API and current run ownership fixes.
+It includes the Python-first API and the run ownership fixes at the pinned revision.
+The pin does not track later changes on master.
 Those additions are not in PyPI `0.4.1`.
 Use the [published package](#install-the-published-package) when you need that released API.
 

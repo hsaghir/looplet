@@ -92,6 +92,8 @@ def test_optional_published_installs_use_the_current_published_version() -> None
 def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     cli = (ROOT / "docs" / "cli.md").read_text()
     install = (ROOT / "docs" / "install.md").read_text()
+    assert "The pin does not track later changes on master." in install
+    assert "current run ownership fixes" not in install
     assert "install.md#install-the-current-build" in cli
     assert "shared pinned source install" not in cli
     assert "source additions" not in cli

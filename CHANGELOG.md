@@ -34,6 +34,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async cancellation closes nested request admission before backend invocation and drains admitted requests before terminal checkpoints. Late tool-thread calls cannot invoke the backend. Cancellation does not terminate arbitrary tool threads.
+- Bounded stateless helper requests may overlap. Each request retains its own pending marker and acknowledgement. Unknown restored requests still require reconciliation.
 - Cartridge helper loading preserves custom host path-entry loaders instead of replacing their source transformations.
 - Strict constructor inference rejects literal reference tokens and runtime placeholders that would change during loading.
 - Evidence-flush failures retain original external cancellation and cancelled run status. Ordinary persistence failures still propagate. Cancelled persistence callbacks no longer loop indefinitely.

@@ -33,11 +33,13 @@ When NOT to use this:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import logging
 import time
 from contextlib import aclosing
 from dataclasses import replace as _dc_replace
+from threading import RLock
 from typing import Any, AsyncGenerator, Callable, Sequence
 
 from looplet._backend_contract import TerminalLLMError
@@ -209,6 +211,122 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+class _NestedModelRequest:
+    def __init__(self, owner: _NestedModelRequests, response: Any) -> None:
+        self.owner = owner
+        self.response = response
+        self.future: concurrent.futures.Future[str] | None = None
+        self.completed: concurrent.futures.Future[None] = concurrent.futures.Future()
+        self.started = False
+        self.aborted = False
+
+    def _settle(self, _task: Any = None) -> None:
+        with self.owner.lock:
+            if not self.completed.done():
+                self.completed.set_result(None)
+            self.owner.pending.discard(self)
+
+    def close_unstarted(self, future: concurrent.futures.Future[str] | None = None) -> None:
+        if future is not None and not future.cancelled():
+            return
+        with self.owner.lock:
+            if self.started:
+                return
+            self.aborted = True
+            if isinstance(self.response, asyncio.Future):
+
+                def cancel_response() -> None:
+                    self.response.add_done_callback(self._settle)
+                    self.response.cancel()
+
+                self.owner.loop.call_soon_threadsafe(cancel_response)
+            else:
+                if inspect.iscoroutine(self.response):
+                    self.response.close()
+                self._settle()
+
+    async def resolve(self) -> str:
+        with self.owner.lock:
+            if self.aborted:
+                raise asyncio.CancelledError
+            self.started = True
+        task = asyncio.current_task()
+        assert task is not None
+        task.add_done_callback(self._settle)
+        return await self.response
+
+
+class _NestedModelRequests:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.lock = RLock()
+        self.pending: set[_NestedModelRequest] = set()
+        self.closed = False
+
+    def invoke(self, generate: Callable[[], Any]) -> Any:
+        with self.lock:
+            if self.closed:
+                raise concurrent.futures.CancelledError
+            request = _NestedModelRequest(self, None)
+            self.pending.add(request)
+        try:
+            response = generate()
+        except BaseException:
+            request._settle()
+            raise
+        request.response = response
+        if not inspect.isawaitable(response):
+            with self.lock:
+                request._settle()
+                closed = self.closed
+            if closed:
+                raise concurrent.futures.CancelledError
+            return response
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is self.loop:
+            request.close_unstarted()
+            raise RuntimeError(
+                "Synchronous model calls cannot block their owner event loop. "
+                "Use await ctx.async_llm.generate() instead."
+            )
+        return self.run(response, request=request)
+
+    def run(self, response: Any, *, request: _NestedModelRequest | None = None) -> str:
+        with self.lock:
+            request = request if request is not None else _NestedModelRequest(self, response)
+            if self.closed:
+                request.close_unstarted()
+                raise concurrent.futures.CancelledError
+            self.pending.add(request)
+            resolver = request.resolve()
+            try:
+                future = asyncio.run_coroutine_threadsafe(resolver, self.loop)
+            except BaseException:
+                resolver.close()
+                request.close_unstarted()
+                raise
+            request.future = future
+            future.add_done_callback(request.close_unstarted)
+        return future.result()
+
+    def _drain(self, requests: tuple[_NestedModelRequest, ...]) -> None:
+        for request in requests:
+            request.completed.result()
+
+    async def cancel_pending(self) -> None:
+        with self.lock:
+            self.closed = True
+            requests = tuple(self.pending)
+            for request in requests:
+                if request.future is not None:
+                    request.future.cancel()
+        if requests:
+            await _run_persistence(self._drain, requests)
+
+
 class _SyncBridgeLLM:
     """Provide synchronous model access to tools running in worker threads.
 
@@ -216,9 +334,16 @@ class _SyncBridgeLLM:
     on that loop. Async tools use ``ctx.async_llm`` directly.
     """
 
-    def __init__(self, backend: Any, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
+    def __init__(
+        self,
+        backend: Any,
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+        requests: _NestedModelRequests | None = None,
+    ) -> None:
         self._backend = backend
         self._loop = loop
+        self._requests = requests
 
     def generate(
         self,
@@ -228,12 +353,17 @@ class _SyncBridgeLLM:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> str:
-        result = self._backend.generate(
-            prompt,
-            max_tokens=max_tokens,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        )
+        def generate() -> Any:
+            return self._backend.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        if self._requests is not None:
+            return self._requests.invoke(generate)
+        result = generate()
         if inspect.isawaitable(result):
             if self._loop is not None:
                 try:
@@ -254,8 +384,6 @@ class _SyncBridgeLLM:
                 return asyncio.run_coroutine_threadsafe(resolve(), self._loop).result()
             # We're inside an event loop (async context). Use a thread
             # to run the coroutine without blocking the loop.
-            import concurrent.futures  # noqa: PLC0415
-
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -568,6 +696,7 @@ async def async_composable_loop(
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
     finalizer = _LoopFinalizer()
+    nested_requests = _NestedModelRequests(asyncio.get_running_loop())
     iterator = None
     original_cancellation: asyncio.CancelledError | None = None
     try:
@@ -588,6 +717,7 @@ async def async_composable_loop(
             _checkpoint_store=prepared.checkpoint_store,
             _initial_checkpoint=prepared.initial_checkpoint,
             _compact_service=prepared.compact_service,
+            _nested_requests=nested_requests,
         )
         async for step in iterator:
             yield step
@@ -611,7 +741,13 @@ async def async_composable_loop(
                 if iterator is not None:
                     await iterator.aclose()
             finally:
-                await finalizer.finish_async(suppress_errors=True)
+                try:
+                    await nested_requests.cancel_pending()
+                except asyncio.CancelledError:
+                    if original_cancellation is None:
+                        raise
+                finally:
+                    await finalizer.finish_async(suppress_errors=True)
         finally:
             try:
                 try:
@@ -676,6 +812,7 @@ async def _async_composable_loop_impl(
     _checkpoint_store: Any = None,
     _initial_checkpoint: Any = None,
     _compact_service: Any = None,
+    _nested_requests: _NestedModelRequests | None = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -936,7 +1073,7 @@ async def _async_composable_loop_impl(
     post_dispatch_parts: list[str] = []
     recovery_state: dict[str, Any] = {}
     all_step_entities: list[str] = []
-    _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop())
+    _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop(), requests=_nested_requests)
 
     def _get_llm() -> Any:
         if config.router is not None:
@@ -1144,7 +1281,9 @@ async def _async_composable_loop_impl(
             effective_llm.prepare_conversation(
                 _conv, _prepared.conversation_prompt, request_prompt=prompt
             )
-        _sync_llm = _SyncBridgeLLM(effective_llm, loop=asyncio.get_running_loop())
+        _sync_llm = _SyncBridgeLLM(
+            effective_llm, loop=asyncio.get_running_loop(), requests=_nested_requests
+        )
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(effective_llm, tools)

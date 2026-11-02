@@ -181,6 +181,156 @@ async def test_assistant_replay_requires_binding_and_checks_decisions(
             assert state.metadata["replay_policy_override"] == "counterfactual-stop"
 
 
+@pytest.mark.parametrize("error", [None, RuntimeError("Synthetic model failure")])
+def test_shared_model_failure_step_contract(error):
+    from looplet.loop import _failed_model_step
+    from looplet.scaffolding import LLMResult
+
+    step = _failed_model_step(7, LLMResult(text=None, error=error))
+    assert step.number == 7
+    assert step.tool_call.tool == step.tool_result.tool == "__llm_error__"
+    assert step.tool_call.reasoning == "LLM call failed"
+    assert step.tool_call.args == {}
+    assert step.tool_result.data is None
+    assert step.tool_result.args_summary == ""
+    assert step.tool_result.error == (
+        str(error) if error is not None else "LLM call failed after all retry attempts"
+    )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 3])
+@pytest.mark.parametrize("message", ["", "Synthetic terminal refusal"])
+async def test_terminal_failure_capture_preserves_stop_reason_and_one_attempt(
+    tmp_path, monkeypatch, asynchronous, native, model_limit, message
+):
+    from looplet import RunResult, run_result, run_result_async
+    from looplet._backend_contract import TerminalLLMError
+    from looplet.provenance import async_replay_loop
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append("generate")
+            raise TerminalLLMError(message, termination_reason="synthetic_terminal_refusal")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            requests.append("generate_with_tools")
+            raise TerminalLLMError(message, termination_reason="synthetic_terminal_refusal")
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    sink = ProvenanceSink(tmp_path / "capture")
+    registry = tools_from([], include_done=True)
+    config = LoopConfig(
+        max_steps=2,
+        max_model_calls=model_limit,
+        use_native_tools=native,
+        harness_profile="minimal",
+        run_dir=str(tmp_path / "source-run"),
+    )
+    source_kwargs = {
+        "llm": sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+        "tools": registry,
+        "config": config,
+        "hooks": [sink.trajectory_hook()],
+    }
+    original = (
+        await run_result_async(**source_kwargs) if asynchronous else run_result(**source_kwargs)
+    )
+    assert len(requests) == 1
+    assert original.termination_reason == "synthetic_terminal_refusal"
+    trace = sink.flush()
+    calls = _load_trace_calls(trace)
+    assert len(calls) == 1
+    assert calls[0]["error"] == f"TerminalLLMError: {message}"
+    assert calls[0]["terminal_error"] == {
+        "schema": "looplet.terminal-error.v1",
+        "termination_reason": "synthetic_terminal_refusal",
+    }
+    assert calls[0]["schema"] == (
+        "looplet.model-call.v1" if model_limit is None else "looplet.model-call.v2"
+    )
+    attempts = []
+    next_call = _ReplayLLMBackend._next
+
+    def observe_attempt(backend, method):
+        attempts.append(method)
+        return next_call(backend, method)
+
+    monkeypatch.setattr(_ReplayLLMBackend, "_next", observe_attempt)
+    state = DefaultState(max_steps=2)
+    kwargs = {
+        "trace_dir": trace,
+        "tools": registry,
+        "state": state,
+        "config": LoopConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            harness_profile="minimal",
+            run_dir=str(tmp_path / "replay-run"),
+        ),
+    }
+    if asynchronous:
+        steps = [step async for step in async_replay_loop(**kwargs)]
+    else:
+        steps = list(replay_loop(**kwargs))
+    replayed = RunResult.from_state(state)
+    assert attempts == ["generate_with_tools" if native else "generate"]
+    assert replayed.termination_reason == original.termination_reason
+    assert replayed.status == original.status
+    assert len(steps) == len(original.steps) == 1
+    assert steps[0].tool_call.tool == "__llm_error__"
+    assert calls[0]["error"] in steps[0].tool_result.error
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "terminal,error",
+    [
+        ({}, "Synthetic failure"),
+        ("terminal", "Synthetic failure"),
+        ({"schema": "future", "termination_reason": "stop"}, "Synthetic failure"),
+        ({"schema": "looplet.terminal-error.v1", "termination_reason": ""}, "Synthetic failure"),
+        ({"schema": "looplet.terminal-error.v1", "termination_reason": False}, "Synthetic failure"),
+        ({"schema": "looplet.terminal-error.v1", "termination_reason": []}, "Synthetic failure"),
+        (
+            {"schema": "looplet.terminal-error.v1", "termination_reason": "stop", "extra": True},
+            "Synthetic failure",
+        ),
+        ({"schema": "looplet.terminal-error.v1", "termination_reason": "stop"}, None),
+    ],
+)
+def test_replay_rejects_malformed_terminal_error_metadata(tmp_path, terminal, error):
+    trace = _captured_dir(tmp_path)
+    manifest = trace / "manifest.jsonl"
+    entries = [json.loads(line) for line in manifest.read_text().splitlines()]
+    entries[0]["capture"]["terminal_error"] = terminal
+    entries[0]["capture"]["error"] = error
+    manifest.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    with pytest.raises(ValueError, match="invalid terminal error capture"):
+        _load_trace_calls(trace)
+
+
+def test_legacy_terminal_error_text_does_not_infer_structured_semantics():
+    from looplet._backend_contract import TerminalLLMError
+
+    backend = _ReplayLLMBackend(
+        [{"method": "generate", "response": "", "error": "TerminalLLMError: Legacy failure"}]
+    )
+    with pytest.raises(RuntimeError, match="Legacy failure") as caught:
+        backend.generate("Synthetic replay")
+    assert not isinstance(caught.value, TerminalLLMError)
+
+
 class TestReplayLoopSmoke:
     @pytest.mark.parametrize("native", [False, True])
     def test_structured_capture_reconstructs_without_parsing_text_projections(

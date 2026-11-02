@@ -69,6 +69,7 @@ from looplet.loop import (
     _default_build_briefing,
     _default_extract_entities,
     _emit_hook_decision_event_async,
+    _failed_model_step,
     _intercept_tool_calls_async,
     _mark_failed_state,
     _normalize_loop_inputs,
@@ -1574,18 +1575,7 @@ async def _async_composable_loop_impl(
                 stop_reason = "cancelled"
                 break
             llm_failed = True
-            error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed")
-            error_result = ToolResult(
-                tool="__llm_error__",
-                args_summary="",
-                data=None,
-                error=(
-                    str(llm_result.error)
-                    if llm_result.error is not None
-                    else "LLM call failed after all retry attempts"
-                ),
-            )
-            step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
+            step = _failed_model_step(step_num, llm_result)
             state.steps.append(step)
             yield step
             stop_reason = llm_result.failure_reason

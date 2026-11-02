@@ -347,6 +347,7 @@ class _RecordingBase:
         tools: list[dict[str, Any]] | None,
         started_at: float,
         error: str | None = None,
+        termination_reason: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> LLMCall:
         duration_ms = (time.time() - started_at) * 1000.0
@@ -399,6 +400,16 @@ class _RecordingBase:
                         ),
                         "usage": getattr(self._backend, "last_usage", {}) if error is None else {},
                         "error": error,
+                        **(
+                            {
+                                "terminal_error": {
+                                    "schema": "looplet.terminal-error.v1",
+                                    "termination_reason": termination_reason,
+                                }
+                            }
+                            if termination_reason is not None
+                            else {}
+                        ),
                     }
                 ),
                 self._redact,
@@ -525,6 +536,7 @@ class RecordingLLMBackend(_RecordingBase):
     ) -> str:
         started = time.time()
         error: str | None = None
+        termination_reason: str | None = None
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
@@ -542,6 +554,8 @@ class RecordingLLMBackend(_RecordingBase):
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
             raise
         finally:
             self._record(
@@ -554,6 +568,7 @@ class RecordingLLMBackend(_RecordingBase):
                 tools=None,
                 started_at=started,
                 error=error,
+                termination_reason=termination_reason,
                 options=options,
             )
 
@@ -569,6 +584,7 @@ class RecordingLLMBackend(_RecordingBase):
     ) -> list[dict[str, Any]]:
         started = time.time()
         error: str | None = None
+        termination_reason: str | None = None
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
@@ -587,6 +603,8 @@ class RecordingLLMBackend(_RecordingBase):
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
             raise
         finally:
             self._record(
@@ -599,6 +617,7 @@ class RecordingLLMBackend(_RecordingBase):
                 tools=tools,
                 started_at=started,
                 error=error,
+                termination_reason=termination_reason,
                 options=options,
             )
 
@@ -636,6 +655,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
 
         started = time.time()
         error: str | None = None
+        termination_reason: str | None = None
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
@@ -654,6 +674,8 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
             raise
         finally:
             self._record(
@@ -666,6 +688,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 tools=None,
                 started_at=started,
                 error=error,
+                termination_reason=termination_reason,
                 options=options,
             )
 
@@ -683,6 +706,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
 
         started = time.time()
         error: str | None = None
+        termination_reason: str | None = None
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
@@ -702,6 +726,8 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
             raise
         finally:
             self._record(
@@ -714,6 +740,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 tools=tools,
                 started_at=started,
                 error=error,
+                termination_reason=termination_reason,
                 options=options,
             )
 
@@ -1372,6 +1399,12 @@ class _ReplayLLMBackend:
     def _raise_recorded_error(call: dict[str, Any]) -> None:
         error = call.get("error")
         if error:
+            terminal = call.get("terminal_error")
+            if terminal is not None:
+                raise TerminalLLMError(
+                    f"replayed LLM call failed: {error}",
+                    termination_reason=terminal["termination_reason"],
+                )
             raise RuntimeError(f"replayed LLM call failed: {error}")
 
 
@@ -1427,6 +1460,19 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
                     or "response" not in capture
                 ):
                     raise ValueError(f"invalid structured capture in {manifest} line {line_number}")
+                terminal = capture.get("terminal_error")
+                if terminal is not None and (
+                    not isinstance(terminal, dict)
+                    or set(terminal) != {"schema", "termination_reason"}
+                    or terminal.get("schema") != "looplet.terminal-error.v1"
+                    or not isinstance(terminal.get("termination_reason"), str)
+                    or not terminal["termination_reason"]
+                    or not isinstance(capture.get("error"), str)
+                    or not capture["error"]
+                ):
+                    raise ValueError(
+                        f"invalid terminal error capture in {manifest} line {line_number}"
+                    )
                 if capture.get("schema") == "looplet.model-call.v2":
                     from looplet.assistant_turns import TURN_STATE_SCHEMA
 

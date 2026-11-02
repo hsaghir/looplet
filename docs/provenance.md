@@ -35,6 +35,11 @@ for step in replay_loop(trace_dir, tools=tools):
 **Source preview:** Default replay restores recorded primary and alternate terminal tool names.
 An explicit `config` overrides those defaults.
 
+**Unreleased:** New captures preserve terminal model-error classification and termination reasons.
+Replay does not retry those failures.
+Malformed terminal-error metadata is rejected before replay starts.
+Legacy errors remain text records; their classification is not inferred.
+
 **Two primitives, one facade, two extras:**
 
 | Class / function               | What it does                                              | Implements                       |

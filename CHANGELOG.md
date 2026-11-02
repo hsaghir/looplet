@@ -34,6 +34,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async tool model requests share the run-owned admission and shutdown boundary. Retained tool contexts cannot start model requests after closure.
 - Captured terminal model errors retain structured classification and termination reasons during replay. Legacy error text remains supported without inferred classifications.
 - Sync and async drivers share model-failure step construction. Dispatch, awaiting, and persistence remain driver-owned.
 - Async cancellation closes nested request admission before backend invocation and drains admitted requests before terminal checkpoints. Late tool-thread calls cannot invoke the backend. Cancellation does not terminate arbitrary tool threads.

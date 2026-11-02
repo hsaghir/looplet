@@ -201,8 +201,9 @@ def test_shared_model_failure_step_contract(error):
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("model_limit", [None, 3])
+@pytest.mark.parametrize("message", ["", "Synthetic terminal refusal"])
 async def test_terminal_failure_capture_preserves_stop_reason_and_one_attempt(
-    tmp_path, monkeypatch, asynchronous, native, model_limit
+    tmp_path, monkeypatch, asynchronous, native, model_limit, message
 ):
     from looplet import RunResult, run_result, run_result_async
     from looplet._backend_contract import TerminalLLMError
@@ -213,15 +214,11 @@ async def test_terminal_failure_capture_preserves_stop_reason_and_one_attempt(
     class Backend:
         def generate(self, prompt, **kwargs):
             requests.append("generate")
-            raise TerminalLLMError(
-                "Synthetic terminal refusal", termination_reason="synthetic_terminal_refusal"
-            )
+            raise TerminalLLMError(message, termination_reason="synthetic_terminal_refusal")
 
         def generate_with_tools(self, prompt, **kwargs):
             requests.append("generate_with_tools")
-            raise TerminalLLMError(
-                "Synthetic terminal refusal", termination_reason="synthetic_terminal_refusal"
-            )
+            raise TerminalLLMError(message, termination_reason="synthetic_terminal_refusal")
 
     class AsyncBackend(Backend):
         async def generate(self, prompt, **kwargs):
@@ -253,6 +250,7 @@ async def test_terminal_failure_capture_preserves_stop_reason_and_one_attempt(
     trace = sink.flush()
     calls = _load_trace_calls(trace)
     assert len(calls) == 1
+    assert calls[0]["error"] == f"TerminalLLMError: {message}"
     assert calls[0]["terminal_error"] == {
         "schema": "looplet.terminal-error.v1",
         "termination_reason": "synthetic_terminal_refusal",
@@ -291,7 +289,7 @@ async def test_terminal_failure_capture_preserves_stop_reason_and_one_attempt(
     assert replayed.status == original.status
     assert len(steps) == len(original.steps) == 1
     assert steps[0].tool_call.tool == "__llm_error__"
-    assert "Synthetic terminal refusal" in steps[0].tool_result.error
+    assert calls[0]["error"] in steps[0].tool_result.error
     assert len(requests) == 1
 
 

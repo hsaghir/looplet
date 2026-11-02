@@ -39,6 +39,7 @@ import logging
 import time
 from contextlib import aclosing
 from dataclasses import replace as _dc_replace
+from functools import wraps
 from threading import RLock
 from typing import Any, AsyncGenerator, Callable, Sequence
 
@@ -217,6 +218,7 @@ class _NestedModelRequest:
         self.owner = owner
         self.response = response
         self.future: concurrent.futures.Future[str] | None = None
+        self.task: asyncio.Task[str] | None = None
         self.completed: concurrent.futures.Future[None] = concurrent.futures.Future()
         self.started = False
         self.aborted = False
@@ -227,7 +229,9 @@ class _NestedModelRequest:
                 self.completed.set_result(None)
             self.owner.pending.discard(self)
 
-    def close_unstarted(self, future: concurrent.futures.Future[str] | None = None) -> None:
+    def close_unstarted(
+        self, future: concurrent.futures.Future[str] | asyncio.Future[str] | None = None
+    ) -> None:
         if future is not None and not future.cancelled():
             return
         with self.owner.lock:
@@ -295,6 +299,37 @@ class _NestedModelRequests:
             )
         return self.run(response, request=request)
 
+    async def invoke_async(self, generate: Callable[[], Any]) -> Any:
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("Async helper model calls must use their owner event loop.")
+        with self.lock:
+            if self.closed:
+                raise asyncio.CancelledError
+            request = _NestedModelRequest(self, None)
+            self.pending.add(request)
+        try:
+            response = generate()
+        except BaseException:
+            request._settle()
+            raise
+        request.response = response
+        with self.lock:
+            if self.closed:
+                request.close_unstarted()
+                raise asyncio.CancelledError
+            if not inspect.isawaitable(response):
+                request._settle()
+                return response
+            resolver = request.resolve()
+            try:
+                request.task = self.loop.create_task(resolver)
+            except BaseException:
+                resolver.close()
+                request.close_unstarted()
+                raise
+            request.task.add_done_callback(request.close_unstarted)
+        return await request.task
+
     def run(self, response: Any, *, request: _NestedModelRequest | None = None) -> str:
         with self.lock:
             request = request if request is not None else _NestedModelRequest(self, response)
@@ -324,15 +359,36 @@ class _NestedModelRequests:
             for request in requests:
                 if request.future is not None:
                     request.future.cancel()
+                if request.task is not None:
+                    request.task.cancel()
         if requests:
             await _run_persistence(self._drain, requests)
+
+
+class _AsyncBridgeLLM:
+    """Keep asynchronous tool model requests inside their host run."""
+
+    def __init__(self, backend: Any, requests: _NestedModelRequests) -> None:
+        self._backend = backend
+        self._requests = requests
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._backend, name)
+        if name not in {"generate", "generate_with_tools"} or not callable(method):
+            return method
+
+        @wraps(method)
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
+            return await self._requests.invoke_async(lambda: method(*args, **kwargs))
+
+        return invoke
 
 
 class _SyncBridgeLLM:
     """Provide synchronous model access to tools running in worker threads.
 
     The async loop supplies its running loop so async backend calls stay
-    on that loop. Async tools use ``ctx.async_llm`` directly.
+    on that loop. Async tools use an owned ``ctx.async_llm`` proxy.
     """
 
     def __init__(
@@ -1088,6 +1144,12 @@ async def _async_composable_loop_impl(
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
         return loop_ctx.llm
 
+    def _get_async_tool_llm() -> Any:
+        backend = _get_llm()
+        return (
+            _AsyncBridgeLLM(backend, _nested_requests) if _nested_requests is not None else backend
+        )
+
     async def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
         if _ckpt_store is None:
             return
@@ -1792,7 +1854,7 @@ async def _async_composable_loop_impl(
                                 state=state,
                                 session_log=session_log,
                                 llm=_sync_llm,
-                                async_llm=_get_llm(),
+                                async_llm=_get_async_tool_llm(),
                             )
                             for index, call in dispatch_items
                         ]
@@ -2057,7 +2119,7 @@ async def _async_composable_loop_impl(
                     state=state,
                     session_log=session_log,
                     llm=_sync_llm,
-                    async_llm=_get_llm(),
+                    async_llm=_get_async_tool_llm(),
                 )
                 if (
                     _ckpt_store is not None

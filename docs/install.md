@@ -7,7 +7,7 @@ Model provider adapters are optional extras.
 ## Install the current build
 
 Use this **unreleased source preview** for the [Python quickstart](python.md).
-It includes the Python-first API and the run ownership fixes at the pinned revision.
+It includes the Python-first API, run-owned synchronous and asynchronous helper requests, and terminal-error replay fixes.
 The pin does not track later changes on master.
 Those additions are not in PyPI `0.4.1`.
 Use the [published package](#install-the-published-package) when you need that released API.
@@ -15,7 +15,7 @@ Use the [published package](#install-the-published-package) when you need that r
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
 ```
 
 Installation needs network access, but no Git checkout.
@@ -39,7 +39,7 @@ Install the adapter from the same preview revision.
 For OpenAI or a compatible endpoint:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
 ```
 
 Use `[anthropic]` for Anthropic or `[all]` for both adapters.

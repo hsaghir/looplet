@@ -17,7 +17,7 @@ Create a virtual environment and install the preview:
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
 ```
 
 Installation needs network access, but no Git checkout.
@@ -260,7 +260,7 @@ Replace the scripted backend when the offline example works.
 Install the OpenAI adapter from the same revision:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a12111947e901b53c314caab939ad5a64bed25c7.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
 ```
 
 Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.

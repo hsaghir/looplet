@@ -2777,6 +2777,23 @@ def _rejected_terminal_step(
     )
 
 
+def _failed_model_step(step_num: int, result: LLMResult) -> Step:
+    return Step(
+        number=step_num,
+        tool_call=ToolCall(tool="__llm_error__", reasoning="LLM call failed"),
+        tool_result=ToolResult(
+            tool="__llm_error__",
+            args_summary="",
+            data=None,
+            error=(
+                str(result.error)
+                if result.error is not None
+                else "LLM call failed after all retry attempts"
+            ),
+        ),
+    )
+
+
 def _composable_loop_impl(
     llm: Any,
     task: Any = None,
@@ -3620,18 +3637,7 @@ def _composable_loop_impl(
                 break
             llm_failed = True
             logger.error("LLM call failed at step %d: %s", step_num, llm_result.error)
-            error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed")
-            error_result = ToolResult(
-                tool="__llm_error__",
-                args_summary="",
-                data=None,
-                error=(
-                    str(llm_result.error)
-                    if llm_result.error is not None
-                    else "LLM call failed after all retry attempts"
-                ),
-            )
-            step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
+            step = _failed_model_step(step_num, llm_result)
             state.steps.append(step)
             yield step
             stop_reason = llm_result.failure_reason

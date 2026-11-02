@@ -109,7 +109,12 @@ def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
         r"looplet(?:\[[a-z,]+\])? @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)"
     )
     pins = set(re.findall(source_pattern, install))
-    assert len(pins) == 1
+    preview = (
+        "https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
+    )
+    assert pins == {preview}
+    assert "synchronous and asynchronous helper requests" in install
+    assert "terminal-error replay fixes" in install
     for document in ("README.md", "docs/python.md", "docs/quickstart.md"):
         assert set(re.findall(source_pattern, (ROOT / document).read_text())) == pins
 

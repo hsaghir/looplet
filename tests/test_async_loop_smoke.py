@@ -330,6 +330,111 @@ async def test_async_helper_scheduling_failure_disposes_response(monkeypatch, re
         assert returned.cancelled()
 
 
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_async_helper_immediate_response_settles_request(method, fails):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    requests = _NestedModelRequests(asyncio.get_running_loop())
+    calls = []
+    failure = RuntimeError("Synthetic immediate failure")
+    response = "owned result" if method == "generate" else [{"type": "text", "text": "owned"}]
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            assert len(requests.pending) == 1
+            calls.append((prompt, kwargs))
+            if fails:
+                raise failure
+            return response
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    try:
+        call = getattr(_AsyncBridgeLLM(Backend(), requests), method)
+        if fails:
+            with pytest.raises(RuntimeError, match="Synthetic immediate failure") as caught:
+                await call("nested immediate", **arguments)
+            assert caught.value is failure
+        else:
+            assert await call("nested immediate", **arguments) is response
+        assert calls == [("nested immediate", arguments)]
+        assert not requests.pending
+    finally:
+        await requests.cancel_pending()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+async def test_async_helper_foreign_loop_refusal_precedes_backend_invocation(method):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    foreign_loop = asyncio.new_event_loop()
+    requests = _NestedModelRequests(foreign_loop)
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "unexpected"
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    try:
+        with pytest.raises(RuntimeError, match="owner event loop"):
+            await getattr(_AsyncBridgeLLM(Backend(), requests), method)(
+                "nested foreign", **arguments
+            )
+        assert calls == []
+        assert not requests.pending
+    finally:
+        await requests.cancel_pending()
+        foreign_loop.close()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+@pytest.mark.parametrize("response_kind", ["coroutine", "future"])
+async def test_async_helper_prestart_cancellation_disposes_response(method, response_kind):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+    effects = []
+
+    async def response():
+        effects.append("started")
+        return "unexpected"
+
+    returned = response() if response_kind == "coroutine" else owner.create_future()
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel("cancel before resolver starts")
+            return returned
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    pending = owner.create_task(
+        getattr(_AsyncBridgeLLM(Backend(), requests), method)("nested cancelled", **arguments)
+    )
+    try:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("cancel before resolver starts",)
+    finally:
+        await requests.cancel_pending()
+    assert effects == []
+    assert not requests.pending
+    if response_kind == "coroutine":
+        assert returned.cr_frame is None
+    else:
+        assert returned.cancelled()
+
+
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("model_limit", [None, 3])
 @pytest.mark.parametrize("tool_mode", ["sync", "async"])

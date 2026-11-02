@@ -110,6 +110,332 @@ class _NestedResponseBackend(AsyncMockLLMBackend):
 
 
 @pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 4])
+@pytest.mark.parametrize("access", ["async", "bridge"])
+@pytest.mark.parametrize("cancel_host", [False, True])
+async def test_detached_helper_requests_settle_before_runtime_returns(
+    tmp_path, native, model_limit, access, cancel_host
+):
+    from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    tool_released = asyncio.Event()
+    cancelled = asyncio.Event()
+    active = []
+    effects = []
+    children = []
+
+    async def nested_response(prompt):
+        active.append(prompt)
+        entered.set()
+        try:
+            await released.wait()
+            return "nested answer"
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            active.remove(prompt)
+
+    async def helper(ctx: ToolContext):
+        async def request():
+            answer = (
+                await ctx.async_llm.generate("nested blocked")
+                if access == "async"
+                else await asyncio.to_thread(ctx.llm.generate, "nested blocked")
+            )
+            effects.append(answer)
+
+        children.append(asyncio.create_task(request()))
+        await entered.wait()
+        if cancel_host:
+            await tool_released.wait()
+        return {"scheduled": True}
+
+    backend = _NestedResponseBackend(
+        ['{"tool":"helper","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'],
+        nested_response,
+    )
+    preset = AgentPreset(
+        tools=tools_from([helper], include_done=True),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    )
+    runtime = AgentRuntime(preset, store=MemoryRunStore())
+    pending = asyncio.create_task(runtime.run_async(backend))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        if cancel_host:
+            pending.cancel("host interruption")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await pending
+            assert caught.value.args == ("host interruption",)
+        else:
+            result = await asyncio.wait_for(asyncio.shield(pending), timeout=5)
+            assert result.completed or (
+                native and model_limit == 4 and result.termination_reason == "unsupported_context"
+            )
+        assert not runtime._active_tokens
+        assert active == []
+        assert cancelled.is_set()
+        released.set()
+        await asyncio.wait_for(asyncio.gather(*children, return_exceptions=True), timeout=5)
+        assert effects == []
+    finally:
+        released.set()
+        tool_released.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        for child in children:
+            if not child.done():
+                child.cancel()
+        await asyncio.gather(*children, return_exceptions=True)
+        runtime.close()
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 4])
+@pytest.mark.parametrize("access", ["async", "bridge"])
+async def test_retained_tool_model_access_refuses_requests_after_run_returns(
+    tmp_path, native, model_limit, access
+):
+    from looplet import AgentPreset, AgentRuntime, MemoryRunStore, tools_from
+
+    retained = []
+    requests = []
+
+    async def nested_response(prompt):
+        requests.append(prompt)
+        return "late answer"
+
+    async def helper(ctx: ToolContext):
+        retained.append(ctx)
+        return {"saved": True}
+
+    backend = _NestedResponseBackend(
+        ['{"tool":"helper","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'],
+        nested_response,
+    )
+    preset = AgentPreset(
+        tools=tools_from([helper], include_done=True),
+        state=DefaultState(max_steps=2),
+        hooks=[],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            harness_profile="minimal",
+            run_dir=str(tmp_path),
+        ),
+    )
+    runtime = AgentRuntime(preset, store=MemoryRunStore())
+    try:
+        result = await runtime.run_async(backend)
+        assert result.completed and not runtime._active_tokens
+        before = backend.calls
+        with pytest.raises(asyncio.CancelledError):
+            if access == "async":
+                await retained[0].async_llm.generate("nested late")
+            else:
+                await asyncio.to_thread(retained[0].llm.generate, "nested late")
+        assert requests == []
+        assert backend.calls == before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+async def test_async_helper_proxy_preserves_method_signature_and_result(method):
+    import inspect
+
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    requests = _NestedModelRequests(asyncio.get_running_loop())
+    calls = []
+
+    class Backend:
+        supports_stateless_text_generation = True
+
+        async def generate(self, prompt, *, max_tokens=2000):
+            calls.append((prompt, max_tokens))
+            return "owned result"
+
+        async def generate_with_tools(self, prompt, *, tools, max_tokens=2000):
+            calls.append((prompt, max_tokens, tools))
+            return [{"type": "text", "text": "owned result"}]
+
+    backend = Backend()
+    proxy = _AsyncBridgeLLM(backend, requests)
+    original = getattr(backend, method)
+    wrapped = getattr(proxy, method)
+    assert inspect.signature(wrapped) == inspect.signature(original)
+    assert inspect.iscoroutinefunction(wrapped)
+    assert proxy.supports_stateless_text_generation is True
+    arguments = {"max_tokens": 17, **({"tools": []} if method == "generate_with_tools" else {})}
+    try:
+        result = await wrapped("nested signature", **arguments)
+        assert result == (
+            "owned result" if method == "generate" else [{"type": "text", "text": "owned result"}]
+        )
+        assert calls == [
+            ("nested signature", 17) if method == "generate" else ("nested signature", 17, [])
+        ]
+    finally:
+        await requests.cancel_pending()
+    assert not requests.pending
+    with pytest.raises(asyncio.CancelledError):
+        await wrapped("nested late", **arguments)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("response_kind", ["coroutine", "future"])
+async def test_async_helper_scheduling_failure_disposes_response(monkeypatch, response_kind):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+
+    async def response():
+        return "unused"
+
+    returned = response() if response_kind == "coroutine" else owner.create_future()
+
+    class Backend:
+        def generate(self, prompt):
+            return returned
+
+    def refuse_schedule(coroutine, **kwargs):
+        raise RuntimeError("Synthetic scheduling refusal")
+
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(owner, "create_task", refuse_schedule)
+            with pytest.raises(RuntimeError, match="Synthetic scheduling refusal"):
+                await _AsyncBridgeLLM(Backend(), requests).generate("nested refused")
+    finally:
+        await requests.cancel_pending()
+    assert not requests.pending
+    if response_kind == "coroutine":
+        assert returned.cr_frame is None
+    else:
+        assert returned.cancelled()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_async_helper_immediate_response_settles_request(method, fails):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    requests = _NestedModelRequests(asyncio.get_running_loop())
+    calls = []
+    failure = RuntimeError("Synthetic immediate failure")
+    response = "owned result" if method == "generate" else [{"type": "text", "text": "owned"}]
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            assert len(requests.pending) == 1
+            calls.append((prompt, kwargs))
+            if fails:
+                raise failure
+            return response
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    try:
+        call = getattr(_AsyncBridgeLLM(Backend(), requests), method)
+        if fails:
+            with pytest.raises(RuntimeError, match="Synthetic immediate failure") as caught:
+                await call("nested immediate", **arguments)
+            assert caught.value is failure
+        else:
+            assert await call("nested immediate", **arguments) is response
+        assert calls == [("nested immediate", arguments)]
+        assert not requests.pending
+    finally:
+        await requests.cancel_pending()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+async def test_async_helper_foreign_loop_refusal_precedes_backend_invocation(method):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    foreign_loop = asyncio.new_event_loop()
+    requests = _NestedModelRequests(foreign_loop)
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "unexpected"
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    try:
+        with pytest.raises(RuntimeError, match="owner event loop"):
+            await getattr(_AsyncBridgeLLM(Backend(), requests), method)(
+                "nested foreign", **arguments
+            )
+        assert calls == []
+        assert not requests.pending
+    finally:
+        await requests.cancel_pending()
+        foreign_loop.close()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools"])
+@pytest.mark.parametrize("response_kind", ["coroutine", "future"])
+async def test_async_helper_prestart_cancellation_disposes_response(method, response_kind):
+    from looplet.async_loop import _AsyncBridgeLLM, _NestedModelRequests
+
+    owner = asyncio.get_running_loop()
+    requests = _NestedModelRequests(owner)
+    effects = []
+
+    async def response():
+        effects.append("started")
+        return "unexpected"
+
+    returned = response() if response_kind == "coroutine" else owner.create_future()
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel("cancel before resolver starts")
+            return returned
+
+        generate_with_tools = generate
+
+    arguments = {"tools": []} if method == "generate_with_tools" else {}
+    pending = owner.create_task(
+        getattr(_AsyncBridgeLLM(Backend(), requests), method)("nested cancelled", **arguments)
+    )
+    try:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("cancel before resolver starts",)
+    finally:
+        await requests.cancel_pending()
+    assert effects == []
+    assert not requests.pending
+    if response_kind == "coroutine":
+        assert returned.cr_frame is None
+    else:
+        assert returned.cancelled()
+
+
+@pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("model_limit", [None, 3])
 @pytest.mark.parametrize("tool_mode", ["sync", "async"])
 async def test_nested_tool_inference_stops_before_runtime_cancellation_returns(

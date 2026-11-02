@@ -226,9 +226,12 @@ An optional positive `max_assistant_turns` limits consecutive assistant-only tur
 Only a genuine tool proposal resets that counter. Rejected text completion does not reset it.
 Tool-step budgets and `max_turn_continuations` retain their separate meanings.
 Host aggregate budgets, child restrictions, and the original deadline remain authoritative.
-Async cancellation closes nested request admission before backend invocation.
+Async run closure closes nested request admission before backend invocation.
+Both `ctx.llm` and `ctx.async_llm` use this boundary.
 Admitted backend invocations and their async responses settle before terminal checkpoints.
-Later calls from surviving tool threads are refused without invoking the backend.
+Later model calls through retained tool contexts are refused without invoking the backend.
+Async helpers must run on the owner event loop.
+Host-supplied backend objects remain open.
 Blocking synchronous backends still need their own I/O deadlines.
 It does not terminate arbitrary Python threads or undo completed external effects.
 Use an isolated backend for stateful helper or child inference, together with the host's shared budget.
@@ -348,7 +351,7 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 | `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop.                                                          |
 | `register_done_tool(...)`              | Add the completion tool to a custom registry.                                                                                            |
 | `ToolContext`                          | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool.                                |
-| `ToolContext.async_llm`                | Access the async backend inside async tools or child loops without the synchronous bridge.                                               |
+| `ToolContext.async_llm`                | Run-owned async model access inside async tools or child loops.                                                                           |
 | `ToolError` / `ToolValidationError`    | Return or test structured failures without parsing exception text.                                                                       |
 
 Start with ordinary typed functions passed directly to the loop in current source builds.

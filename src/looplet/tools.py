@@ -1444,6 +1444,9 @@ class BaseToolRegistry:
         if ctxs is not None and len(ctxs) != len(calls):
             raise ValueError("ctx sequence length must match calls length")
 
+        async def _dispatch(call: ToolCall, call_ctx: ToolContext | None) -> ToolResult:
+            return await self.async_dispatch(call, ctx=call_ctx)
+
         results: list[ToolResult] = []
         offset = 0
         for batch in self._partition_calls(calls):
@@ -1453,7 +1456,7 @@ class BaseToolRegistry:
                 worker_limit = min(max_concurrent or len(batch_calls), len(batch_calls))
                 batch_results: list[ToolResult | None] = [None] * len(batch_calls)
                 remaining = iter(enumerate(batch_calls))
-                pending: dict[asyncio.Future[ToolResult], int] = {}
+                pending: dict[asyncio.Task[ToolResult], int] = {}
                 cancelled: asyncio.CancelledError | None = None
                 try:
                     while True:
@@ -1463,7 +1466,7 @@ class BaseToolRegistry:
                                 break
                             index, call = entry
                             call_ctx = batch_ctxs[index] if batch_ctxs is not None else shared_ctx
-                            future = asyncio.ensure_future(self.async_dispatch(call, ctx=call_ctx))
+                            future = asyncio.create_task(_dispatch(call, call_ctx))
                             pending[future] = index
                         if not pending:
                             break

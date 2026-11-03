@@ -7,6 +7,43 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 
+@pytest.mark.parametrize("ready", [False, True])
+async def test_async_dispatch_batch_preserves_shared_future_result_slots(monkeypatch, ready):
+    import asyncio
+
+    from looplet import ToolCall, ToolResult, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    loop = asyncio.get_running_loop()
+    shared = loop.create_future()
+    result = ToolResult(tool="work", args_summary="", data={"answer": 405})
+    call = ToolCall(tool="work", call_id="shared")
+    admitted = []
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={},
+            execute=lambda: {"answer": 405},
+            concurrent_safe=True,
+        )
+    )
+
+    def dispatch(call, *, ctx=None):
+        admitted.append(call)
+        if not ready and len(admitted) == 2:
+            loop.call_soon(shared.set_result, result)
+        return shared
+
+    if ready:
+        shared.set_result(result)
+    monkeypatch.setattr(registry, "async_dispatch", dispatch)
+    results = await registry.async_dispatch_batch([call, call], max_concurrent=2)
+    assert admitted == [call, call]
+    assert results == [result, result]
+
+
 async def test_async_dispatch_batch_refills_free_slots():
     import asyncio
 

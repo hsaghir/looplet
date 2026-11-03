@@ -160,6 +160,7 @@ The positive integer `max_parallel_calls` bounds active dispatch tasks, not just
 Direct `registry.async_dispatch_batch(..., max_concurrent=4)` uses the same scheduler.
 Its `max_concurrent=None` default allows the whole concurrent-safe group.
 Results retain input order, and each call keeps its supplied context and separate task state.
+Each call retains its result slot even when a dispatch adapter returns a shared Future.
 Cancellation or an unexpected dispatch failure cancels and drains started concurrent dispatches.
 Repeated caller cancellation does not interrupt their async cleanup.
 Ordinary tool errors remain results and do not stop queued calls.

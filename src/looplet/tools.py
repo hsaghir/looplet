@@ -1432,17 +1432,29 @@ class BaseToolRegistry:
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
         max_concurrent: int | None = None,
     ) -> list[ToolResult]:
-        """Dispatch calls asynchronously while preserving input order."""
+        """Dispatch calls asynchronously while preserving input order.
+
+        Refill free slots within consecutive concurrent-safe groups.
+        ``max_concurrent`` bounds dispatch tasks; ``None`` allows the whole group.
+        Cancelled concurrent groups drain their started dispatches.
+        """
         import asyncio  # noqa: PLC0415
 
         if not calls:
             return []
-        if max_concurrent is not None and max_concurrent <= 0:
-            raise ValueError("max_concurrent must be positive")
+        if max_concurrent is not None and (
+            isinstance(max_concurrent, bool)
+            or not isinstance(max_concurrent, int)
+            or max_concurrent <= 0
+        ):
+            raise ValueError("max_concurrent must be a positive integer")
         ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
         shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
         if ctxs is not None and len(ctxs) != len(calls):
             raise ValueError("ctx sequence length must match calls length")
+
+        async def _dispatch(call: ToolCall, call_ctx: ToolContext | None) -> ToolResult:
+            return await self.async_dispatch(call, ctx=call_ctx)
 
         results: list[ToolResult] = []
         offset = 0
@@ -1450,27 +1462,42 @@ class BaseToolRegistry:
             batch_calls = batch["calls"]
             batch_ctxs = ctxs[offset : offset + len(batch_calls)] if ctxs is not None else None
             if batch["concurrent"] and len(batch_calls) > 1:
-                worker_limit = max_concurrent or len(batch_calls)
-                for start in range(0, len(batch_calls), worker_limit):
-                    chunk = batch_calls[start : start + worker_limit]
-                    chunk_ctxs = (
-                        batch_ctxs[start : start + worker_limit] if batch_ctxs is not None else None
-                    )
-                    if chunk_ctxs is not None:
-                        results.extend(
-                            await asyncio.gather(
-                                *(
-                                    self.async_dispatch(call, ctx=call_ctx)
-                                    for call, call_ctx in zip(chunk, chunk_ctxs)
-                                )
-                            )
+                worker_limit = min(max_concurrent or len(batch_calls), len(batch_calls))
+                batch_results: list[ToolResult | None] = [None] * len(batch_calls)
+                remaining = iter(enumerate(batch_calls))
+                pending: dict[asyncio.Task[ToolResult], int] = {}
+                cancelled: asyncio.CancelledError | None = None
+                try:
+                    while True:
+                        while len(pending) < worker_limit:
+                            entry = next(remaining, None)
+                            if entry is None:
+                                break
+                            index, call = entry
+                            call_ctx = batch_ctxs[index] if batch_ctxs is not None else shared_ctx
+                            future = asyncio.create_task(_dispatch(call, call_ctx))
+                            pending[future] = index
+                        if not pending:
+                            break
+                        completed, _ = await asyncio.wait(
+                            pending, return_when=asyncio.FIRST_COMPLETED
                         )
-                    else:
-                        results.extend(
-                            await asyncio.gather(
-                                *(self.async_dispatch(call, ctx=shared_ctx) for call in chunk)
-                            )
-                        )
+                        for future in completed:
+                            batch_results[pending.pop(future)] = future.result()
+                except asyncio.CancelledError as error:
+                    cancelled = error
+                finally:
+                    for future in pending:
+                        future.cancel()
+                    drained = asyncio.gather(*pending, return_exceptions=True)
+                    while not drained.done():
+                        try:
+                            await asyncio.shield(drained)
+                        except asyncio.CancelledError as error:
+                            cancelled = cancelled or error
+                    if cancelled is not None:
+                        raise cancelled
+                results.extend(cast(list[ToolResult], batch_results))
             elif batch_ctxs is not None:
                 for call, call_ctx in zip(batch_calls, batch_ctxs):
                     results.append(await self.async_dispatch(call, ctx=call_ctx))

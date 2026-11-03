@@ -5,7 +5,8 @@ The other APIs are optional.
 This page helps you choose an API; it does not list every helper.
 Use the [Python quickstart](python.md) for a complete source-build example.
 The [published walkthrough](quickstart.md) uses release `0.4.1`.
-Unreleased APIs below match the [fixed preview install](install.md#install-the-current-build).
+Unreleased APIs below describe source builds.
+The [fixed preview install](install.md#install-the-current-build) identifies a separately qualified revision.
 
 Import the main APIs from `looplet`:
 
@@ -146,6 +147,24 @@ Hooks can implement only the methods they need; inheritance is not required.
 Since `0.4.1`, loops reject terminal calls whose dispatch fails.
 Invalid completion arguments do not produce accepted output.
 The agent can correct the call while budget remains.
+
+### Concurrent tool dispatch
+
+Concurrency is opt-in through `LoopConfig(concurrent_dispatch=True, max_parallel_calls=4)`.
+Mark independent tools with `concurrent_safe=True`.
+Only consecutive marked calls may overlap; other tools remain serial barriers.
+Permissions, hooks, history, and completion decisions retain their ordering.
+
+**Unreleased checkout change:** async batches refill a free slot without waiting for slower calls.
+The positive integer `max_parallel_calls` bounds active dispatch tasks, not just execution slots.
+Direct `registry.async_dispatch_batch(..., max_concurrent=4)` uses the same scheduler.
+Its `max_concurrent=None` default allows the whole concurrent-safe group.
+Results retain input order, and each call keeps its supplied context and separate task state.
+Cancellation or an unexpected dispatch failure cancels and drains started concurrent dispatches.
+Repeated caller cancellation does not interrupt their async cleanup.
+Ordinary tool errors remain results and do not stop queued calls.
+Cancellation cannot terminate arbitrary synchronous tool threads or remote effects.
+The fixed preview does not include this scheduling change.
 
 ### Model-turn controls
 

@@ -34,6 +34,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async batches refill free dispatch slots without waiting for slower calls. Caps bound dispatch tasks, preserve serial barriers, and retain result order. Cancellation drains started concurrent dispatches before returning.
 - Async tool model requests share the run-owned admission and shutdown boundary. Retained tool contexts cannot start model requests after closure.
 - Captured terminal model errors retain structured classification and termination reasons during replay. Legacy error text remains supported without inferred classifications.
 - Sync and async drivers share model-failure step construction. Dispatch, awaiting, and persistence remain driver-owned.

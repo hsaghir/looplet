@@ -7,6 +7,419 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 
+@pytest.mark.parametrize("ready", [False, True])
+async def test_async_dispatch_batch_preserves_shared_future_result_slots(monkeypatch, ready):
+    import asyncio
+
+    from looplet import ToolCall, ToolResult, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    loop = asyncio.get_running_loop()
+    shared = loop.create_future()
+    result = ToolResult(tool="work", args_summary="", data={"answer": 405})
+    call = ToolCall(tool="work", call_id="shared")
+    admitted = []
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={},
+            execute=lambda: {"answer": 405},
+            concurrent_safe=True,
+        )
+    )
+
+    def dispatch(call, *, ctx=None):
+        admitted.append(call)
+        if not ready and len(admitted) == 2:
+            loop.call_soon(shared.set_result, result)
+        return shared
+
+    if ready:
+        shared.set_result(result)
+    monkeypatch.setattr(registry, "async_dispatch", dispatch)
+    results = await registry.async_dispatch_batch([call, call], max_concurrent=2)
+    assert admitted == [call, call]
+    assert results == [result, result]
+
+
+async def test_async_dispatch_batch_refills_free_slots():
+    import asyncio
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    slow_released = asyncio.Event()
+    next_started = asyncio.Event()
+
+    async def execute(*, index: int):
+        if index == 0:
+            await slow_released.wait()
+        elif index == 2:
+            next_started.set()
+        return {"index": index}
+
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+    )
+    calls = [ToolCall(tool="work", args={"index": index}) for index in range(3)]
+    pending = asyncio.create_task(registry.async_dispatch_batch(calls, max_concurrent=2))
+    try:
+        await asyncio.wait_for(next_started.wait(), timeout=1)
+        slow_released.set()
+        results = await asyncio.wait_for(pending, timeout=1)
+        assert [result.data for result in results] == [{"index": index} for index in range(3)]
+    finally:
+        slow_released.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 4])
+async def test_async_dispatch_batch_bounds_tasks(limit):
+    import asyncio
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    released = asyncio.Event()
+    full = asyncio.Event()
+    active = 0
+    peak = 0
+
+    async def execute(*, index: int):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == limit:
+            full.set()
+        try:
+            await released.wait()
+            return index
+        finally:
+            active -= 1
+
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+    )
+    calls = [ToolCall(tool="work", args={"index": index}) for index in range(100)]
+    before = asyncio.all_tasks()
+    pending = asyncio.create_task(registry.async_dispatch_batch(calls, max_concurrent=limit))
+    try:
+        await asyncio.wait_for(full.wait(), timeout=1)
+        assert len(asyncio.all_tasks() - before - {pending}) <= limit
+        released.set()
+        results = await asyncio.wait_for(pending, timeout=1)
+        assert [result.data for result in results] == list(range(100))
+        assert peak == limit
+        assert active == 0
+    finally:
+        released.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_async_dispatch_batch_cancellation_drains_active_tools():
+    import asyncio
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    blocked = asyncio.Event()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleanup_released = asyncio.Event()
+    admitted = []
+    cleaned = []
+    cleanup_count = 0
+
+    async def execute(*, index: int):
+        nonlocal cleanup_count
+        admitted.append(index)
+        if len(admitted) == 2:
+            started.set()
+        try:
+            await blocked.wait()
+        finally:
+            cleanup_count += 1
+            if cleanup_count == 2:
+                cleaning.set()
+            await cleanup_released.wait()
+            cleaned.append(index)
+
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+    )
+    calls = [ToolCall(tool="work", args={"index": index}) for index in range(10)]
+    pending = asyncio.create_task(registry.async_dispatch_batch(calls, max_concurrent=2))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        pending.cancel("first cancellation")
+        await asyncio.wait_for(cleaning.wait(), timeout=1)
+        pending.cancel("repeated cancellation")
+        checkpoint = asyncio.Event()
+        asyncio.get_running_loop().call_soon(checkpoint.set)
+        await checkpoint.wait()
+        assert not pending.done()
+        assert cleaned == []
+        cleanup_released.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(pending, timeout=1)
+        assert caught.value.args == ("first cancellation",)
+        assert admitted == [0, 1]
+        assert sorted(cleaned) == [0, 1]
+    finally:
+        cleanup_released.set()
+        blocked.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("limit", [1, 2, None])
+@pytest.mark.parametrize("context_mode", ["none", "shared", "per_call"])
+async def test_async_dispatch_batch_preserves_contexts_and_serial_barriers(limit, context_mode):
+    import asyncio
+    from contextvars import ContextVar
+
+    from looplet import ToolCall, ToolContext, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    scope = ContextVar("tool_scope", default="caller")
+    started = asyncio.Event()
+    released = asyncio.Event()
+    finished = []
+    seen = {}
+
+    async def work(*, index: int, ctx=None):
+        if index > 2:
+            assert 2 in finished
+        seen[index] = (ctx, scope.get())
+        scope.set(f"tool-{index}")
+        if index == 0:
+            started.set()
+            await released.wait()
+        finished.append(index)
+        return index
+
+    async def serial(*, index: int, ctx=None):
+        assert sorted(finished) == [0, 1]
+        seen[index] = (ctx, scope.get())
+        finished.append(index)
+        return index
+
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=work,
+            concurrent_safe=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="serial",
+            description="Ordered work",
+            parameters={"index": "integer"},
+            execute=serial,
+        )
+    )
+    calls = [
+        ToolCall(tool="serial" if index == 2 else "work", args={"index": index}, call_id=str(index))
+        for index in range(5)
+    ]
+    contexts = (
+        [ToolContext(metadata={"slot": index}) for index in range(5)]
+        if context_mode == "per_call"
+        else [ToolContext() if context_mode == "shared" else None] * 5
+    )
+    ctx = contexts if context_mode == "per_call" else contexts[0]
+    pending = asyncio.create_task(
+        registry.async_dispatch_batch(calls, ctx=ctx, max_concurrent=limit)
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert 2 not in finished
+        released.set()
+        results = await asyncio.wait_for(pending, timeout=1)
+        assert [result.data for result in results] == list(range(5))
+        assert [result.call_id for result in results] == [str(index) for index in range(5)]
+        assert all(result.error is None for result in results)
+        for index, expected_ctx in enumerate(contexts):
+            assert seen[index][0] is expected_ctx
+            assert seen[index][1] == "caller"
+        assert scope.get() == "caller"
+    finally:
+        released.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("limit", [True, False, 0, -1, 2.5, "2", float("nan"), float("inf")])
+async def test_async_dispatch_batch_rejects_invalid_caps(limit):
+    from looplet import ToolCall
+    from looplet.tools import BaseToolRegistry
+
+    with pytest.raises(ValueError, match="positive integer"):
+        await BaseToolRegistry().async_dispatch_batch(
+            [ToolCall(tool="unused")], max_concurrent=limit
+        )
+
+
+async def test_async_dispatch_batch_rejects_mismatched_contexts():
+    from looplet import ToolCall
+    from looplet.tools import BaseToolRegistry
+
+    with pytest.raises(ValueError, match="ctx sequence length"):
+        await BaseToolRegistry().async_dispatch_batch([ToolCall(tool="unused")], ctx=[])
+
+
+async def test_async_dispatch_batch_failure_drains_siblings_without_starting_queued_calls():
+    import asyncio
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    blocked = asyncio.Event()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleanup_released = asyncio.Event()
+    admitted = []
+    cleaned = []
+
+    async def execute(*, index: int):
+        admitted.append(index)
+        if index == 0:
+            started.set()
+            try:
+                await blocked.wait()
+            finally:
+                cleaning.set()
+                await cleanup_released.wait()
+                cleaned.append(index)
+        else:
+            await started.wait()
+        return {"index": index}
+
+    class FailingStore:
+        def store_result(self, data):
+            raise RuntimeError("retention failed")
+
+    registry = BaseToolRegistry()
+    registry.set_resources({"tool_result_store": FailingStore()})
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+    )
+    calls = [ToolCall(tool="work", args={"index": index}) for index in range(5)]
+    pending = asyncio.create_task(registry.async_dispatch_batch(calls, max_concurrent=2))
+    try:
+        await asyncio.wait_for(cleaning.wait(), timeout=1)
+        assert not pending.done()
+        cleanup_released.set()
+        with pytest.raises(RuntimeError, match="retention failed"):
+            await asyncio.wait_for(pending, timeout=1)
+        assert admitted == [0, 1]
+        assert cleaned == [0]
+    finally:
+        cleanup_released.set()
+        blocked.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("failure", ["exception", "timeout"])
+async def test_async_dispatch_batch_tool_errors_refill_slots(failure):
+    import asyncio
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.tools import BaseToolRegistry
+
+    slow_released = asyncio.Event()
+    next_started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def work(*, index: int):
+        if index == 0:
+            await slow_released.wait()
+        else:
+            next_started.set()
+        return index
+
+    async def failing():
+        if failure == "timeout":
+            await blocked.wait()
+        raise ValueError("expected tool failure")
+
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=work,
+            concurrent_safe=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="failing",
+            description="Independent failing work",
+            parameters={},
+            execute=failing,
+            concurrent_safe=True,
+            timeout_s=0.01 if failure == "timeout" else None,
+        )
+    )
+    calls = [
+        ToolCall(tool="work", args={"index": 0}),
+        ToolCall(tool="failing"),
+        ToolCall(tool="work", args={"index": 2}),
+    ]
+    pending = asyncio.create_task(registry.async_dispatch_batch(calls, max_concurrent=2))
+    try:
+        await asyncio.wait_for(next_started.wait(), timeout=1)
+        slow_released.set()
+        results = await asyncio.wait_for(pending, timeout=1)
+        assert [result.tool for result in results] == ["work", "failing", "work"]
+        assert results[0].data == 0 and results[0].error is None
+        assert results[1].error and results[1].error_detail is not None
+        assert results[2].data == 2 and results[2].error is None
+    finally:
+        slow_released.set()
+        blocked.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 def test_original_results_are_detached_and_retention_is_host_controlled():
     from looplet import ToolCall, tools_from
     from looplet.tools import BaseToolRegistry

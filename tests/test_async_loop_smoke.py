@@ -29,6 +29,82 @@ from looplet.types import ToolContext
 pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_async_loop_refills_only_enabled_concurrent_dispatch(tmp_path, native, concurrent):
+    import json
+
+    slow_started = asyncio.Event()
+    slow_released = asyncio.Event()
+    next_started = asyncio.Event()
+    admitted = []
+
+    async def work(*, index: int):
+        admitted.append(index)
+        if index == 0:
+            slow_started.set()
+            await slow_released.wait()
+        elif index == 2:
+            next_started.set()
+        return {"index": index}
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(
+            name="work",
+            description="Independent work",
+            parameters={"index": "integer"},
+            execute=work,
+            concurrent_safe=True,
+        )
+    )
+    register_done_tool(tools)
+    backend = AsyncMockLLMBackend(
+        responses=[
+            json.dumps(
+                {"tools": [{"tool": "work", "args": {"index": index}} for index in range(3)]}
+            ),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}}),
+        ],
+        cycle=False,
+    )
+    pending = asyncio.create_task(
+        run_result_async(
+            backend,
+            tools=tools,
+            config=LoopConfig(
+                max_steps=4,
+                concurrent_dispatch=concurrent,
+                max_parallel_calls=2,
+                use_native_tools=native,
+                harness_profile="minimal",
+                run_dir=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=1)
+        if concurrent:
+            await asyncio.wait_for(next_started.wait(), timeout=1)
+        else:
+            checkpoint = asyncio.Event()
+            asyncio.get_running_loop().call_soon(checkpoint.set)
+            await checkpoint.wait()
+            assert admitted == [0]
+        slow_released.set()
+        result = await asyncio.wait_for(pending, timeout=1)
+        assert result.completed
+        assert [step.tool_result.data for step in result.steps[:3]] == [
+            {"index": index} for index in range(3)
+        ]
+        assert result.steps[-1].tool_call.tool == "done"
+        assert backend.calls == 2
+    finally:
+        slow_released.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 @pytest.mark.parametrize("backend_kind", ["future", "coroutine"])
 async def test_sync_model_bridge_refuses_owner_loop_wait(monkeypatch, backend_kind):
     from looplet.async_loop import _SyncBridgeLLM

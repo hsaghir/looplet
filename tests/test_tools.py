@@ -420,6 +420,167 @@ async def test_async_dispatch_batch_tool_errors_refill_slots(failure):
         await asyncio.gather(pending, return_exceptions=True)
 
 
+async def test_async_result_retention_runs_off_event_loop(tmp_path):
+    import threading
+    from contextvars import ContextVar
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.result_store import FileToolResultStore
+    from looplet.tools import BaseToolRegistry
+
+    event_loop_thread = threading.get_ident()
+    scope = ContextVar("retention_scope", default="caller")
+    writes = []
+
+    class ObservedStore(FileToolResultStore):
+        def store_result(self, data):
+            writes.append((threading.get_ident(), scope.get()))
+            return super().store_result(data)
+
+    async def execute():
+        assert threading.get_ident() == event_loop_thread
+        scope.set("tool")
+        return {"answer": 405}
+
+    store = ObservedStore(str(tmp_path / "results"))
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(name="work", description="Return evidence", parameters={}, execute=execute)
+    )
+    registry.set_resources({"tool_result_store": store})
+    result = await registry.async_dispatch(ToolCall(tool="work", call_id="retention-probe"))
+    assert result.error is None
+    assert result.call_id == "retention-probe"
+    assert store.get_result(result.result_key) == {"answer": 405}
+    assert len(writes) == 1
+    assert writes[0][0] != event_loop_thread
+    assert writes[0][1] == "tool"
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("repeated", ["none", "blocked", "completed"])
+async def test_async_result_retention_drains_started_write(tmp_path, monkeypatch, batch, repeated):
+    import asyncio
+    import threading
+
+    from looplet import ToolCall, ToolSpec
+    from looplet.result_store import FileToolResultStore
+    from looplet.tools import BaseToolRegistry
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    released = threading.Event()
+    admitted = []
+    retained = []
+
+    if repeated == "completed":
+        original_executor = loop.run_in_executor
+
+        def run_with_completion_cancellation(executor, operation, *args):
+            owner = asyncio.current_task()
+            assert owner is not None
+            future = original_executor(executor, operation, *args)
+
+            def cancel_on_completion(completed):
+                assert completed.done()
+                owner.cancel("completion cancellation")
+
+            future.add_done_callback(cancel_on_completion)
+            return future
+
+        monkeypatch.setattr(loop, "run_in_executor", run_with_completion_cancellation)
+
+    class BlockedStore(FileToolResultStore):
+        def store_result(self, data):
+            loop.call_soon_threadsafe(started.set)
+            assert released.wait(timeout=5)
+            key = super().store_result(data)
+            retained.append(key)
+            return key
+
+    async def execute(*, index):
+        admitted.append(index)
+        return {"index": index}
+
+    store = BlockedStore(str(tmp_path / "results"))
+    registry = BaseToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="work",
+            description="Return evidence",
+            parameters={"index": "integer"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+    )
+    registry.set_resources({"tool_result_store": store})
+    calls = [ToolCall(tool="work", args={"index": index}) for index in range(3)]
+    operation = (
+        registry.async_dispatch_batch(calls, max_concurrent=1)
+        if batch
+        else registry.async_dispatch(calls[0])
+    )
+    pending = asyncio.create_task(operation)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        pending.cancel("first cancellation")
+        checkpoint = asyncio.Event()
+        loop.call_soon(checkpoint.set)
+        await checkpoint.wait()
+        assert not pending.done()
+        if repeated == "blocked":
+            pending.cancel("repeated cancellation")
+            checkpoint.clear()
+            loop.call_soon(checkpoint.set)
+            await checkpoint.wait()
+            assert not pending.done()
+        assert retained == []
+        assert admitted == [0]
+        released.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(pending, timeout=5)
+        assert caught.value.args == ("first cancellation",)
+        assert len(retained) == 1
+        assert store.get_result(retained[0]) == {"index": 0}
+        assert admitted == [0]
+    finally:
+        released.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+async def test_async_result_retention_preserves_storage_errors(tmp_path, monkeypatch, error_type):
+    from looplet import ToolCall, tools_from
+    from looplet.result_store import FileToolResultStore
+
+    async def execute():
+        return {"answer": 405}
+
+    def fail_write(*args):
+        raise error_type("retention failed")
+
+    store = FileToolResultStore(str(tmp_path / "results"))
+    monkeypatch.setattr(store, "_write", fail_write)
+    registry = tools_from([execute])
+    registry.set_resources({"tool_result_store": store})
+    if error_type is RuntimeError:
+        with pytest.raises(RuntimeError, match="retention failed"):
+            await registry.async_dispatch(ToolCall(tool="execute"))
+    else:
+        result = await registry.async_dispatch(ToolCall(tool="execute"))
+        assert result.error is None
+        assert result.data == {"answer": 405}
+        assert result.result_key is None
+        assert result.metadata == {
+            "retention_error": {"type": "OSError", "message": "retention failed"}
+        }
+        assert result.warnings == [
+            "Result retention unavailable; original output remains in run evidence."
+        ]
+    assert store.list_results()["total_results"] == 0
+
+
 def test_original_results_are_detached_and_retention_is_host_controlled():
     from looplet import ToolCall, tools_from
     from looplet.tools import BaseToolRegistry

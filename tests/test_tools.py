@@ -45,8 +45,8 @@ async def test_async_result_retention_runs_off_event_loop(tmp_path):
 
 
 @pytest.mark.parametrize("batch", [False, True])
-@pytest.mark.parametrize("repeated", [False, True])
-async def test_async_result_retention_drains_started_write(tmp_path, batch, repeated):
+@pytest.mark.parametrize("repeated", ["none", "blocked", "completed"])
+async def test_async_result_retention_drains_started_write(tmp_path, monkeypatch, batch, repeated):
     import asyncio
     import threading
 
@@ -59,6 +59,23 @@ async def test_async_result_retention_drains_started_write(tmp_path, batch, repe
     released = threading.Event()
     admitted = []
     retained = []
+
+    if repeated == "completed":
+        original_executor = loop.run_in_executor
+
+        def run_with_completion_cancellation(executor, operation, *args):
+            owner = asyncio.current_task()
+            assert owner is not None
+            future = original_executor(executor, operation, *args)
+
+            def cancel_on_completion(completed):
+                assert completed.done()
+                owner.cancel("completion cancellation")
+
+            future.add_done_callback(cancel_on_completion)
+            return future
+
+        monkeypatch.setattr(loop, "run_in_executor", run_with_completion_cancellation)
 
     class BlockedStore(FileToolResultStore):
         def store_result(self, data):
@@ -98,7 +115,7 @@ async def test_async_result_retention_drains_started_write(tmp_path, batch, repe
         loop.call_soon(checkpoint.set)
         await checkpoint.wait()
         assert not pending.done()
-        if repeated:
+        if repeated == "blocked":
             pending.cancel("repeated cancellation")
             checkpoint.clear()
             loop.call_soon(checkpoint.set)

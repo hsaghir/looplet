@@ -5,7 +5,8 @@ The other APIs are optional.
 This page helps you choose an API; it does not list every helper.
 Use the [Python quickstart](python.md) for a complete source-build example.
 The [published walkthrough](quickstart.md) uses release `0.4.1`.
-Unreleased APIs below match the [fixed preview install](install.md#install-the-current-build).
+Unreleased APIs describe source builds.
+The [fixed preview install](install.md#install-the-current-build) may not include later source changes.
 
 Import the main APIs from `looplet`:
 
@@ -353,6 +354,15 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 | `ToolContext`                          | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool.                                |
 | `ToolContext.async_llm`                | Run-owned async model access inside async tools or child loops.                                                                           |
 | `ToolError` / `ToolValidationError`    | Return or test structured failures without parsing exception text.                                                                       |
+
+**Unreleased:** async dispatch runs synchronous external result stores in worker threads.
+Supply a thread-safe store.
+Share one `FileToolResultStore` instance for writes to a directory.
+The registry awaits each write before returning its result.
+Cancellation drains started writes and preserves the first cancellation exception.
+Synchronous tool execution and remote effects retain their existing cancellation limits.
+In-memory retention stays on the event-loop thread.
+The fixed preview does not include this source change.
 
 Start with ordinary typed functions passed directly to the loop in current source builds.
 Their names remain callable in application code and unit tests.

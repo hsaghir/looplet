@@ -1350,6 +1350,8 @@ class BaseToolRegistry:
         Coroutine tools run directly; synchronous tools run in a worker
         thread. Validation, dependency injection, cancellation, and result
         shaping use the same preparation contract as synchronous dispatch.
+        External result stores must be thread-safe and run in workers.
+        Cancellation drains started retention writes before returning.
         """
         import asyncio  # noqa: PLC0415
 
@@ -1391,7 +1393,14 @@ class BaseToolRegistry:
                 warnings=warnings,
             )
 
-        result_key, retention_metadata = self._retain_result(call, result_data)
+        if self._external_result_store() is None:
+            result_key, retention_metadata = self._retain_result(call, result_data)
+        else:
+            from looplet.checkpoint import _run_persistence
+
+            result_key, retention_metadata = await _run_persistence(
+                self._retain_result, call, result_data
+            )
         warnings = (
             list(ctx.warnings[prepared.warning_start :])
             if ctx is not None and len(ctx.warnings) > prepared.warning_start

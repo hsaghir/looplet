@@ -783,10 +783,10 @@ async def _run_persistence(operation: Callable[..., Any], *args: Any, **kwargs: 
             result = await asyncio.shield(pending)
             break
         except asyncio.CancelledError as error:
+            cancelled = cancelled or error
             if pending.done():
                 pending.result()
-                raise
-            cancelled = error
+                raise cancelled
     if cancelled is not None:
         raise cancelled
     return result

@@ -130,6 +130,9 @@ def test_frontdoor_install_matches_its_documented_release_stage(guide_name):
     assert preview is not None
     assert preview.group() in arguments
     assert "-e" not in arguments
+    archive = preview.group().removeprefix("looplet @ ")
+    archives = re.findall(r"https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip", content)
+    assert set(archives) == {archive}
 
 
 def test_beginner_paths_defer_source_only_and_advanced_features():

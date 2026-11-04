@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from typing import Any, Generic, TypeVar, overload
+from uuid import uuid4
 
 Record = TypeVar("Record")
 
@@ -47,8 +48,10 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         self._connection.execute("PRAGMA cache_size = -64")
         self._connection.execute("PRAGMA journal_mode = OFF")
         self._connection.execute(
-            "CREATE TABLE records (position INTEGER PRIMARY KEY, payload BLOB, weight INTEGER NOT NULL)"
+            "CREATE TABLE records (position INTEGER PRIMARY KEY, payload BLOB, "
+            "weight INTEGER NOT NULL, revision INTEGER NOT NULL)"
         )
+        self._connection.execute("CREATE INDEX records_revision ON records (revision)")
         self._finalizer = weakref.finalize(self, _close_records, self._connection, directory)
         self._encode = encode
         self._decode = decode
@@ -60,6 +63,9 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         self._cache: tuple[int, Record] | None = None
         self._cache_payload: str | bytes | None = None
         self._lock = RLock()
+        self._record_identity = uuid4().hex
+        self._generation = 0
+        self._revision = 0
         self.extend(values)
 
     def _dumps(self, value: Record) -> str | bytes:
@@ -106,8 +112,10 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             index, value = self._cache
             payload = self._dumps(value)
             if payload != self._cache_payload:
+                self._revision += 1
                 self._connection.execute(
-                    "UPDATE records SET payload = ? WHERE position = ?", (payload, index)
+                    "UPDATE records SET payload = ?, revision = ? WHERE position = ?",
+                    (payload, self._revision, index),
                 )
                 self._cache_payload = payload
 
@@ -155,9 +163,10 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             previous_weight = self._connection.execute(
                 "SELECT weight FROM records WHERE position = ?", (position,)
             ).fetchone()[0]
+            self._revision += 1
             self._connection.execute(
-                "UPDATE records SET payload = ?, weight = ? WHERE position = ?",
-                (payload, weight, position),
+                "UPDATE records SET payload = ?, weight = ?, revision = ? WHERE position = ?",
+                (payload, weight, self._revision, position),
             )
             self._total_weight += weight - previous_weight
             self._cache = (position, value)
@@ -183,6 +192,7 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             self._connection.execute(
                 "UPDATE records SET position = -position - 1 WHERE position < 0"
             )
+            self._generation += 1
             self._length -= 1
             self._total_weight -= weight
 
@@ -193,13 +203,18 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             self._cache = None
             payload = self._dumps(value)
             weight = self._weight(value) if self._weight is not None else 0
+            if position < self._length:
+                self._connection.execute(
+                    "UPDATE records SET position = -position - 1 WHERE position >= ?", (position,)
+                )
+                self._connection.execute(
+                    "UPDATE records SET position = -position WHERE position < 0"
+                )
+                self._generation += 1
+            self._revision += 1
             self._connection.execute(
-                "UPDATE records SET position = -position - 1 WHERE position >= ?", (position,)
-            )
-            self._connection.execute("UPDATE records SET position = -position WHERE position < 0")
-            self._connection.execute(
-                "INSERT INTO records VALUES (?, ?, ?)",
-                (position, payload, weight),
+                "INSERT INTO records VALUES (?, ?, ?, ?)",
+                (position, payload, weight, self._revision),
             )
             self._length += 1
             self._total_weight += weight
@@ -211,6 +226,7 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         with self._lock:
             self._cache = None
             self._connection.execute("DELETE FROM records")
+            self._generation += 1
             self._length = 0
             self._total_weight = 0
 
@@ -221,11 +237,37 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             )
             self._flush()
             self._cache = None
+            self._generation += 1
             self._connection.execute("UPDATE records SET position = -position - 1")
             for position, original in enumerate(positions):
                 self._connection.execute(
                     "UPDATE records SET position = ? WHERE position = ?", (position, -original - 1)
                 )
+
+    @contextmanager
+    def changes_since(
+        self, cursor: tuple[int, int, int], stop: int
+    ) -> Iterator[tuple[int, int, Iterator[tuple[int, Record]]]]:
+        """Yield detached changed/new prefix records while holding the owning lock."""
+        with self._lock:
+            self._flush()
+            if stop > self._length:
+                raise IndexError("record index out of range")
+            generation, revision, length = cursor
+            if generation != self._generation or stop < length:
+                revision, length = -1, 0
+            rows = self._connection.execute(
+                "SELECT position, payload FROM records INDEXED BY records_revision "
+                "WHERE revision > ? AND position < ? "
+                "UNION ALL SELECT position, payload FROM records "
+                "WHERE position >= ? AND position < ? ORDER BY position",
+                (revision, min(length, stop), length, stop),
+            )
+            yield (
+                self._generation,
+                self._revision,
+                ((position, self._loads(payload)) for position, payload in rows),
+            )
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -250,6 +292,8 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             self._connection.backup(records._connection)
             records._length = self._length
             records._total_weight = self._total_weight
+            records._generation = self._generation
+            records._revision = self._revision
             return DiskBackedSequence(records)
 
 

@@ -64,6 +64,254 @@ def test_checkpoint_documents_share_history_and_preserve_old_snapshots(tmp_path)
     assert sizes[2] < 1_000_000
 
 
+def test_checkpoint_documents_check_shared_nodes_once_per_transaction(tmp_path, monkeypatch):
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    original_connect = documents._connect
+    inserts = []
+
+    def connect(*, write):
+        connection = original_connect(write=write)
+
+        def trace(statement):
+            if statement.startswith("INSERT OR IGNORE INTO records"):
+                inserts.append(statement)
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    monkeypatch.setattr(documents, "_connect", connect)
+    shared = {"number": 42, "payload": "complete evidence" * 100}
+    payload = {"first": [shared] * 40, "second": [shared] * 40}
+    first = documents.save(payload, {})
+    with original_connect(write=False) as connection:
+        distinct = connection.execute("SELECT count(*) FROM records").fetchone()[0]
+    assert len(inserts) == distinct
+    inserts.clear()
+    assert documents.save(payload, {}) == first
+    assert len(inserts) == distinct
+    shared["number"] = 43
+    latest = documents.save(payload, {})
+    assert documents.load(first)["first"][0]["number"] == 42
+    assert documents.load(latest) == payload
+    documents.verify(latest, set())
+
+
+def test_checkpoint_documents_reuse_unchanged_owned_sequences(tmp_path, monkeypatch):
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    records = DiskBackedList(dict, dict)
+    documents = CheckpointDocuments(tmp_path)
+    encoded = []
+    written = []
+    original_put = documents._put
+
+    def encode(record):
+        encoded.append(record["number"])
+        return record
+
+    def put(connection, value):
+        written.append(value)
+        return original_put(connection, value)
+
+    monkeypatch.setattr(CheckpointDocuments, "_put", staticmethod(put))
+    roots = []
+    expected = []
+    for number in range(80):
+        record = {"number": number, "payload": "complete evidence" * 100}
+        records.append(record)
+        expected.append(record)
+        roots.append(
+            documents.save(
+                {"history": CheckpointSequence(records, encode)}, {"step_number": number}
+            )
+        )
+
+    assert encoded == list(range(80))
+    assert len(written) < 80 * 20
+    assert documents.load(roots[19]) == {"history": expected[:20]}
+    assert documents.load(roots[-1]) == {"history": expected}
+    documents.verify(roots[19], set())
+    documents.verify(roots[-1], set())
+
+
+@pytest.mark.parametrize(
+    "operation", ["cached", "evicted", "assigned", "slice", "insert", "delete", "sort", "clear"]
+)
+def test_owned_checkpoint_sequence_tracks_record_mutations(tmp_path, operation):
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    original = [{"number": number, "payload": "original"} for number in range(40)]
+    expected = [dict(record) for record in original]
+    records = DiskBackedList(dict, dict, [dict(record) for record in original])
+    documents = CheckpointDocuments(tmp_path)
+    encoded = []
+
+    def encode(record):
+        encoded.append(record["number"])
+        return record
+
+    first = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    encoded.clear()
+    if operation in {"cached", "evicted"}:
+        position = 39 if operation == "cached" else 0
+        records[position]["payload"] = "edited"
+        expected[position]["payload"] = "edited"
+        if operation == "evicted":
+            records[1]
+    elif operation == "assigned":
+        records[0] = expected[0] = {"number": 100, "payload": "replacement"}
+    elif operation == "slice":
+        records[2:4] = expected[2:4] = [
+            {"number": 100, "payload": "first replacement"},
+            {"number": 101, "payload": "second replacement"},
+        ]
+    elif operation == "insert":
+        records.insert(1, {"number": 100, "payload": "inserted"})
+        expected.insert(1, {"number": 100, "payload": "inserted"})
+    elif operation == "delete":
+        del records[1]
+        del expected[1]
+    elif operation == "sort":
+        records.sort(key=lambda record: record["number"], reverse=True)
+        expected.reverse()
+    else:
+        records.clear()
+        expected.clear()
+    latest = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    assert len(encoded) == (
+        1
+        if operation in {"cached", "evicted", "assigned"}
+        else 2
+        if operation == "slice"
+        else len(expected)
+    )
+    assert documents.load(first) == {"history": original}
+    assert documents.load(latest) == {"history": expected}
+    documents.verify(latest, set())
+
+
+def test_owned_checkpoint_sequence_preserves_fixed_counts_and_encoder_identity(tmp_path):
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    records = DiskBackedList(dict, dict, [{"number": number} for number in range(20)])
+    documents = CheckpointDocuments(tmp_path)
+    encoded = []
+
+    def encode(record):
+        encoded.append(record["number"])
+        return record
+
+    fixed = CheckpointSequence(records, encode)
+    first = documents.save({"history": fixed}, {})
+    records.extend({"number": number} for number in range(20, 40))
+    documents.save({"history": CheckpointSequence(records, encode)}, {})
+    documents.save({"history": fixed}, {})
+    records[0] = {"number": 100}
+    documents.save({"history": fixed}, {})
+    encoded.clear()
+    latest = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    assert encoded == list(range(20, 40))
+    assert documents.load(latest) == {
+        "history": [{"number": 100}, *[{"number": number} for number in range(1, 40)]]
+    }
+    assert documents.load(first) == {"history": [{"number": number} for number in range(20)]}
+    changed = documents.save(
+        {"history": CheckpointSequence(records, lambda record: record["number"])}, {}
+    )
+    assert documents.load(changed) == {"history": [100, *range(1, 40)]}
+
+
+def test_owned_checkpoint_sequence_rolls_back_cursor_with_failed_snapshot(tmp_path):
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    records = DiskBackedList(dict, dict, [{"number": 0}])
+    documents = CheckpointDocuments(tmp_path)
+    encoded = []
+
+    def encode(record):
+        encoded.append(record["number"])
+        return record
+
+    first = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    records.append({"number": 1})
+    with pytest.raises(ValueError, match="non-JSON-safe"):
+        documents.save({"history": CheckpointSequence(records, encode), "invalid": object()}, {})
+    encoded.clear()
+    latest = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    assert encoded == [1]
+    assert documents.load(first) == {"history": [{"number": 0}]}
+    assert documents.load(latest) == {"history": [{"number": 0}, {"number": 1}]}
+
+
+def test_owned_checkpoint_sequence_revalidates_after_external_record_changes(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    records = DiskBackedList(dict, dict, [{"number": 0}, {"number": 1}])
+    documents = CheckpointDocuments(tmp_path)
+    encode = dict
+    first = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    payload = json.dumps(["value", 0], separators=(",", ":")).encode()
+    with sqlite3.connect(documents.path) as connection:
+        assert (
+            connection.execute(
+                "UPDATE records SET payload = ? WHERE payload = ?", (b"[]", payload)
+            ).rowcount
+            == 1
+        )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        documents.save({"history": CheckpointSequence(records, encode)}, {})
+    with sqlite3.connect(documents.path) as connection:
+        assert (
+            connection.execute(
+                "UPDATE records SET payload = ? WHERE payload = ?", (payload, b"[]")
+            ).rowcount
+            == 1
+        )
+    assert documents.save({"history": CheckpointSequence(records, encode)}, {}) == first
+    documents.verify(first, set())
+
+
+def test_checkpoint_writer_refuses_replaced_record_database(tmp_path):
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path / "original")
+    documents.save({"original": True}, {})
+    replacement = CheckpointDocuments(tmp_path / "replacement")
+    replacement.save({"replacement": True}, {})
+    replacement.path.replace(documents.path)
+    before = documents.path.read_bytes()
+    with pytest.raises(ValueError, match="database was replaced"):
+        documents.save({"new": True}, {})
+    assert documents.path.read_bytes() == before
+
+
+def test_owned_checkpoint_sequence_reuses_tree_paths_across_second_fanout(tmp_path):
+    from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence
+    from looplet._storage import DiskBackedList
+
+    records = DiskBackedList(dict, dict, [{"number": number} for number in range(1024)])
+    documents = CheckpointDocuments(tmp_path)
+    first = documents.save({"history": CheckpointSequence(records, dict)}, {})
+    records.extend({"number": number} for number in range(1024, 1057))
+    records[31] = {"number": -1}
+    latest = documents.save({"history": CheckpointSequence(records, dict)}, {})
+    expected = [{"number": number} for number in range(1057)]
+    expected[31] = {"number": -1}
+    assert documents.load(latest) == {"history": expected}
+    assert latest == documents.save({"history": expected}, {})
+    assert documents.load(first) == {"history": [{"number": number} for number in range(1024)]}
+    documents.verify(latest, set())
+
+
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), object()])
 def test_checkpoint_documents_reject_invalid_values_without_partial_publication(tmp_path, invalid):
     from looplet._checkpoint_storage import CheckpointDocuments

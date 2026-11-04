@@ -743,6 +743,16 @@ Add a control for a failure or runtime requirement that you have observed.
 Check the behavior that it changes.
 See [runtime operations](operations.md).
 
+### Checkpoint storage
+
+Automatic checkpoints reuse unchanged records from the loop-owned disk-backed step history.
+Each save encodes new or changed steps and updates affected list chunks.
+Structural history edits rebuild that sequence.
+A bounded memo reuses identical JSON nodes only within the current database transaction.
+Ordinary mutable JSON is still fully encoded; explicit `FileCheckpointStore` snapshots remain plain JSON.
+Checkpoint verification, synchronous durability, and cancellation draining remain unchanged.
+Copy the full automatic checkpoint directory, including its record database, when moving a run.
+
 ## Testing helpers
 
 `MockLLMBackend` and `AsyncMockLLMBackend` return fixed responses without a network.

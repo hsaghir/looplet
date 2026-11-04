@@ -7,7 +7,7 @@ Model provider adapters are optional extras.
 ## Install the current build
 
 Use this **unreleased source preview** for the [Python quickstart](python.md).
-It includes the Python-first API, run-owned helper requests, and terminal-error replay fixes.
+It includes the Python-first API, run-owned synchronous and asynchronous helper requests, and terminal-error replay fixes.
 It also includes bounded asynchronous dispatch, cancellation-safe persistence, live input contracts, and incremental checkpoint records.
 The pin does not track later changes on master.
 Those additions are not in PyPI `0.4.1`.

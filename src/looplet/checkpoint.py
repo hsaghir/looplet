@@ -778,18 +778,17 @@ async def _run_persistence(operation: Callable[..., Any], *args: Any, **kwargs: 
         None, functools.partial(contextvars.copy_context().run, operation, *args, **kwargs)
     )
     cancelled = None
-    while True:
-        try:
-            result = await asyncio.shield(pending)
-            break
-        except asyncio.CancelledError as error:
-            cancelled = cancelled or error
-            if pending.done():
-                pending.result()
-                raise cancelled
-    if cancelled is not None:
-        raise cancelled
-    return result
+    try:
+        while True:
+            try:
+                return await asyncio.shield(pending)
+            except asyncio.CancelledError as error:
+                cancelled = cancelled or error
+                if pending.done():
+                    return pending.result()
+    finally:
+        if cancelled is not None:
+            raise cancelled
 
 
 async def _save_pending_dispatch_async(store: CheckpointStore, **values: Any) -> None:

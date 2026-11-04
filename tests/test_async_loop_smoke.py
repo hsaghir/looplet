@@ -1333,7 +1333,7 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
     pending = asyncio.create_task(drive())
     try:
         await started.wait()
-        pending.cancel()
+        pending.cancel("first cancellation")
         if cancel_helpers:
             helpers = asyncio.all_tasks() - existing_tasks - {pending}
             for helper in helpers:
@@ -1342,12 +1342,17 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         advanced = loop.create_future()
         loop.call_soon(advanced.set_result, None)
         await advanced
-        pending.cancel()
+        pending.cancel("repeated cancellation")
         assert not pending.done()
     finally:
         release.set()
-    with pytest.raises(OSError if fault == "oserror" else asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as caught:
         await pending
+    assert caught.value.args == ("first cancellation",)
+    assert pending.cancelled()
+    if fault == "oserror":
+        assert isinstance(caught.value.__context__, OSError)
+        assert str(caught.value.__context__) == "storage failed"
     assert events == ["written", "finalized"]
 
 

@@ -379,6 +379,7 @@ Supply a thread-safe store.
 Share one `FileToolResultStore` instance for writes to a directory.
 The registry awaits each write before returning its result.
 Cancellation drains started writes and preserves the first cancellation exception.
+Write failures remain exception context and do not replace caller cancellation.
 Synchronous tool execution and remote effects retain their existing cancellation limits.
 In-memory retention stays on the event-loop thread.
 The fixed preview does not include this source change.

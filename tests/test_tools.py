@@ -459,7 +459,10 @@ async def test_async_result_retention_runs_off_event_loop(tmp_path):
 
 @pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("repeated", ["none", "blocked", "completed"])
-async def test_async_result_retention_drains_started_write(tmp_path, monkeypatch, batch, repeated):
+@pytest.mark.parametrize("fail_write", [False, True])
+async def test_async_result_retention_drains_started_write(
+    tmp_path, monkeypatch, batch, repeated, fail_write
+):
     import asyncio
     import threading
 
@@ -494,6 +497,8 @@ async def test_async_result_retention_drains_started_write(tmp_path, monkeypatch
         def store_result(self, data):
             loop.call_soon_threadsafe(started.set)
             assert released.wait(timeout=5)
+            if fail_write:
+                raise RuntimeError("retention failed")
             key = super().store_result(data)
             retained.append(key)
             return key
@@ -540,8 +545,16 @@ async def test_async_result_retention_drains_started_write(tmp_path, monkeypatch
         with pytest.raises(asyncio.CancelledError) as caught:
             await asyncio.wait_for(pending, timeout=5)
         assert caught.value.args == ("first cancellation",)
-        assert len(retained) == 1
-        assert store.get_result(retained[0]) == {"index": 0}
+        assert pending.cancelled()
+        if fail_write:
+            assert retained == []
+            assert store.list_results()["total_results"] == 0
+            if not batch:
+                assert isinstance(caught.value.__context__, RuntimeError)
+                assert str(caught.value.__context__) == "retention failed"
+        else:
+            assert len(retained) == 1
+            assert store.get_result(retained[0]) == {"index": 0}
         assert admitted == [0]
     finally:
         released.set()

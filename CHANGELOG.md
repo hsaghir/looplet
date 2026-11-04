@@ -34,6 +34,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async persistence preserves the first caller cancellation even when a started write fails. The write error remains available as exception context.
 - Async dispatch retains results through thread-safe external stores off the event loop. Started writes drain before cancellation returns, preserving its first exception.
 - Async batches refill free dispatch slots without waiting for slower calls. Caps bound dispatch tasks, preserve serial barriers, and retain result order. Shared dispatch Futures cannot replace another call's result slot. Cancellation drains started concurrent dispatches before returning.
 - Async tool model requests share the run-owned admission and shutdown boundary. Retained tool contexts cannot start model requests after closure.

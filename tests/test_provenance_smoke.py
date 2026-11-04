@@ -529,13 +529,21 @@ async def test_default_harness_bounds_memory_through_checkpoint_and_export(
         if not runtime_wrapper:
             result = RunResult.from_state(state)
         retained, peak = tracemalloc.get_traced_memory()
+        allocation_details = (
+            [
+                (str(item.traceback), item.size, item.count)
+                for item in tracemalloc.take_snapshot().statistics("lineno")[:20]
+            ]
+            if retained >= 4_000_000 or peak >= 8_000_000
+            else []
+        )
     finally:
         tracemalloc.stop()
 
     assert state.run_status == "completed"
     assert state.step_count == 33
-    assert retained < 4_000_000
-    assert peak < 8_000_000
+    assert retained < 4_000_000, allocation_details
+    assert peak < 8_000_000, allocation_details
     assert state.steps[0].tool_result.data == source(0)
     assert state.steps[-2].tool_result.data == source(31)
     state.steps.clear()

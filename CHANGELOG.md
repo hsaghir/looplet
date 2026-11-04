@@ -34,6 +34,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Automatic checkpoint saves use owned history revisions to encode changed steps and update affected list chunks. A bounded transaction-local memo avoids repeated node checks. Mutable JSON encoding, hash verification, and durability remain unchanged.
 - Inferred typed validation follows edits to tool parameter schemas, including after cartridge export and load. Explicit argument policies remain independent.
 - Callable input inference ignores unused return and injected-context annotations. Dispatch normalizes parameter schemas once per call without caching editable schemas.
 - Full JSON Schema inputs and inferred Python functions accept valid blank strings. Legacy shorthand blank checks remain; tools can enforce nonblank content with `ToolValidationError` before effects.

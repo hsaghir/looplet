@@ -632,17 +632,19 @@ def _checkpoint_summary(checkpoint: Checkpoint) -> dict[str, Any]:
 class _IncrementalCheckpointStore(FileCheckpointStore):
     """Automatic manifests backed by immutable, shared JSON records."""
 
+    def __init__(self, directory: str | Path) -> None:
+        from looplet._checkpoint_storage import CheckpointDocuments
+
+        super().__init__(directory)
+        self._documents = CheckpointDocuments(self._dir)
+
     def _read_existing(self, path: Path) -> Checkpoint:
         checkpoint = self._read(path, summary_only=True)
         self._verify_records(path, set())
         return checkpoint
 
     def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
-        from looplet._checkpoint_storage import CheckpointDocuments
-
-        root = CheckpointDocuments(self._dir).save(
-            checkpoint._payload(), _checkpoint_summary(checkpoint)
-        )
+        root = self._documents.save(checkpoint._payload(), _checkpoint_summary(checkpoint))
         return {"schema": _DOCUMENT_SCHEMA, "root": root}
 
 

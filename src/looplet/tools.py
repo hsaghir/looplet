@@ -312,6 +312,7 @@ def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
     annotation_source = _callable_target(fn)
     if not inspect.isroutine(annotation_source) and not inspect.isclass(annotation_source):
         annotation_source = annotation_source.__call__
+    annotation_source = inspect.unwrap(annotation_source)
 
     def parameter_hints():
         return None

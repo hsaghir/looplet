@@ -225,6 +225,17 @@ def test_owned_checkpoint_sequence_preserves_fixed_counts_and_encoder_identity(t
     )
     assert documents.load(changed) == {"history": [100, *range(1, 40)]}
 
+    records.clear()
+    with pytest.raises(IndexError, match="record index out of range"):
+        documents.save({"history": fixed}, {})
+    assert documents.load(latest) == {
+        "history": [{"number": 100}, *[{"number": number} for number in range(1, 40)]]
+    }
+    records.append({"number": 200})
+    current = documents.save({"history": CheckpointSequence(records, encode)}, {})
+    assert documents.load(current) == {"history": [{"number": 200}]}
+    documents.verify(current, set())
+
 
 def test_owned_checkpoint_sequence_rolls_back_cursor_with_failed_snapshot(tmp_path):
     from looplet._checkpoint_storage import CheckpointDocuments, CheckpointSequence

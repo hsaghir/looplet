@@ -165,7 +165,7 @@ Cancellation or an unexpected dispatch failure cancels and drains started concur
 Repeated caller cancellation does not interrupt their async cleanup.
 Ordinary tool errors remain results and do not stop queued calls.
 Cancellation cannot terminate arbitrary synchronous tool threads or remote effects.
-The fixed preview does not include this scheduling change.
+Published `0.4.1` does not include this scheduling change.
 
 ### Model-turn controls
 
@@ -382,7 +382,7 @@ Cancellation drains started writes and preserves the first cancellation exceptio
 Write failures remain exception context and do not replace caller cancellation.
 Synchronous tool execution and remote effects retain their existing cancellation limits.
 In-memory retention stays on the event-loop thread.
-The fixed preview does not include this source change.
+Published `0.4.1` does not include this source change.
 
 Start with ordinary typed functions passed directly to the loop in current source builds.
 Their names remain callable in application code and unit tests.
@@ -443,7 +443,7 @@ Edits to types, enum choices, required fields, and nullability affect both the a
 `register_with_schema(spec, schema)` keeps its separately supplied `OutputSchema` policy.
 Dispatch normalizes each tool's parameter schema once; it does not cache editable schemas across calls.
 The inferred-policy cartridge encoding requires the unreleased source implementation and excludes published versions through `0.4.1`; record the source fingerprint too.
-These source changes are not in the fixed preview or published `0.4.1`.
+These source changes are not in published `0.4.1`.
 
 Version `0.4.1` preserves these additional annotation contracts:
 

@@ -110,7 +110,7 @@ def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     )
     pins = set(re.findall(source_pattern, install))
     preview = (
-        "https://github.com/hsaghir/looplet/archive/5a44c48784de71e3a5fc3b24ba461129b8165e1f.zip"
+        "https://github.com/hsaghir/looplet/archive/94322e3f0bbebd5f275a9e28d1c1eb858b5b7f60.zip"
     )
     assert pins == {preview}
     assert "synchronous and asynchronous helper requests" in install

@@ -6,10 +6,12 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import looplet
 from looplet import RunEnvelope
 from looplet.provenance import (
     AsyncRecordingLLMBackend,
@@ -482,9 +484,41 @@ async def test_default_harness_composes_persistent_recovery(tmp_path, asynchrono
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("runtime_wrapper", [False, True])
-async def test_default_harness_bounds_memory_through_checkpoint_and_export(
+def test_default_harness_bounds_memory_through_checkpoint_and_export(
     tmp_path, asynchronous, runtime_wrapper
 ):
+    """Measure fresh-interpreter runs independently of process-global intern-table growth."""
+    command = (
+        "import asyncio, runpy, sys; from pathlib import Path; "
+        "sys.path.insert(0, str(Path(sys.argv[5]).parent.parent)); "
+        "import looplet; "
+        "assert Path(looplet.__file__).resolve() == Path(sys.argv[5]); "
+        "suite = runpy.run_path(sys.argv[1]); "
+        "asyncio.run(suite['_assert_default_harness_memory']("
+        "Path(sys.argv[2]), sys.argv[3] == 'True', sys.argv[4] == 'True'))"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            command,
+            str(Path(__file__).resolve()),
+            str(tmp_path),
+            str(asynchronous),
+            str(runtime_wrapper),
+            str(Path(looplet.__file__).resolve()),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+async def _assert_default_harness_memory(tmp_path, asynchronous, runtime_wrapper):
     import tracemalloc
 
     from looplet import (
@@ -529,13 +563,21 @@ async def test_default_harness_bounds_memory_through_checkpoint_and_export(
         if not runtime_wrapper:
             result = RunResult.from_state(state)
         retained, peak = tracemalloc.get_traced_memory()
+        allocation_details = (
+            [
+                (str(item.traceback), item.size, item.count)
+                for item in tracemalloc.take_snapshot().statistics("lineno")[:20]
+            ]
+            if retained >= 4_000_000 or peak >= 8_000_000
+            else []
+        )
     finally:
         tracemalloc.stop()
 
     assert state.run_status == "completed"
     assert state.step_count == 33
-    assert retained < 4_000_000
-    assert peak < 8_000_000
+    assert retained < 4_000_000, allocation_details
+    assert peak < 8_000_000, allocation_details
     assert state.steps[0].tool_result.data == source(0)
     assert state.steps[-2].tool_result.data == source(31)
     state.steps.clear()

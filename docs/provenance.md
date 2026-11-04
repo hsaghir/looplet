@@ -122,6 +122,31 @@ Every file is human-readable. `trajectory.json` and `manifest.jsonl` are
 machine-parseable. You can diff, grep, or feed them to a private analysis pipeline.
 Review and redact evidence before attaching it to bug reports or uploading it elsewhere.
 
+### Independent model-attempt evidence
+
+**Unreleased candidate:** Sink wrappers also write `model-attempts/` before
+trajectory export. Each UUID-named `intent.json` is committed before entering the
+backend, and its `outcome.json` is committed before a completed SDK call returns
+to the harness. Both use detached, recursively redacted snapshots. A synchronous
+backend exposing `set_request_attempt_callback` also supplies numbered prepared
+request records; existing accounting callbacks remain composed and restored.
+These are observed pre-dispatch requests, not HTTP delivery attestations.
+
+```python
+from looplet.provenance import load_model_attempts
+
+attempts = load_model_attempts(trace_dir)
+```
+
+The reader validates record identity and returns an intent, prepared requests and
+an optional outcome for each attempt. A missing outcome stays `None`: no response,
+delivery, usage or retry is invented. This evidence survives a killed process or
+interrupted manifest/trajectory rewrite. Async callers copy provider envelopes on
+their event loop, persist off-loop, and drain owned writes before propagating
+cancellation. This is not a power-loss or provider-delivery guarantee.
+SDK-internal retries without a backend callback and unreturned streaming chunks
+remain unobserved. Capture does not certify reasoning, tool success or answer truth.
+
 Omitting `dir` gives each sink a unique directory under `.looplet/traces/`.
 `flush()` returns its path; `reset()` selects a new automatic path.
 An explicit directory refuses existing evidence unless you pass `overwrite=True`.
@@ -209,7 +234,9 @@ It is not a universal HTTP wire capture.
 The human-readable call files and legacy summary fields can be bounded independently.
 
 Call `sink.flush()` in `finally` to save evidence when a run raises or is canceled.
-Recording is not a write-ahead journal; an abrupt process or host failure can lose unflushed records.
+The candidate model-attempt journal is independent of this export; complete step
+and trajectory records still require a successful flush and can remain unavailable
+after abrupt process loss. Do not infer missing steps from later model outcomes.
 Use checkpoints for persisted result retention between runs.
 Capture covers values tools return, not output they discarded before returning.
 Use a separate sink for each child loop and retain its parent/run linkage.

@@ -24,6 +24,423 @@ from looplet.testing import MockLLMBackend
 from looplet.types import LLMBackend, Step, ToolCall, ToolResult
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_sink_attempt_evidence_is_durable_before_flush_and_survives_export_failure(
+    tmp_path,
+    monkeypatch,
+    native,
+    asynchronous,
+):
+    import looplet.provenance as provenance
+
+    directory = tmp_path / "trace"
+    attempt_directory = directory / "model-attempts"
+    observed = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            intents = list(attempt_directory.glob("*.intent.json"))
+            assert len(intents) == 1
+            intent = json.loads(intents[0].read_text())
+            assert intent["request"]["prompt"] == prompt
+            assert intent["kind"] == "intent"
+            assert not list(attempt_directory.glob("*.outcome.json"))
+            observed.append(intent["attempt_id"])
+            self.last_request = {"input": prompt}
+            self.last_response = {"output": "observed response"}
+            return "observed response"
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.generate(prompt, **kwargs)
+            return [{"type": "tool_use", "name": "finish", "input": {"answer": 7}}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return Backend.generate(self, prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            Backend.generate(self, prompt, **kwargs)
+            return [{"type": "tool_use", "name": "finish", "input": {"answer": 7}}]
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    sink = ProvenanceSink(dir=directory)
+    recorder = sink.wrap_llm(backend)
+    if native:
+        response = recorder.generate_with_tools(
+            "Original authorized prompt",
+            tools=[{"name": "finish", "input_schema": {}}],
+        )
+    else:
+        response = recorder.generate("Original authorized prompt")
+    if asynchronous:
+        response = asyncio.run(response)
+    assert len(observed) == 1
+    outcome_path = attempt_directory / (observed[0] + ".outcome.json")
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["kind"] == "outcome" and outcome["attempt_id"] == observed[0]
+    assert outcome["capture"]["response"] == response
+    assert outcome["capture"]["provider_request"] == {"input": "Original authorized prompt"}
+    assert outcome["capture"]["provider_response"] == {"output": "observed response"}
+    assert outcome["capture"]["error"] is None
+    assert recorder.calls[0].capture["attempt_id"] == observed[0]
+    original = {path.name: path.read_bytes() for path in attempt_directory.iterdir()}
+    clear = provenance._clear_call_artifacts
+
+    def clear_then_fail(root):
+        clear(root)
+        raise OSError("Interrupted during trajectory export")
+
+    monkeypatch.setattr(provenance, "_clear_call_artifacts", clear_then_fail)
+    with pytest.raises(OSError, match=r"Interrupted during trajectory export"):
+        sink.flush()
+    assert {path.name: path.read_bytes() for path in attempt_directory.iterdir()} == original
+
+
+def test_sink_prepared_request_is_persisted_without_inventing_provider_delivery(tmp_path):
+    callbacks = []
+
+    def admitted():
+        callbacks.append("admitted")
+
+    class Backend:
+        request_attempt_callback = staticmethod(admitted)
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        def generate(self, prompt, **kwargs):
+            self.last_request = {"input": prompt, "max_tokens": kwargs["max_tokens"]}
+            self.last_response = None
+            self.request_attempt_callback()
+            prepared = list((tmp_path / "model-attempts").glob("*.dispatch-0001.json"))
+            assert len(prepared) == 1
+            capture = json.loads(prepared[0].read_text())
+            assert capture["provider_request"] == self.last_request
+            assert "not_provider_delivery_attestation" in capture["scope"]
+            raise TimeoutError("No response headers observed")
+
+    backend = Backend()
+    recorder = ProvenanceSink(dir=tmp_path).wrap_llm(backend)
+    with pytest.raises(TimeoutError, match=r"No response headers observed"):
+        recorder.generate("Original request", max_tokens=123)
+    assert callbacks == ["admitted"] and backend.request_attempt_callback is admitted
+    outcome = json.loads(next((tmp_path / "model-attempts").glob("*.outcome.json")).read_text())
+    assert outcome["response_complete"] is False
+    assert outcome["capture"]["provider_response"] is None
+    assert outcome["capture"]["provider_request"] == {
+        "input": "Original request",
+        "max_tokens": 123,
+    }
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("storage_fails", [False, True])
+def test_sink_preserves_original_cancellation_and_never_records_a_success(
+    tmp_path,
+    monkeypatch,
+    asynchronous,
+    native,
+    storage_fails,
+):
+    original = asyncio.CancelledError("original caller cancellation")
+
+    class Backend:
+        last_request = {"input": "STALE PREVIOUS REQUEST"}
+        last_response = {"output": "STALE PREVIOUS RESPONSE"}
+
+        def generate(self, prompt, **kwargs):
+            raise original
+
+        def generate_with_tools(self, prompt, **kwargs):
+            raise original
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            raise original
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            raise original
+
+    recorder = ProvenanceSink(dir=tmp_path).wrap_llm(AsyncBackend() if asynchronous else Backend())
+    write = recorder._write_attempt
+
+    def persist(attempt_id, kind, value):
+        if storage_fails and kind == "outcome":
+            raise OSError("outcome disk write failed")
+        return write(attempt_id, kind, value)
+
+    monkeypatch.setattr(recorder, "_write_attempt", persist)
+    with pytest.raises(asyncio.CancelledError, match=r"original caller cancellation") as cancelled:
+        pending = (
+            recorder.generate_with_tools("Current request", tools=[])
+            if native
+            else recorder.generate("Current request")
+        )
+        if asynchronous:
+            asyncio.run(pending)
+    assert cancelled.value is original
+    assert len(list((tmp_path / "model-attempts").glob("*.intent.json"))) == 1
+    outcomes = list((tmp_path / "model-attempts").glob("*.outcome.json"))
+    if storage_fails:
+        assert not outcomes
+        assert any("outcome disk write failed" in note for note in original.__notes__)
+    else:
+        outcome = json.loads(outcomes[0].read_text())
+        assert outcome["response_complete"] is False
+        assert outcome["capture"]["provider_response"] is None
+        assert outcome["capture"]["provider_request"] is None
+        assert outcome["capture"]["error"] == "CancelledError: original caller cancellation"
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_async_attempt_capture_is_owned_before_concurrent_disk_writes(
+    tmp_path,
+    monkeypatch,
+    native,
+):
+    import threading
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            self.last_request = {"input": prompt}
+            self.last_response = {"output": prompt}
+            return prompt
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            self.last_request = {"input": prompt}
+            self.last_response = [{"type": "text", "text": prompt}]
+            return self.last_response
+
+    recorder = ProvenanceSink(dir=tmp_path).wrap_llm(Backend())
+    write = recorder._write_attempt
+    release = threading.Event()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Queue()
+
+        def persist(attempt_id, kind, value):
+            write(attempt_id, kind, value)
+            if kind == "outcome":
+                loop.call_soon_threadsafe(ready.put_nowait, value)
+                assert release.wait(timeout=5)
+
+        monkeypatch.setattr(recorder, "_write_attempt", persist)
+        pending = [
+            asyncio.create_task(
+                recorder.generate_with_tools(prompt, tools=[])
+                if native
+                else recorder.generate(prompt),
+            )
+            for prompt in ("first request", "second request")
+        ]
+        try:
+            outcomes = [await asyncio.wait_for(ready.get(), timeout=5) for _ in pending]
+            for outcome in outcomes:
+                capture = outcome["capture"]
+                prompt = capture["request"]["prompt"]
+                assert capture["provider_request"] == {"input": prompt}
+                assert capture["provider_response"] == (
+                    [{"type": "text", "text": prompt}] if native else {"output": prompt}
+                )
+            release.set()
+            await asyncio.gather(*pending)
+        finally:
+            release.set()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(run())
+    assert [call.index for call in recorder.calls] == [0, 1]
+    assert len({call.capture["attempt_id"] for call in recorder.calls}) == 2
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("phase", ["intent", "outcome"])
+def test_async_attempt_write_drains_before_repeated_caller_cancellation(
+    tmp_path,
+    monkeypatch,
+    native,
+    phase,
+):
+    import threading
+
+    calls = []
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "complete SDK response"
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            calls.append(prompt)
+            return [{"type": "text", "text": "complete SDK response"}]
+
+    recorder = ProvenanceSink(dir=tmp_path).wrap_llm(Backend())
+    write = recorder._write_attempt
+    release = threading.Event()
+    drained = threading.Event()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+
+        def persist(attempt_id, kind, value):
+            write(attempt_id, kind, value)
+            if kind == phase:
+                loop.call_soon_threadsafe(ready.set)
+                assert release.wait(timeout=5)
+                drained.set()
+
+        monkeypatch.setattr(recorder, "_write_attempt", persist)
+        pending = asyncio.create_task(
+            recorder.generate_with_tools("original request", tools=[])
+            if native
+            else recorder.generate("original request"),
+        )
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=5)
+            pending.cancel("first caller cancellation")
+            checkpoint = loop.create_future()
+            loop.call_soon(checkpoint.set_result, None)
+            await checkpoint
+            assert not pending.done() and not drained.is_set()
+            pending.cancel("second caller cancellation")
+            release.set()
+            with pytest.raises(asyncio.CancelledError, match=r"first caller cancellation"):
+                await pending
+            assert drained.is_set()
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    asyncio.run(run())
+    assert calls == ([] if phase == "intent" else ["original request"])
+    outcomes = list((tmp_path / "model-attempts").glob("*.outcome.json"))
+    assert len(outcomes) == (0 if phase == "intent" else 1)
+    if outcomes:
+        assert json.loads(outcomes[0].read_text())["response_complete"] is True
+
+
+def test_sink_attempt_readback_and_pending_directory_reuse(tmp_path, monkeypatch):
+    import looplet.provenance as provenance
+
+    monkeypatch.chdir(tmp_path)
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return "original response"
+
+    sink = ProvenanceSink()
+    recorder = sink.wrap_llm(Backend())
+    recorder.generate("first request")
+    first_directory = recorder._attempt_directory.parent
+    first_attempt = provenance.load_model_attempts(first_directory)[0]
+    assert first_attempt["intent"]["request"]["prompt"] == "first request"
+    assert first_attempt["outcome"]["capture"]["response"] == "original response"
+    with pytest.raises(FileExistsError, match=r"Trace already exists"):
+        ProvenanceSink(first_directory)
+    sink.reset()
+    recorder.generate("second request")
+    second_directory = recorder._attempt_directory.parent
+    assert second_directory != first_directory
+    assert provenance.load_model_attempts(first_directory) == [first_attempt]
+    assert (
+        provenance.load_model_attempts(second_directory)[0]["intent"]["request"]["prompt"]
+        == "second request"
+    )
+    first_outcome = next((first_directory / "model-attempts").glob("*.outcome.json"))
+    first_outcome.unlink()
+    pending = provenance.load_model_attempts(first_directory)
+    assert pending[0]["outcome"] is None and pending[0]["prepared_requests"] == []
+    intent_path = next((first_directory / "model-attempts").glob("*.intent.json"))
+    payload = json.loads(intent_path.read_text())
+    payload["attempt_id"] = "0" * 32
+    intent_path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=r"Invalid model attempt record"):
+        provenance.load_model_attempts(first_directory)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGKILL requires POSIX")
+@pytest.mark.parametrize("phase", ["pending", "response", "export"])
+def test_sink_attempt_evidence_survives_real_process_loss(tmp_path, phase):
+    import signal
+    import sys
+
+    program = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import looplet.provenance as provenance
+directory = Path(sys.argv[2])
+phase = sys.argv[3]
+def barrier():
+    print('READY', flush=True)
+    sys.stdin.readline()
+class Backend:
+    def generate(self, prompt, **kwargs):
+        if phase == 'pending':
+            barrier()
+        self.last_request = {'input': prompt}
+        self.last_response = {'output': 'original response'}
+        return 'original response'
+sink = provenance.ProvenanceSink(dir=directory)
+recorder = sink.wrap_llm(Backend())
+recorder.generate('original request')
+if phase == 'export':
+    clear = provenance._clear_call_artifacts
+    def interrupt_export(root):
+        clear(root)
+        barrier()
+    provenance._clear_call_artifacts = interrupt_export
+    sink.flush()
+else:
+    barrier()
+"""
+    directory = tmp_path / "trace"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            program,
+            str(Path(__file__).resolve().parents[1] / "src"),
+            str(directory),
+            phase,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "READY"
+        os.kill(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == -signal.SIGKILL, (stdout, stderr)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+    intents = list((directory / "model-attempts").glob("*.intent.json"))
+    outcomes = list((directory / "model-attempts").glob("*.outcome.json"))
+    assert len(intents) == 1
+    intent = json.loads(intents[0].read_text())
+    assert intent["request"]["prompt"] == "original request"
+    if phase == "pending":
+        assert not outcomes
+        assert "not_provider_delivery_attestation" in intent["scope"]
+    else:
+        assert len(outcomes) == 1
+        outcome = json.loads(outcomes[0].read_text())
+        assert outcome["attempt_id"] == intent["attempt_id"]
+        assert outcome["capture"]["response"] == "original response"
+        assert outcome["response_complete"] is True
+
+
 @pytest.mark.parametrize("writer", ["calls", "trajectory", "eval"])
 def test_saved_evidence_is_git_ignored_in_consumer_project(tmp_path, writer):
     from looplet import EvalContext, save_eval_run

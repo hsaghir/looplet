@@ -312,8 +312,21 @@ def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
     annotation_source = _callable_target(fn)
     if not inspect.isroutine(annotation_source) and not inspect.isclass(annotation_source):
         annotation_source = annotation_source.__call__
+
+    def parameter_hints():
+        return None
+
+    parameter_hints.__annotations__ = {
+        name: param.annotation
+        for name, param in sig.parameters.items()
+        if name != "ctx" and param.annotation is not inspect.Signature.empty
+    }
     try:
-        type_hints = get_type_hints(annotation_source, include_extras=True)
+        type_hints = get_type_hints(
+            parameter_hints,
+            globalns=getattr(annotation_source, "__globals__", {}),
+            include_extras=True,
+        )
     except Exception:
         type_hints = {}
     properties: dict[str, Any] = {}
@@ -1019,6 +1032,7 @@ class BaseToolRegistry:
         call: ToolCall,
         *,
         ctx: ToolContext | None,
+        _parameter_schema: dict[str, Any] | None = None,
     ) -> _PreparedToolCall | ToolResult:
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
 
@@ -1118,8 +1132,9 @@ class BaseToolRegistry:
                     elif req_name == "tool_result_store":
                         live_ctx.resources[req_name] = self
 
-        known_params = spec.parameter_names()
-        required = spec.required_parameters()
+        parameters = spec.to_json_schema() if _parameter_schema is None else _parameter_schema
+        known_params = list(parameters.get("properties", {}))
+        required = parameters.get("required", [])
         if "_raw_arg" in exec_kwargs and len(required) == 1:
             raw = exec_kwargs.pop("_raw_arg")
             target_param = required[0]
@@ -1132,7 +1147,7 @@ class BaseToolRegistry:
             if param not in sanitized:
                 continue
             value = sanitized[param]
-            parameter_schema = spec.to_json_schema().get("properties", {}).get(param, {})
+            parameter_schema = parameters.get("properties", {}).get(param, {})
             parameter_type = parameter_schema.get("type")
             nullable = (
                 parameter_type is None
@@ -1141,7 +1156,9 @@ class BaseToolRegistry:
                 parameter_type == "null"
                 or (isinstance(parameter_type, list) and "null" in parameter_type)
             )
-            if (value is None and not nullable) or (isinstance(value, str) and not value.strip()):
+            if (value is None and not nullable) or (
+                not spec.is_json_schema and isinstance(value, str) and not value.strip()
+            ):
                 schema_hint = _format_param_hint(spec)
                 error = ToolError(
                     kind=ErrorKind.VALIDATION,

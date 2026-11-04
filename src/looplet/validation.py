@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
@@ -83,7 +83,9 @@ class OutputSchema:
 _SCHEMA_TYPES = {kind.__name__: kind for kind in (str, int, float, bool, list, dict, type(None))}
 
 
-def _schema_to_payload(schema: OutputSchema) -> dict[str, Any]:
+def _schema_to_payload(schema: OutputSchema | Literal["parameters"]) -> dict[str, Any]:
+    if schema == "parameters":
+        return {"source": "parameters"}
     fields = {}
     for name, spec in schema.fields.items():
         accepted = spec.field_type
@@ -110,7 +112,9 @@ def _schema_to_payload(schema: OutputSchema) -> dict[str, Any]:
     return encoded
 
 
-def _schema_from_payload(payload: Any) -> OutputSchema:
+def _schema_from_payload(payload: Any) -> OutputSchema | Literal["parameters"]:
+    if payload == {"source": "parameters"}:
+        return "parameters"
     if not isinstance(payload, dict) or set(payload) != {"strict", "fields"}:
         raise ValueError("argument_validation needs exactly 'strict' and 'fields'")
     if type(payload["strict"]) is not bool or not isinstance(payload["fields"], dict):
@@ -240,7 +244,7 @@ class ValidatingToolRegistry(BaseToolRegistry):
 
     def __init__(self) -> None:
         super().__init__()
-        self._schemas: dict[str, OutputSchema] = {}
+        self._schemas: dict[str, OutputSchema | Literal["parameters"]] = {}
 
     def register_with_schema(self, spec: Any, schema: OutputSchema) -> None:
         """Register a ToolSpec with an accompanying validation schema."""
@@ -249,7 +253,11 @@ class ValidatingToolRegistry(BaseToolRegistry):
 
     def register_typed(self, spec: Any) -> None:
         """Validate top-level JSON types and enums from a tool's parameter schema."""
-        parameter_schema = spec.to_json_schema()
+        self.register(spec)
+        self._schemas[spec.name] = "parameters"
+
+    @staticmethod
+    def _typed_schema(parameter_schema: dict[str, Any]) -> OutputSchema:
         required = set(parameter_schema.get("required", []))
         type_map: dict[str, tuple[type, ...]] = {
             "string": (str,),
@@ -277,7 +285,7 @@ class ValidatingToolRegistry(BaseToolRegistry):
                 required=name in required,
                 allowed_values=parameter.get("enum"),
             )
-        self.register_with_schema(spec, OutputSchema(fields=fields))
+        return OutputSchema(fields=fields)
 
     @property
     def _base(self) -> BaseToolRegistry:
@@ -289,8 +297,12 @@ class ValidatingToolRegistry(BaseToolRegistry):
     ) -> _PreparedToolCall | ToolResult:
         """Apply optional schemas once before the shared execution contract."""
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
+        parameter_schema = None
         if call.tool in self._schemas:
             schema = self._schemas[call.tool]
+            if schema == "parameters":
+                parameter_schema = self._tools[call.tool].to_json_schema()
+                schema = self._typed_schema(parameter_schema)
             result = validate_args(schema, clean_args)
             if not result.valid:
                 error_msg = "Validation failed: " + "; ".join(result.errors)
@@ -304,7 +316,7 @@ class ValidatingToolRegistry(BaseToolRegistry):
                     ),
                     call_id=call.call_id,
                 )
-        return super()._prepare_dispatch(call, ctx=ctx)
+        return super()._prepare_dispatch(call, ctx=ctx, _parameter_schema=parameter_schema)
 
 
 # ── DoneValidator Protocol ────────────────────────────────────────────

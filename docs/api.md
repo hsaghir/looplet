@@ -404,6 +404,8 @@ A callable instance uses its class name and its class or `__call__` docstring.
 Use `tool(callable, name=..., description=...)` to override this metadata.
 Give multiple instances or partials distinct explicit names before registering them together.
 Schema inference uses the effective signature and resolves postponed annotations from the underlying function or `__call__` method.
+Unreleased source resolves only model-supplied input annotations.
+Unresolved return types and injected `ctx` annotations do not prevent input-schema inference.
 Positionally bound parameters are absent from the schema.
 Keyword-bound parameters keep their defaults and remain model-visible.
 Use a wrapper or positional binding for dependencies that must not be exposed as tool arguments.
@@ -436,6 +438,13 @@ They reject invalid values rather than coercing them.
 Nested schemas and other constraints remain tool-owned.
 These options are included in Looplet `0.4.0`.
 
+Unreleased source derives inferred validation from the current `ToolSpec.parameters` on each dispatch.
+Edits to types, enum choices, required fields, and nullability affect both the advertised schema and admission.
+`register_with_schema(spec, schema)` keeps its separately supplied `OutputSchema` policy.
+Dispatch normalizes each tool's parameter schema once; it does not cache editable schemas across calls.
+The inferred-policy cartridge encoding requires the unreleased source implementation and excludes published versions through `0.4.1`; record the source fingerprint too.
+These source changes are not in the fixed preview or published `0.4.1`.
+
 Version `0.4.1` preserves these additional annotation contracts:
 
 - `Annotated[T, ...]` uses the schema for `T`; metadata does not become a validation rule.
@@ -445,7 +454,7 @@ Version `0.4.1` preserves these additional annotation contracts:
 - Enum checks distinguish booleans from numeric values, so `True` does not match an allowed `1`.
 
 Missing annotations retain the legacy string schema.
-Required-field presence and blank-string checks still apply.
+Required-field presence checks still apply.
 Unsupported annotations raise `TypeError` during tool construction instead of silently becoming strings.
 Use an explicit `ToolSpec.parameters` schema for those contracts.
 Since `0.4.1`, `minimal_preset` annotations also accept its existing callable-tool inputs and reusable sequences.
@@ -457,7 +466,12 @@ Put other constraints in the tool, MCP server, or an explicit validation schema.
 A required argument must be present.
 A nullable schema, including an inferred `int | None`, accepts `None`.
 An omitted required argument still fails.
-Older blank-string and non-nullable empty-input checks do not change.
+Unreleased source accepts empty and whitespace-only strings for full JSON Schema parameters, including inferred Python functions.
+The registry preserves their exact bytes; `required` means presence, not nonblank content.
+Legacy shorthand and cartridge parameter descriptors retain their required-string blank checks.
+To accept blank content with those inputs, use a full JSON Schema object or an inferred Python function.
+When a tool requires nonblank text, check it inside the tool and raise `ToolValidationError` before effects.
+Non-nullable required inputs still reject `None`.
 
 `ValidatingToolRegistry.register_with_schema(spec, schema)` adds typed argument checks to the same registry.
 Its dispatch methods preserve cancellation, resources, timeouts, results, and call IDs.

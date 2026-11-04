@@ -110,6 +110,51 @@ def test_input_inference_ignores_unused_context_and_return_annotations(shape):
     assert result.data == {"query": "actual input"}
 
 
+@pytest.mark.parametrize("shape", ["function", "partial", "instance"])
+def test_input_inference_uses_wrapped_callable_annotation_globals(shape):
+    from functools import partial
+
+    from looplet import ToolCall, tool, tools_from
+
+    decorators = {"__name__": __name__ + ".decorators"}
+    exec(
+        "from functools import wraps\n"
+        "def decorate(fn):\n"
+        "    @wraps(fn)\n"
+        "    def wrapped(*args, **kwargs):\n"
+        "        return fn(*args, **kwargs)\n"
+        "    return wrapped\n",
+        decorators,
+    )
+    owner = {"__name__": __name__, "decorate": decorators["decorate"]}
+    exec(
+        "from __future__ import annotations\n"
+        "from typing import Literal\n"
+        "Choice = Literal['first', 'second']\n"
+        "@decorate\n"
+        "def choose(value: Choice, prefix: str = 'plain') -> dict:\n"
+        "    return {'choice': value}\n"
+        "class Choose:\n"
+        "    @decorate\n"
+        "    def __call__(self, value: Choice) -> dict:\n"
+        "        return {'choice': value}\n",
+        owner,
+    )
+    target = owner["choose"]
+    if shape == "partial":
+        target = partial(target, prefix="bound")
+    elif shape == "instance":
+        target = owner["Choose"]()
+    spec = tool(target)
+    assert spec.to_json_schema()["properties"]["value"] == {
+        "type": "string",
+        "enum": ["first", "second"],
+    }
+    result = tools_from([spec]).dispatch(ToolCall(tool=spec.name, args={"value": "first"}))
+    assert result.error is None
+    assert result.data == {"choice": "first"}
+
+
 @pytest.mark.parametrize("validate", [False, True])
 @pytest.mark.parametrize("width", [2, 8, 32])
 def test_dispatch_normalizes_parameter_schema_once(monkeypatch, validate, width):

@@ -229,40 +229,49 @@ def test_value_error_still_routes_to_validation_for_back_compat() -> None:
 # ── Empty / None values for required parameters ─────────────────
 
 
-class TestEmptyRequiredArgRejected:
-    """LLMs sometimes send {"command": ""} or {"command": null} which
-    passes the "key exists" check but produces silent failures (bash
-    runs empty command → exit 0, no output). The dispatch layer now
-    rejects empty/None values for required string parameters."""
+class TestRequiredArgAdmission:
+    """Required presence/nullability apply to both parameter contracts.
+
+    Full JSON Schema admits blank strings; legacy shorthand rejects them.
+    """
+
+    @pytest.fixture(params=["schema", "shorthand"])
+    def parameter_shape(self, request: pytest.FixtureRequest) -> str:
+        return request.param
 
     @pytest.fixture()
-    def registry(self) -> BaseToolRegistry:
+    def registry(self, parameter_shape: str) -> BaseToolRegistry:
+        parameters = {"command": "Command to run"}
+        if parameter_shape == "schema":
+            parameters = {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            }
         reg = BaseToolRegistry()
         reg.register(
             ToolSpec(
                 name="bash",
                 description="Run a command",
-                parameters={
-                    "type": "object",
-                    "properties": {"command": {"type": "string"}},
-                    "required": ["command"],
-                },
+                parameters=parameters,
                 execute=lambda *, command: {"exit_code": 0},
             )
         )
         return reg
 
-    def test_empty_string_rejected(self, registry: BaseToolRegistry) -> None:
-        r = registry.dispatch(ToolCall(tool="bash", args={"command": ""}))
-        assert r.error is not None
-        assert r.error_kind == ErrorKind.VALIDATION
-        assert "empty" in r.error.lower()
-        assert "command" in r.error
-
-    def test_whitespace_only_rejected(self, registry: BaseToolRegistry) -> None:
-        r = registry.dispatch(ToolCall(tool="bash", args={"command": "   "}))
-        assert r.error is not None
-        assert r.error_kind == ErrorKind.VALIDATION
+    @pytest.mark.parametrize("command", ["", "   ", "\n"])
+    def test_blank_string_follows_declared_contract(
+        self, registry: BaseToolRegistry, parameter_shape: str, command: str
+    ) -> None:
+        result = registry.dispatch(ToolCall(tool="bash", args={"command": command}))
+        if parameter_shape == "shorthand":
+            assert result.error is not None
+            assert result.error_kind == ErrorKind.VALIDATION
+            assert "empty" in result.error.lower()
+            assert "command" in result.error
+        else:
+            assert result.error is None
+            assert result.data == {"exit_code": 0}
 
     def test_none_value_rejected(self, registry: BaseToolRegistry) -> None:
         r = registry.dispatch(ToolCall(tool="bash", args={"command": None}))
@@ -275,7 +284,7 @@ class TestEmptyRequiredArgRejected:
         assert r.data == {"exit_code": 0}
 
     def test_optional_param_empty_still_allowed(self) -> None:
-        """Only required params are validated for emptiness."""
+        """Blank optional strings remain valid."""
         reg = BaseToolRegistry()
         reg.register(
             ToolSpec(
@@ -303,7 +312,7 @@ class TestEmptyRequiredArgRejected:
         assert r.error is not None
         assert "missing required" in r.error.lower()
 
-    def test_error_is_retriable(self, registry: BaseToolRegistry) -> None:
-        r = registry.dispatch(ToolCall(tool="bash", args={"command": ""}))
+    def test_null_error_is_retriable(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": None}))
         assert r.error_detail is not None
         assert r.error_detail.retriable

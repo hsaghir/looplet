@@ -640,9 +640,10 @@ async def test_round_trip_validation_stays_selective_across_two_exports(tmp_path
     registry.register(original_done)
     preset.tools = registry
     first = preset_to_cartridge(preset, tmp_path / "first", strict=True)
-    assert first.compatibility.looplet == ">=0.4.0,>0.4.0"
+    assert first.compatibility.looplet == ">=0.4.0,>0.4.1"
     assert first.compatibility.languages == ("python",)
     assert not _version_satisfies("0.4.0", first.compatibility.looplet)
+    assert not _version_satisfies("0.4.1", first.compatibility.looplet)
     with cartridge_to_preset(first.path, strict=True) as loaded:
         second = preset_to_cartridge(loaded, tmp_path / "second", strict=True)
         assert second.compatibility == first.compatibility

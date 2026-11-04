@@ -5,6 +5,221 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 
+@pytest.mark.parametrize("shape", ["schema", "callable", "shorthand"])
+@pytest.mark.parametrize("validate", [False, True])
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("content", ["", " ", "\n"])
+async def test_blank_content_follows_declared_schema(
+    tmp_path, shape, validate, async_mode, content
+):
+    from looplet import ToolCall, ToolSpec, tools_from
+
+    destination = tmp_path / "written.txt"
+    observed = []
+
+    def write_text(content: str) -> dict:
+        observed.append(content)
+        destination.write_text(content, encoding="utf-8")
+        return {"bytes": len(content.encode("utf-8"))}
+
+    if shape == "callable":
+        registry = tools_from([write_text], validate=validate)
+    else:
+        parameters = {"content": "Text to write"}
+        if shape == "schema":
+            parameters = {
+                "type": "object",
+                "properties": {"content": {"type": "string"}},
+                "required": ["content"],
+            }
+        registry = tools_from(
+            [ToolSpec("write_text", "Write exact content", parameters, write_text)],
+            validate=validate,
+        )
+    call = ToolCall(tool="write_text", args={"content": content})
+    result = await registry.async_dispatch(call) if async_mode else registry.dispatch(call)
+    if shape == "shorthand":
+        assert result.error_detail.kind.value == "validation"
+        assert observed == []
+        assert not destination.exists()
+    else:
+        assert result.error is None
+        assert observed == [content]
+        assert destination.read_bytes() == content.encode("utf-8")
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_nonblank_content_is_a_tool_owned_validation_rule(async_mode):
+    from looplet import ToolCall, ToolValidationError, tools_from
+
+    observed = []
+
+    def publish(content: str) -> dict:
+        if not content.strip():
+            raise ToolValidationError("content must contain non-whitespace text")
+        observed.append(content)
+        return {"content": content}
+
+    registry = tools_from([publish], validate=True)
+    for content in ("", " ", "\n"):
+        call = ToolCall(tool="publish", args={"content": content})
+        result = await registry.async_dispatch(call) if async_mode else registry.dispatch(call)
+        assert result.error_detail.kind.value == "validation"
+        assert result.error_detail.retriable is False
+        assert observed == []
+    call = ToolCall(tool="publish", args={"content": "actual content"})
+    result = await registry.async_dispatch(call) if async_mode else registry.dispatch(call)
+    assert result.error is None
+    assert observed == ["actual content"]
+
+
+@pytest.mark.parametrize("shape", ["function", "partial", "instance"])
+def test_input_inference_ignores_unused_context_and_return_annotations(shape):
+    from functools import partial
+
+    from looplet import ToolCall, tool, tools_from
+
+    namespace = {"__name__": __name__}
+    exec(
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from datetime import date as ReturnOnly\n"
+        "    from looplet import ToolContext as ContextOnly\n"
+        "def lookup(query: str, prefix: str = 'plain', ctx: ContextOnly = None) -> ReturnOnly:\n"
+        "    return {'query': query}\n"
+        "class Lookup:\n"
+        "    def __call__(self, query: str, ctx: ContextOnly = None) -> ReturnOnly:\n"
+        "        return {'query': query}\n",
+        namespace,
+    )
+    target = namespace["lookup"]
+    if shape == "partial":
+        target = partial(target, prefix="bound")
+    elif shape == "instance":
+        target = namespace["Lookup"]()
+    spec = tool(target)
+    schema = spec.to_json_schema()
+    assert schema["properties"]["query"] == {"type": "string"}
+    assert schema["required"] == ["query"]
+    assert "ctx" not in schema["properties"]
+    result = tools_from([spec], validate=True).dispatch(
+        ToolCall(tool=spec.name, args={"query": "actual input"})
+    )
+    assert result.error is None
+    assert result.data == {"query": "actual input"}
+
+
+@pytest.mark.parametrize("shape", ["function", "partial", "instance"])
+def test_input_inference_uses_wrapped_callable_annotation_globals(shape):
+    from functools import partial
+
+    from looplet import ToolCall, tool, tools_from
+
+    decorators = {"__name__": __name__ + ".decorators"}
+    exec(
+        "from functools import wraps\n"
+        "def decorate(fn):\n"
+        "    @wraps(fn)\n"
+        "    def wrapped(*args, **kwargs):\n"
+        "        return fn(*args, **kwargs)\n"
+        "    return wrapped\n",
+        decorators,
+    )
+    owner = {"__name__": __name__, "decorate": decorators["decorate"]}
+    exec(
+        "from __future__ import annotations\n"
+        "from typing import Literal\n"
+        "Choice = Literal['first', 'second']\n"
+        "@decorate\n"
+        "def choose(value: Choice, prefix: str = 'plain') -> dict:\n"
+        "    return {'choice': value}\n"
+        "class Choose:\n"
+        "    @decorate\n"
+        "    def __call__(self, value: Choice) -> dict:\n"
+        "        return {'choice': value}\n",
+        owner,
+    )
+    target = owner["choose"]
+    if shape == "partial":
+        target = partial(target, prefix="bound")
+    elif shape == "instance":
+        target = owner["Choose"]()
+    spec = tool(target)
+    assert spec.to_json_schema()["properties"]["value"] == {
+        "type": "string",
+        "enum": ["first", "second"],
+    }
+    result = tools_from([spec]).dispatch(ToolCall(tool=spec.name, args={"value": "first"}))
+    assert result.error is None
+    assert result.data == {"choice": "first"}
+
+
+@pytest.mark.parametrize("validate", [False, True])
+@pytest.mark.parametrize("width", [2, 8, 32])
+def test_dispatch_normalizes_parameter_schema_once(monkeypatch, validate, width):
+    from looplet import ToolCall, ToolSpec, tools_from
+
+    spec = ToolSpec(
+        name="work",
+        description="Return named fields",
+        parameters={f"field_{index}": {"type": "integer"} for index in range(width)},
+        execute=lambda **values: values,
+    )
+    registry = tools_from([spec], validate=validate)
+    normalize = spec.to_json_schema
+    calls = []
+
+    def counted_schema():
+        calls.append(True)
+        return normalize()
+
+    monkeypatch.setattr(spec, "to_json_schema", counted_schema)
+    arguments = {f"field_{index}": index for index in range(width)}
+    result = registry.dispatch(ToolCall(tool="work", args=arguments))
+    assert result.error is None
+    assert result.data == arguments
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_inferred_argument_policy_survives_cartridge_round_trip(tmp_path, async_mode):
+    from looplet import ToolCall, cartridge_to_preset, preset_to_cartridge, tools_from
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "cartridge.json").write_text('{"name":"typed","schema_version":2}\n')
+    (source / "config.yaml").write_text("max_steps: 2\ndone_tool: work\n")
+    tool_directory = source / "tools" / "work"
+    tool_directory.mkdir(parents=True)
+    (tool_directory / "tool.yaml").write_text("name: work\nparameters:\n  value: {type: string}\n")
+    (tool_directory / "execute.py").write_text("def execute(*, value): return {'value': value}\n")
+    with cartridge_to_preset(source, strict=True) as preset:
+        spec = preset.tools.tool_specs["work"]
+        preset.tools = tools_from([spec], validate=True)
+        exported = tmp_path / "exported"
+        preset_to_cartridge(preset, exported, name="typed", strict=True)
+
+    with cartridge_to_preset(exported, strict=True) as loaded:
+        spec = loaded.tools.tool_specs["work"]
+        spec.parameters["value"]["type"] = "integer"
+        accepted = ToolCall(tool="work", args={"value": 7})
+        result = (
+            await loaded.tools.async_dispatch(accepted)
+            if async_mode
+            else loaded.tools.dispatch(accepted)
+        )
+        assert result.error is None
+        assert result.data == {"value": 7}
+        rejected = ToolCall(tool="work", args={"value": "old"})
+        result = (
+            await loaded.tools.async_dispatch(rejected)
+            if async_mode
+            else loaded.tools.dispatch(rejected)
+        )
+        assert result.error_detail.kind.value == "validation"
+
+
 class TestToolSpecJsonSchema:
     """Test that ToolSpec accepts both simple and JSON Schema parameters."""
 
@@ -403,8 +618,8 @@ class TestToolSpecJsonSchema:
         assert result.error is None
         assert result.data == {"value": None}
 
-    @pytest.mark.parametrize("value", [None, "", "   "])
-    def test_non_nullable_required_input_still_rejects_empty_values(self, value):
+    @pytest.mark.parametrize("arguments", [{}, {"value": None}])
+    def test_non_nullable_required_input_rejects_missing_or_null(self, arguments):
         from looplet import tools_from
         from looplet.types import ToolCall
 
@@ -414,7 +629,7 @@ class TestToolSpecJsonSchema:
             received.append(value)
             return {"value": value}
 
-        result = tools_from([echo]).dispatch(ToolCall(tool="echo", args={"value": value}))
+        result = tools_from([echo]).dispatch(ToolCall(tool="echo", args=arguments))
 
         assert result.error is not None
         assert received == []

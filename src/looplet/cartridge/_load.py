@@ -1528,7 +1528,9 @@ def _workspace_to_preset_inner(
 
         validated = ValidatingToolRegistry()
         for tool_spec in registry._tools.values():
-            if tool_spec.name in argument_schemas:
+            if argument_schemas.get(tool_spec.name) == "parameters":
+                validated.register_typed(tool_spec)
+            elif tool_spec.name in argument_schemas:
                 validated.register_with_schema(tool_spec, argument_schemas[tool_spec.name])
             else:
                 validated.register(tool_spec)

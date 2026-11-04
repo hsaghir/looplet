@@ -18,6 +18,69 @@ from looplet.validation import (
     validate_args,
 )
 
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    ("parameter", "required", "accepted", "rejected", "expected"),
+    [
+        ({"type": "integer"}, ["value"], {"value": 7}, {"value": "old"}, 7),
+        (
+            {"type": "string", "enum": ["new"]},
+            ["value"],
+            {"value": "new"},
+            {"value": "old"},
+            "new",
+        ),
+        ({"type": "string"}, [], {}, {"unknown": "old"}, "fallback"),
+        ({"type": ["string", "null"]}, ["value"], {"value": None}, {"value": 7}, None),
+    ],
+)
+async def test_typed_schema_edits_follow_advertised_contract(
+    async_mode, parameter, required, accepted, rejected, expected
+):
+    from looplet import ToolSpec, tools_from
+
+    observed = []
+
+    def execute(value="fallback"):
+        observed.append(value)
+        return {"value": value}
+
+    spec = ToolSpec(
+        name="work",
+        description="Return the supplied value",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["old"]}},
+            "required": ["value"],
+        },
+        execute=execute,
+    )
+    registry = tools_from([spec], validate=True)
+    spec.parameters["properties"]["value"] = parameter
+    spec.parameters["required"] = required
+    assert registry.tool_view().schemas[0]["input_schema"] == spec.parameters
+
+    accepted_call = ToolCall(tool="work", args=accepted)
+    result = (
+        await registry.async_dispatch(accepted_call)
+        if async_mode
+        else registry.dispatch(accepted_call)
+    )
+    assert result.error is None
+    assert result.data == {"value": expected}
+    assert observed == [expected]
+
+    rejected_call = ToolCall(tool="work", args=rejected)
+    result = (
+        await registry.async_dispatch(rejected_call)
+        if async_mode
+        else registry.dispatch(rejected_call)
+    )
+    assert result.error_detail.kind.value == "validation"
+    assert observed == [expected]
+
+
 # ── FieldSpec ────────────────────────────────────────────────────────
 
 

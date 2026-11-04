@@ -360,7 +360,7 @@ def _write_preset_to_cartridge(
         if argument_validation is not None:
             compatibility = workspace.compatibility.to_dict()
             constraint = workspace.compatibility.looplet or ""
-            minimum = ">0.4.0"
+            minimum = ">0.4.1" if schemas[spec.name] == "parameters" else ">0.4.0"
             if minimum not in [part.strip() for part in constraint.split(",")]:
                 compatibility["looplet"] = f"{constraint},{minimum}" if constraint else minimum
                 workspace.compatibility = CartridgeCompatibility.from_dict(compatibility)

@@ -34,6 +34,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Inferred typed validation follows edits to tool parameter schemas, including after cartridge export and load. Explicit argument policies remain independent.
+- Callable input inference ignores unused return and injected-context annotations. Dispatch normalizes parameter schemas once per call without caching editable schemas.
+- Full JSON Schema inputs and inferred Python functions accept valid blank strings. Legacy shorthand blank checks remain; tools can enforce nonblank content with `ToolValidationError` before effects.
 - Async persistence preserves the first caller cancellation even when a started write fails. The write error remains available as exception context.
 - Async dispatch retains results through thread-safe external stores off the event loop. Started writes drain before cancellation returns, preserving its first exception.
 - Async batches refill free dispatch slots without waiting for slower calls. Caps bound dispatch tasks, preserve serial barriers, and retain result order. Shared dispatch Futures cannot replace another call's result slot. Cancellation drains started concurrent dispatches before returning.

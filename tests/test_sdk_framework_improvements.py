@@ -514,9 +514,17 @@ async def test_default_child_state_honors_model_call_cap(asynchronous, max_model
             use_native_tools=False,
         ),
     }
+    if max_model_calls == 0:
+        with pytest.raises(ValueError, match=r"max_model_calls.*positive"):
+            if asynchronous:
+                await run_sub_loop_async(**request)
+            else:
+                run_sub_loop(**request)
+        assert not calls
+        return
     result = await run_sub_loop_async(**request) if asynchronous else run_sub_loop(**request)
-    assert len(calls) == result["llm_calls"] == max_model_calls
-    assert result["completed"] is (max_model_calls == 1)
+    assert len(calls) == result["llm_calls"] == 1
+    assert result["completed"]
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

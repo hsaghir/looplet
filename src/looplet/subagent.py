@@ -1270,6 +1270,7 @@ class _MinimalState:
         self.max_steps = max_steps
         self.steps: list = []
         self.queries_used: int = 0
+        self.metadata: dict[str, Any] = {}
 
     @property
     def step_count(self) -> int:

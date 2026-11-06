@@ -491,6 +491,35 @@ def test_read_result_and_recall_result_support_line_ranges(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("max_model_calls", [0, 1])
+async def test_default_child_state_honors_model_call_cap(asynchronous, max_model_calls):
+    from looplet import run_sub_loop, run_sub_loop_async
+
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return json.dumps({"tool": "done", "args": {"summary": "ok"}})
+
+    request = {
+        "llm": Backend(),
+        "tools": tools_from([], include_done=True),
+        "task": "Finish within the caller's model allowance.",
+        "max_steps": 1,
+        "config": LoopConfig(
+            harness_profile="minimal",
+            max_steps=1,
+            max_model_calls=max_model_calls,
+            use_native_tools=False,
+        ),
+    }
+    result = await run_sub_loop_async(**request) if asynchronous else run_sub_loop(**request)
+    assert len(calls) == result["llm_calls"] == max_model_calls
+    assert result["completed"] is (max_model_calls == 1)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("max_concurrency", [2, 4])
 async def test_child_fanout_bounds_scheduled_work(monkeypatch, asynchronous, max_concurrency):
     from concurrent.futures import ThreadPoolExecutor

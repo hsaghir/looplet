@@ -430,6 +430,7 @@ def llm_call_with_retry(
     cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
     should_continue: Callable[[], bool] | None = None,
+    on_chunk: Callable[[str, int], None] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -504,6 +505,8 @@ def llm_call_with_retry(
                     call_kwargs["cancel_token"] = cancel_token
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
+                if on_chunk is not None and _accepts_kwarg(call, "on_chunk"):
+                    call_kwargs["on_chunk"] = on_chunk
                 if recovery is None:
                     recovery = _NativeTurnRecovery(llm, max_continuations)
                 recovery.begin_call(prompt)
@@ -526,21 +529,50 @@ def llm_call_with_retry(
                     recovery.observe_usage(llm, blocks)
                     stop = getattr(llm, "last_stop_reason", None)
                 return recovery.finish(_native_llm_result(blocks, stop, recovery.continuations))
-            call = llm.generate
-            call_kwargs = {
-                "max_tokens": max_tokens,
-                "system_prompt": system_prompt,
-                "temperature": temperature,
-            }
-            if generate_kwargs:
-                for k, v in generate_kwargs.items():
-                    if _accepts_kwarg(call, k):
-                        call_kwargs[k] = v
-            if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
-                call_kwargs["cancel_token"] = cancel_token
-            if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
-                call_kwargs["cache_breakpoints"] = cache_breakpoints
-            text = call(prompt, **call_kwargs)
+            stream_fn: Any = (
+                getattr(llm, "stream", None)
+                if on_chunk is not None and getattr(llm, "stream_in_loop", True)
+                else None
+            )
+            if callable(stream_fn) and on_chunk is not None:
+                stream_kwargs: dict[str, Any] = {
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                }
+                if generate_kwargs:
+                    for k, v in generate_kwargs.items():
+                        if _accepts_kwarg(stream_fn, k):
+                            stream_kwargs[k] = v
+                if cancel_token is not None and _backend_accepts_cancel_token(llm, "stream"):
+                    stream_kwargs["cancel_token"] = cancel_token
+                if cache_breakpoints and _accepts_kwarg(stream_fn, "cache_breakpoints"):
+                    stream_kwargs["cache_breakpoints"] = cache_breakpoints
+                chunks: list[str] = []
+                stream_iter: Any = stream_fn(prompt, **stream_kwargs)
+                for idx, chunk in enumerate(stream_iter):
+                    if isinstance(chunk, str) and chunk:
+                        on_chunk(chunk, idx)
+                        chunks.append(chunk)
+                text = "".join(chunks)
+                call = llm.generate
+                call_kwargs = stream_kwargs
+            else:
+                call = llm.generate
+                call_kwargs = {
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                }
+                if generate_kwargs:
+                    for k, v in generate_kwargs.items():
+                        if _accepts_kwarg(call, k):
+                            call_kwargs[k] = v
+                if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
+                    call_kwargs["cancel_token"] = cancel_token
+                if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
+                    call_kwargs["cache_breakpoints"] = cache_breakpoints
+                text = call(prompt, **call_kwargs)
             stop = getattr(llm, "last_stop_reason", None)
             # Budget-aware turn continuation: if the backend reports the
             # generation was cut off at ``max_tokens`` and the caller

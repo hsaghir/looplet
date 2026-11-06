@@ -31,6 +31,8 @@ The module has zero third-party dependencies.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import random
 import threading
@@ -48,7 +50,7 @@ from looplet.backend_contract import (
 )
 from looplet.types import LLMBackend
 
-__all__ = ["ResilientBackend", "RetryExhausted"]
+__all__ = ["AsyncResilientBackend", "ResilientBackend", "RetryExhausted"]
 
 logger = logging.getLogger("looplet.resilient")
 _RETRY_ACTIVE: ContextVar[bool] = ContextVar("looplet_resilient_retry_active", default=False)
@@ -112,6 +114,22 @@ def _run_with_timeout(
     return result[0]
 
 
+async def _async_run_with_timeout(
+    fn: Callable[[], Any],
+    timeout_s: float | None,
+) -> Any:
+    """Await ``fn()`` with an optional ``timeout_s`` deadline."""
+    coro_or_val = fn()
+    if not inspect.isawaitable(coro_or_val):
+        return coro_or_val
+    if timeout_s is None or timeout_s <= 0:
+        return await coro_or_val
+    try:
+        return await asyncio.wait_for(coro_or_val, timeout=timeout_s)
+    except TimeoutError as exc:
+        raise _LocalTimeout(f"LLM call exceeded {timeout_s}s timeout") from exc
+
+
 class ResilientBackend:
     """Wrap an :class:`LLMBackend` with retry + timeout.
 
@@ -139,7 +157,7 @@ class ResilientBackend:
         max_delay_s: float = 8.0,
         jitter: float = 0.2,
         retry_on: Callable[[BaseException], bool] = _default_retry_on,
-        sleep: Callable[[float], None] | None = None,
+        sleep: Callable[[float], Any] | None = None,
     ) -> None:
         if retries < 1:
             raise ValueError("retries must be >= 1")
@@ -150,15 +168,22 @@ class ResilientBackend:
         self._max_delay_s = max_delay_s
         self._jitter = jitter
         self._retry_on = retry_on
+        self._custom_sleep = sleep is not None
         if sleep is None:
             import time
 
             sleep = time.sleep
         self._sleep = sleep
 
+        if inspect.iscoroutinefunction(getattr(inner, "generate", None)):
+            self.generate = self._async_generate_impl  # type: ignore[method-assign]
+
         # Expose generate_with_tools only if the wrapped backend has it.
         if hasattr(inner, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl
+            if inspect.iscoroutinefunction(getattr(inner, "generate_with_tools", None)):
+                self.generate_with_tools = self._async_generate_with_tools_impl
+            else:
+                self.generate_with_tools = self._generate_with_tools_impl
 
     _looplet_manages_retries = True
 
@@ -235,6 +260,54 @@ class ResilientBackend:
 
         return self._attempt(_call, op="generate_with_tools")
 
+    async def _async_generate_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> str:
+        def _call() -> Any:
+            return invoke_backend(
+                self._inner.generate,
+                prompt,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                },
+            )
+
+        return await self._async_attempt(_call, op="generate")
+
+    async def _async_generate_with_tools_impl(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Any:
+        def _call() -> Any:
+            return invoke_backend(
+                getattr(self._inner, "generate_with_tools"),
+                prompt,
+                {
+                    **options,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                },
+            )
+
+        return await self._async_attempt(_call, op="generate_with_tools")
+
     # ── internals ─────────────────────────────────────────────
 
     def _attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
@@ -286,6 +359,62 @@ class ResilientBackend:
                 self._sleep(delay)
         raise RetryExhausted(errors) from errors[-1]
 
+    async def _async_attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
+        if single_model_request_active():
+            if not self.request_policy.supports_single_model_request:
+                raise TerminalLLMError(
+                    "Retry-owning backend does not support single-request admission",
+                    termination_reason="unsupported_context",
+                )
+            try:
+                return await _async_run_with_timeout(fn, self._timeout_s)
+            except _LocalTimeout as error:
+                raise TerminalLLMError(
+                    "Model request timed out; provider completion is uncertain",
+                    termination_reason="llm_error",
+                ) from error
+        if _RETRY_ACTIVE.get():
+            return await _async_run_with_timeout(fn, self._timeout_s)
+        token = _RETRY_ACTIVE.set(True)
+        try:
+            return await self._async_owned_attempt(fn, op=op)
+        finally:
+            _RETRY_ACTIVE.reset(token)
+
+    async def _async_owned_attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
+        errors: list[BaseException] = []
+        for attempt in range(1, self._retries + 1):
+            try:
+                return await _async_run_with_timeout(fn, self._timeout_s)
+            except BaseException as exc:  # noqa: BLE001 - decide below
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                if isinstance(exc, _LocalTimeout) and self._retry_on is _default_retry_on:
+                    errors.append(exc)
+                    raise RetryExhausted(errors) from exc
+                if not self._retry_on(exc):
+                    raise
+                errors.append(exc)
+                if attempt >= self._retries:
+                    break
+                delay = self._backoff_delay(attempt)
+                logger.warning(
+                    "ResilientBackend %s attempt %d/%d failed (%s: %s); retrying in %.2fs",
+                    op,
+                    attempt,
+                    self._retries,
+                    type(exc).__name__,
+                    exc,
+                    delay,
+                )
+                if self._custom_sleep:
+                    maybe_coro = self._sleep(delay)
+                    if inspect.isawaitable(maybe_coro):
+                        await maybe_coro
+                else:
+                    await asyncio.sleep(delay)
+        raise RetryExhausted(errors) from errors[-1]
+
     def _backoff_delay(self, attempt: int) -> float:
         """Exponential backoff with optional jitter."""
         raw = self._base_delay_s * (2 ** (attempt - 1))
@@ -295,3 +424,6 @@ class ResilientBackend:
         # Multiplicative jitter in [1 - jitter, 1 + jitter].
         factor = 1.0 + random.uniform(-self._jitter, self._jitter)
         return max(0.0, capped * factor)
+
+
+AsyncResilientBackend = ResilientBackend

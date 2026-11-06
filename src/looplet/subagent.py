@@ -44,6 +44,9 @@ from looplet.types import CancelToken, RunEnvelope
 __all__ = [
     "run_sub_loop",
     "run_sub_loop_async",
+    "async_run_sub_loop",
+    "run_sub_loops",
+    "run_sub_loops_parallel",
     "run_sub_loops_async",
     "clone_tools_excluding",
     "ChildRunPolicy",
@@ -1073,6 +1076,58 @@ async def run_sub_loops_async(
     async with asyncio.TaskGroup() as group:
         tasks = [group.create_task(execute(request)) for request in requests]
     return [task.result() for task in tasks]
+
+
+async_run_sub_loop = run_sub_loop_async
+
+
+def run_sub_loops(
+    requests: list[dict[str, Any]],
+    *,
+    max_concurrency: int = 4,
+) -> list[dict[str, Any]]:
+    """Run synchronous child requests concurrently and return results in request order.
+
+    Each request supplies the keyword arguments for ``run_sub_loop``.
+    Failed or cancelled children raise an ``ExceptionGroup`` of :class:`ChildRunFailed`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+
+    if (
+        isinstance(max_concurrency, bool)
+        or not isinstance(max_concurrency, int)
+        or max_concurrency < 1
+    ):
+        raise ValueError("max_concurrency must be a positive integer")
+    if not requests:
+        return []
+
+    def _execute(request: dict[str, Any]) -> dict[str, Any]:
+        result = run_sub_loop(**request)
+        if result["status"] in {"failed", "cancelled"}:
+            raise ChildRunFailed(result)
+        return result
+
+    worker_count = min(max_concurrency, len(requests))
+    results: list[dict[str, Any] | None] = [None] * len(requests)
+    errors: list[Exception] = []
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [
+            (idx, pool.submit(copy_context().run, _execute, req))
+            for idx, req in enumerate(requests)
+        ]
+        for idx, fut in futures:
+            try:
+                results[idx] = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+    if errors:
+        raise ExceptionGroup("subagent failures", errors)
+    return [r for r in results if r is not None]
+
+
+run_sub_loops_parallel = run_sub_loops
 
 
 class _ChildBudgetStopHook:

@@ -183,7 +183,7 @@ from looplet.presets import (
 )
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
-from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.resilient import AsyncResilientBackend, ResilientBackend, RetryExhausted
 from looplet.result_store import FileToolResultStore
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
 from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
@@ -209,8 +209,22 @@ from looplet.state_service import (
     StateServiceClient,
     StateServiceHandle,
 )
-from looplet.streaming import StreamingHook
-from looplet.subagent import run_sub_loop, run_sub_loop_async, run_sub_loops_async
+from looplet.streaming import (
+    AsyncStreamingToolExecutor,
+    StreamingHook,
+    StreamingToolExecutor,
+)
+from looplet.subagent import (
+    ChildRunLimitExceeded,
+    ChildRunPolicy,
+    SharedModelBudget,
+    async_run_sub_loop,
+    run_sub_loop,
+    run_sub_loop_async,
+    run_sub_loops,
+    run_sub_loops_async,
+    run_sub_loops_parallel,
+)
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
 from looplet.tools import (
@@ -238,6 +252,7 @@ from looplet.types import (
     RunStatus,
     Step,
     ToolCall,
+    ToolCancelledError,
     ToolContext,
     ToolError,
     ToolResult,
@@ -383,6 +398,8 @@ __all__ = [
     "scaffold_cartridge",
     "resource_ref_for",
     "StreamingHook",
+    "StreamingToolExecutor",
+    "AsyncStreamingToolExecutor",
     "Tracer",
     "TracingHook",
     "MetricsCollector",
@@ -464,7 +481,17 @@ __all__ = [
     "ExecutionSession",
     "AgentRuntime",
     "RunHandle",
+    "AsyncResilientBackend",
+    "ToolCancelledError",
+    "ChildRunLimitExceeded",
+    "ChildRunPolicy",
+    "SharedModelBudget",
     "run_sub_loop",
+    "run_sub_loop_async",
+    "async_run_sub_loop",
+    "run_sub_loops",
+    "run_sub_loops_parallel",
+    "run_sub_loops_async",
     # ── PRESETS (one-liner agent setup) ─────────────────────────
     "AgentPreset",
     "ShutdownReport",

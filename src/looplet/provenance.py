@@ -524,6 +524,9 @@ class RecordingLLMBackend(_RecordingBase):
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
+        if hasattr(backend, "stream") and getattr(backend, "stream_in_loop", True):
+            self.stream = self._stream_impl
+            self.stream_in_loop = True
 
     def generate(
         self,
@@ -621,6 +624,55 @@ class RecordingLLMBackend(_RecordingBase):
                 options=options,
             )
 
+    def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Iterator[str]:
+        started = time.time()
+        error: str | None = None
+        termination_reason: str | None = None
+        chunks: list[str] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
+        try:
+            stream_iter = invoke_backend(
+                self._backend.stream,
+                upstream_prompt,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
+            )
+            for chunk in stream_iter:
+                chunks.append(chunk)
+                yield chunk
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
+            raise
+        finally:
+            self._record(
+                method="generate",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                response="".join(chunks),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=None,
+                started_at=started,
+                error=error,
+                termination_reason=termination_reason,
+                options=options,
+            )
+
 
 class AsyncRecordingLLMBackend(_RecordingBase):
     """Async counterpart to :class:`RecordingLLMBackend`."""
@@ -641,6 +693,9 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
+        if hasattr(backend, "stream") and getattr(backend, "stream_in_loop", True):
+            self.stream = self._stream_impl
+            self.stream_in_loop = True
 
     async def generate(
         self,
@@ -738,6 +793,64 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
+                started_at=started,
+                error=error,
+                termination_reason=termination_reason,
+                options=options,
+            )
+
+    async def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Any:
+        import inspect
+
+        started = time.time()
+        error: str | None = None
+        termination_reason: str | None = None
+        chunks: list[str] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
+        try:
+            stream_out = invoke_backend(
+                self._backend.stream,
+                upstream_prompt,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
+            )
+            if inspect.isawaitable(stream_out):
+                stream_out = await stream_out
+            if hasattr(stream_out, "__aiter__"):
+                async for chunk in stream_out:
+                    chunks.append(chunk)
+                    yield chunk
+            else:
+                for chunk in stream_out:
+                    chunks.append(chunk)
+                    yield chunk
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
+            raise
+        finally:
+            self._record(
+                method="generate",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                response="".join(chunks),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=None,
                 started_at=started,
                 error=error,
                 termination_reason=termination_reason,
@@ -938,6 +1051,26 @@ class TrajectoryRecorder:
         )
         self._pending_context = ""
         return None
+
+    def on_event(self, payload: Any) -> None:
+        from looplet.events import LifecycleEvent  # noqa: PLC0415
+
+        if getattr(payload, "event", None) == LifecycleEvent.SUBAGENT_STOP:
+            extra = getattr(payload, "extra", None)
+            extra_dict = dict(extra) if isinstance(extra, dict) else {}
+            subagents = self.trajectory.metadata.setdefault("subagents", [])
+            if isinstance(subagents, list):
+                subagents.append(
+                    {
+                        "subagent_id": getattr(payload, "subagent_id", None)
+                        or extra_dict.get("subagent_id"),
+                        "parent_id": extra_dict.get("parent_id"),
+                        "termination_reason": getattr(payload, "termination_reason", None),
+                        "step_count": extra_dict.get("step_count", 0),
+                        "llm_calls": extra_dict.get("llm_calls", 0),
+                        "recovered": extra_dict.get("recovered", False),
+                    }
+                )
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
         from looplet._backend_contract import json_snapshot

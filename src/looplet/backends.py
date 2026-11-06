@@ -788,6 +788,8 @@ class OpenAIStreamingBackend(OpenAIBackend):
         full = llm.generate("prompt")
     """
 
+    stream_in_loop = True
+
     def stream(
         self,
         prompt: str,
@@ -977,6 +979,8 @@ class AnthropicStreamingBackend(AnthropicBackend):
             print(chunk, end="")
     """
 
+    stream_in_loop = True
+
     def stream(
         self,
         prompt: str,
@@ -1016,6 +1020,7 @@ class AsyncOpenAIBackend(_ConversationBackend):
     """
 
     _provider = "openai"
+    stream_in_loop = False
 
     def __init__(
         self,
@@ -1178,6 +1183,12 @@ class AsyncOpenAIBackend(_ConversationBackend):
                 yield text
 
 
+class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
+    """Async OpenAI backend with token-level streaming enabled in the loop."""
+
+    stream_in_loop = True
+
+
 # ── Async Anthropic Backend ──────────────────────────────────────
 
 
@@ -1191,6 +1202,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
 
     _native_blocks = True
     _provider = "anthropic"
+    stream_in_loop = False
 
     def __init__(
         self,

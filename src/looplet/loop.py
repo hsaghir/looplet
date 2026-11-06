@@ -3429,6 +3429,17 @@ def _composable_loop_impl(
                     )
             _llm_t0 = time.perf_counter()
             _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
+            _chunk_emitters = [h.emitter for h in hooks if isinstance(h, _StreamingHook)]
+            if stream is not None and not _has_streaming_hook:
+                _chunk_emitters.append(stream)
+
+            def _emit_chunk(chunk: str, chunk_index: int) -> None:
+                from looplet.streaming import LLMChunkEvent  # noqa: PLC0415
+
+                ev = LLMChunkEvent(step_num=step_num, chunk=chunk, chunk_index=chunk_index)
+                for em in _chunk_emitters:
+                    em.emit(ev)
+
             llm_result = llm_call_with_retry(
                 effective_llm,
                 prompt,
@@ -3442,6 +3453,7 @@ def _composable_loop_impl(
                 cache_breakpoints=_cache_bps,
                 generate_kwargs=config.generate_kwargs or None,
                 should_continue=lambda: not _deadline_expired(loop_ctx),
+                on_chunk=_emit_chunk if _chunk_emitters else None,
             )
             loop_ctx.native_tool_stats.record(llm_result)
             llm_calls += llm_result.calls + (
@@ -3963,7 +3975,7 @@ def _composable_loop_impl(
                     "parallel"
                     if config.concurrent_dispatch
                     and tool_spec is not None
-                    and tool_spec.concurrent_safe
+                    and tool_spec.is_concurrent_safe(tool_call.args)
                     else "serial"
                 )
                 event_metadata = _step_metadata(

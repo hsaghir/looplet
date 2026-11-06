@@ -155,8 +155,12 @@ class SharedModelBudget:
         deadline: float | None = None,
         cancel_token: CancelToken | None = None,
     ) -> Any:
-        from looplet.loop import _ScopedLLMProxy
+        from looplet.loop import _ScopedLLMProxy, _SyncToAsyncLLM
 
+        if isinstance(backend, _SyncToAsyncLLM):
+            return _SyncToAsyncLLM(
+                self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token)
+            )
         if isinstance(backend, _ScopedLLMProxy):
             return _ScopedLLMProxy(
                 self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token),

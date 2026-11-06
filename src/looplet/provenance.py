@@ -48,10 +48,11 @@ import re
 import time
 from collections.abc import MutableSequence
 from contextlib import aclosing, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from uuid import uuid4
 
@@ -65,6 +66,7 @@ from looplet._backend_contract import (
 from looplet._storage import DiskBackedDict, DiskBackedList
 from looplet.artifact_compat import (
     _artifact_path,
+    _atomic_write,
     begin_artifact_write,
     read_artifact_descriptor,
     write_artifact_descriptor,
@@ -88,8 +90,47 @@ def _clear_call_artifacts(root: Path) -> None:
     (root / "manifest.jsonl").unlink(missing_ok=True)
 
 
+def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
+    """Read durable attempts independently of trajectory or manifest export.
+
+    Missing outcomes remain ``None``; an intent or pre-dispatch callback does
+    not attest that a provider received a request. Records are sorted by ID.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    root = Path(directory) / "model-attempts"
+    for path in sorted(root.glob("*.json")):
+        match = re.fullmatch(r"([0-9a-f]{32})\.(intent|outcome|dispatch-\d{4})\.json", path.name)
+        if match is None:
+            raise ValueError(f"Invalid model attempt filename: {path.name}")
+        attempt_id, kind = match.groups()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or (
+            payload.get("schema"),
+            payload.get("attempt_id"),
+            payload.get("kind"),
+        ) != ("looplet.model-attempt.v1", attempt_id, kind):
+            raise ValueError(f"Invalid model attempt record: {path.name}")
+        grouped.setdefault(attempt_id, {})[kind] = payload
+    attempts = []
+    for attempt_id, records in sorted(grouped.items()):
+        if "intent" not in records:
+            raise ValueError(f"Model attempt has no committed intent: {attempt_id}")
+        attempts.append(
+            {
+                "attempt_id": attempt_id,
+                "intent": records["intent"],
+                "prepared_requests": [
+                    records[kind] for kind in sorted(records) if kind.startswith("dispatch-")
+                ],
+                "outcome": records.get("outcome"),
+            }
+        )
+    return attempts
+
+
 __all__ = [
     "LLMCall",
+    "load_model_attempts",
     "RecordingLLMBackend",
     "AsyncRecordingLLMBackend",
     "StepRecord",
@@ -231,8 +272,10 @@ class _RecordingBase:
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
+        attempt_directory: str | Path | None = None,
     ) -> None:
         self._backend = backend
+        self._attempt_directory = Path(attempt_directory) if attempt_directory is not None else None
         self._max_chars = max_chars_per_call
         self._redact = redact
         # When True (default), ``redact`` is also applied to the prompt
@@ -241,6 +284,7 @@ class _RecordingBase:
         # trace.  Set to False to record-only.
         self._redact_upstream = redact_upstream
         self.calls: MutableSequence[LLMCall] = DiskBackedList(vars, lambda value: LLMCall(**value))
+        self._calls_lock = Lock()
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
         self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_model_call_context", default=None
@@ -269,8 +313,10 @@ class _RecordingBase:
             max_chars_per_call=self._max_chars,
             redact=self._redact,
             redact_upstream=self._redact_upstream,
+            attempt_directory=self._attempt_directory,
         )
         recorder.calls = self.calls
+        recorder._calls_lock = self._calls_lock
         recorder.current_step_num = self.current_step_num
         recorder._call_scope = self._call_scope
         recorder._model_call_context = self._model_call_context
@@ -335,6 +381,121 @@ class _RecordingBase:
     def _redact_native_response(self, value: Any) -> Any:
         return _redact_value(value, self._redact)
 
+    def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> None:
+        assert self._attempt_directory is not None
+        self._attempt_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        policy = self._attempt_directory / ".gitignore"
+        if not policy.exists():
+            _atomic_write(policy, "*\n")
+        payload = _redact_value(
+            json_snapshot(
+                {
+                    "schema": "looplet.model-attempt.v1",
+                    "kind": kind,
+                    "attempt_id": attempt_id,
+                    **value,
+                }
+            ),
+            self._redact,
+        )
+        _atomic_write(
+            self._attempt_directory / f"{attempt_id}.{kind}.json",
+            json.dumps(payload, ensure_ascii=True, allow_nan=False),
+        )
+
+    def _begin_attempt(
+        self,
+        *,
+        method: str,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float | None,
+        tools: list[dict[str, Any]] | None,
+        options: dict[str, Any],
+    ) -> str | None:
+        if self._attempt_directory is None:
+            return None
+        attempt_id = uuid4().hex
+        self._write_attempt(
+            attempt_id,
+            "intent",
+            {
+                "started_at": time.time(),
+                "execution": self._model_call_context.get(),
+                "scope": "logical_request_intent_not_provider_delivery_attestation",
+                "request": {
+                    "method": method,
+                    "prompt": prompt,
+                    "system_prompt": system_prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "tools": tools,
+                    "options": options,
+                    "conversation_input": self._conversation_input.get(),
+                },
+            },
+        )
+        return attempt_id
+
+    @contextmanager
+    def _capture_dispatch(
+        self,
+        attempt_id: str | None,
+        prepared_requests: list[Any],
+    ) -> Iterator[None]:
+        setter = getattr(self._backend, "set_request_attempt_callback", None)
+        if attempt_id is None or not callable(setter):
+            yield
+            return
+        previous = getattr(self._backend, "request_attempt_callback", None)
+
+        def prepared() -> None:
+            if callable(previous):
+                previous()
+            request = json_snapshot(getattr(self._backend, "last_request", None))
+            prepared_requests.append(request)
+            self._write_attempt(
+                attempt_id,
+                f"dispatch-{len(prepared_requests):04d}",
+                {
+                    "provider_request": request,
+                    "scope": "backend_pre_dispatch_callback_not_provider_delivery_attestation",
+                },
+            )
+
+        setter(prepared)
+        try:
+            yield
+        finally:
+            setter(previous)
+
+    async def _capture_io(self, operation: Callable[[], Any]) -> Any:
+        import asyncio
+
+        if self._attempt_directory is None:
+            return operation()
+        pending = asyncio.get_running_loop().run_in_executor(
+            None,
+            copy_context().run,
+            operation,
+        )
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(pending)
+                break
+            except asyncio.CancelledError as failure:
+                if cancelled is None:
+                    cancelled = failure
+            except Exception as failure:
+                if cancelled is not None:
+                    raise cancelled from failure
+                raise
+        if cancelled is not None:
+            raise cancelled
+        return result
+
     def _record(
         self,
         *,
@@ -349,6 +510,10 @@ class _RecordingBase:
         error: str | None = None,
         termination_reason: str | None = None,
         options: dict[str, Any] | None = None,
+        attempt_id: str | None = None,
+        failure: BaseException | None = None,
+        prepared_requests: list[Any] | None = None,
+        persist: bool = True,
     ) -> LLMCall:
         duration_ms = (time.time() - started_at) * 1000.0
         execution = self._model_call_context.get()
@@ -389,7 +554,9 @@ class _RecordingBase:
                             "conversation_input": self._conversation_input.get(),
                         },
                         "response": response,
-                        "provider_request": getattr(self._backend, "last_request", None),
+                        "provider_request": (prepared_requests[-1] if prepared_requests else None)
+                        if error is not None and attempt_id is not None
+                        else getattr(self._backend, "last_request", None),
                         "provider_response": (
                             getattr(self._backend, "last_response", None) if error is None else None
                         ),
@@ -415,8 +582,40 @@ class _RecordingBase:
                 self._redact,
             ),
         )
-        self.calls.append(call)
+        if attempt_id is not None:
+            assert call.capture is not None
+            call.capture["attempt_id"] = attempt_id
+        if persist:
+            self._commit_call(call, attempt_id, failure)
         return call
+
+    def _commit_call(
+        self,
+        call: LLMCall,
+        attempt_id: str | None,
+        failure: BaseException | None,
+    ) -> None:
+        if attempt_id is not None:
+            try:
+                self._write_attempt(
+                    attempt_id,
+                    "outcome",
+                    {
+                        "capture": call.capture,
+                        "scope": "logical_outcome_and_backend_reported_provider_envelopes",
+                        "response_complete": call.error is None,
+                    },
+                )
+            except Exception as capture_failure:
+                if failure is None:
+                    raise
+                failure.add_note(
+                    f"Attempt outcome persistence failed: {type(capture_failure).__name__}: "
+                    f"{capture_failure}"
+                )
+        with self._calls_lock:
+            call.index = len(self.calls)
+            self.calls.append(call)
 
     # ── disk IO ─────────────────────────────────────────────────
 
@@ -515,12 +714,14 @@ class RecordingLLMBackend(_RecordingBase):
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
+        attempt_directory: str | Path | None = None,
     ) -> None:
         super().__init__(
             backend,
             max_chars_per_call=max_chars_per_call,
             redact=redact,
             redact_upstream=redact_upstream,
+            attempt_directory=attempt_directory,
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
@@ -536,23 +737,36 @@ class RecordingLLMBackend(_RecordingBase):
     ) -> str:
         started = time.time()
         error: str | None = None
+        failure: BaseException | None = None
         termination_reason: str | None = None
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        attempt_id = self._begin_attempt(
+            method="generate",
+            prompt=upstream_prompt,
+            system_prompt=upstream_system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=None,
+            options=options,
+        )
+        prepared_requests: list[Any] = []
         try:
-            response = invoke_backend(
-                self._backend.generate,
-                upstream_prompt,
-                {
-                    **options,
-                    "max_tokens": max_tokens,
-                    "system_prompt": upstream_system,
-                    "temperature": temperature,
-                },
-            )
+            with self._capture_dispatch(attempt_id, prepared_requests):
+                response = invoke_backend(
+                    self._backend.generate,
+                    upstream_prompt,
+                    {
+                        **options,
+                        "max_tokens": max_tokens,
+                        "system_prompt": upstream_system,
+                        "temperature": temperature,
+                    },
+                )
             return response
-        except Exception as exc:
+        except BaseException as exc:
+            failure = exc
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
@@ -570,6 +784,9 @@ class RecordingLLMBackend(_RecordingBase):
                 error=error,
                 termination_reason=termination_reason,
                 options=options,
+                attempt_id=attempt_id,
+                failure=failure,
+                prepared_requests=prepared_requests,
             )
 
     def _generate_with_tools_impl(
@@ -584,24 +801,37 @@ class RecordingLLMBackend(_RecordingBase):
     ) -> list[dict[str, Any]]:
         started = time.time()
         error: str | None = None
+        failure: BaseException | None = None
         termination_reason: str | None = None
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        attempt_id = self._begin_attempt(
+            method="generate_with_tools",
+            prompt=upstream_prompt,
+            system_prompt=upstream_system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            options=options,
+        )
+        prepared_requests: list[Any] = []
         try:
-            response = invoke_backend(
-                self._backend.generate_with_tools,
-                upstream_prompt,
-                {
-                    **options,
-                    "tools": tools,
-                    "max_tokens": max_tokens,
-                    "system_prompt": upstream_system,
-                    "temperature": temperature,
-                },
-            )
+            with self._capture_dispatch(attempt_id, prepared_requests):
+                response = invoke_backend(
+                    self._backend.generate_with_tools,
+                    upstream_prompt,
+                    {
+                        **options,
+                        "tools": tools,
+                        "max_tokens": max_tokens,
+                        "system_prompt": upstream_system,
+                        "temperature": temperature,
+                    },
+                )
             return response
-        except Exception as exc:
+        except BaseException as exc:
+            failure = exc
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
@@ -619,6 +849,9 @@ class RecordingLLMBackend(_RecordingBase):
                 error=error,
                 termination_reason=termination_reason,
                 options=options,
+                attempt_id=attempt_id,
+                failure=failure,
+                prepared_requests=prepared_requests,
             )
 
 
@@ -632,12 +865,14 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
+        attempt_directory: str | Path | None = None,
     ) -> None:
         super().__init__(
             backend,
             max_chars_per_call=max_chars_per_call,
             redact=redact,
             redact_upstream=redact_upstream,
+            attempt_directory=attempt_directory,
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
@@ -655,10 +890,22 @@ class AsyncRecordingLLMBackend(_RecordingBase):
 
         started = time.time()
         error: str | None = None
+        failure: BaseException | None = None
         termination_reason: str | None = None
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        attempt_id = await self._capture_io(
+            lambda: self._begin_attempt(
+                method="generate",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=None,
+                options=options,
+            )
+        )
         try:
             pending = invoke_backend(
                 self._backend.generate,
@@ -672,25 +919,33 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             )
             response = await pending if inspect.isawaitable(pending) else pending
             return response
-        except Exception as exc:
+        except BaseException as exc:
+            failure = exc
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
             raise
         finally:
-            self._record(
-                method="generate",
-                prompt=upstream_prompt,
-                system_prompt=upstream_system,
-                response=response,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=None,
-                started_at=started,
-                error=error,
-                termination_reason=termination_reason,
-                options=options,
-            )
+            try:
+                call = self._record(
+                    method="generate",
+                    prompt=upstream_prompt,
+                    system_prompt=upstream_system,
+                    response=response,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=None,
+                    started_at=started,
+                    error=error,
+                    termination_reason=termination_reason,
+                    options=options,
+                    attempt_id=attempt_id,
+                    failure=failure,
+                    persist=False,
+                )
+                await self._capture_io(lambda: self._commit_call(call, attempt_id, failure))
+            finally:
+                self._model_call_context.set(None)
 
     async def _generate_with_tools_impl(
         self,
@@ -706,10 +961,22 @@ class AsyncRecordingLLMBackend(_RecordingBase):
 
         started = time.time()
         error: str | None = None
+        failure: BaseException | None = None
         termination_reason: str | None = None
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        attempt_id = await self._capture_io(
+            lambda: self._begin_attempt(
+                method="generate_with_tools",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                options=options,
+            )
+        )
         try:
             pending = invoke_backend(
                 self._backend.generate_with_tools,
@@ -724,25 +991,33 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             )
             response = await pending if inspect.isawaitable(pending) else pending
             return response
-        except Exception as exc:
+        except BaseException as exc:
+            failure = exc
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
             raise
         finally:
-            self._record(
-                method="generate_with_tools",
-                prompt=upstream_prompt,
-                system_prompt=upstream_system,
-                response=response,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=tools,
-                started_at=started,
-                error=error,
-                termination_reason=termination_reason,
-                options=options,
-            )
+            try:
+                call = self._record(
+                    method="generate_with_tools",
+                    prompt=upstream_prompt,
+                    system_prompt=upstream_system,
+                    response=response,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    started_at=started,
+                    error=error,
+                    termination_reason=termination_reason,
+                    options=options,
+                    attempt_id=attempt_id,
+                    failure=failure,
+                    persist=False,
+                )
+                await self._capture_io(lambda: self._commit_call(call, attempt_id, failure))
+            finally:
+                self._model_call_context.set(None)
 
 
 # ── Trajectory provenance ───────────────────────────────────────────
@@ -1229,6 +1504,7 @@ class ProvenanceSink:
         self._dir = Path(dir) if dir is not None else Path(".looplet/traces") / uuid4().hex
         self._overwrite = overwrite
         self._flushed = False
+        self._owns_attempts = False
         self._check_directory()
         self._max_chars = max_chars_per_call
         self._redact = redact
@@ -1244,6 +1520,11 @@ class ProvenanceSink:
         if any(
             path.name in {"trajectory.json", "manifest.jsonl"}
             or _CALL_ARTIFACT.fullmatch(path.name)
+            or (
+                path.name == "model-attempts"
+                and not self._owns_attempts
+                and any(path.glob("*.intent.json"))
+            )
             for path in self._dir.iterdir()
         ):
             raise FileExistsError(
@@ -1267,11 +1548,13 @@ class ProvenanceSink:
                 for method in ("generate", "generate_with_tools")
             )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
+        self._owns_attempts = True
         self._recording_llm = cls(
             backend,
             max_chars_per_call=self._max_chars,
             redact=self._redact,
             redact_upstream=self._redact_upstream,
+            attempt_directory=self._dir / "model-attempts",
         )
         if self._hook is not None:
             self._hook._recording_llm = self._recording_llm
@@ -1306,8 +1589,12 @@ class ProvenanceSink:
             self._recording_llm.reset()
         self._hook = None
         self._flushed = False
+        self._owns_attempts = False
         if self._automatic_dir:
             self._dir = Path(".looplet/traces") / uuid4().hex
+            if self._recording_llm is not None:
+                self._recording_llm._attempt_directory = self._dir / "model-attempts"
+                self._owns_attempts = True
 
 
 # ── Replay ──────────────────────────────────────────────────────────

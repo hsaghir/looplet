@@ -874,3 +874,79 @@ def test_real_subprocess_ndjson_round_trip(tmp_path: Path) -> None:
         # Result text is "12"; the adapter MAY wrap or unwrap the
         # MCP content envelope - assert the answer survives in any case.
         assert "12" in str(result)
+
+
+def test_real_subprocess_paginated_tools_and_list_changed_refresh(tmp_path: Path) -> None:
+    """MCPToolAdapter follows nextCursor across pages and refreshes on list_changed."""
+    import textwrap
+
+    server = tmp_path / "paginated_mcp.py"
+    server.write_text(
+        textwrap.dedent(
+            """
+            import json, sys
+
+            added = False
+
+            def emit(payload):
+                sys.stdout.write(json.dumps(payload) + "\\n")
+                sys.stdout.flush()
+
+            def tool_schema(name):
+                return {
+                    "name": name,
+                    "description": name,
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                req = json.loads(line)
+                if "id" not in req:
+                    continue
+                method = req.get("method")
+                msg_id = req["id"]
+                params = req.get("params") or {}
+                if method == "initialize":
+                    emit({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {"listChanged": True}},
+                            "serverInfo": {"name": "paginated", "version": "1.0"},
+                        },
+                    })
+                elif method == "tools/list":
+                    cursor = params.get("cursor")
+                    if cursor == "page2":
+                        tools = [tool_schema("beta")]
+                        if added:
+                            tools.append(tool_schema("gamma"))
+                        emit({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}})
+                    else:
+                        emit({
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "result": {"tools": [tool_schema("alpha")], "nextCursor": "page2"},
+                        })
+                elif method == "tools/call":
+                    added = True
+                    emit({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                    emit({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+                    })
+            """
+        )
+    )
+    with MCPToolAdapter([sys.executable, str(server)], timeout=5.0) as adapter:
+        initial_specs = adapter.tools()
+        assert [s.name for s in initial_specs] == ["alpha", "beta"]
+        call_res = initial_specs[0].execute()
+        assert "ok" in str(call_res)
+        refreshed_specs = adapter.tools()
+        assert [s.name for s in refreshed_specs] == ["alpha", "beta", "gamma"]

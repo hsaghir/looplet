@@ -139,7 +139,7 @@ class ResilientBackend:
         max_delay_s: float = 8.0,
         jitter: float = 0.2,
         retry_on: Callable[[BaseException], bool] = _default_retry_on,
-        sleep: Callable[[float], None] | None = None,
+        sleep: Callable[[float], Any] | None = None,
     ) -> None:
         if retries < 1:
             raise ValueError("retries must be >= 1")

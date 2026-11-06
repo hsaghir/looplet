@@ -118,21 +118,49 @@ def extract_usage(raw_response: Any) -> dict[str, int]:
         except (TypeError, ValueError):
             return 0
 
-    # Anthropic shape
-    out["input"] = _g(usage, "input_tokens") or _g(usage, "prompt_tokens")
-    out["output"] = _g(usage, "output_tokens") or _g(usage, "completion_tokens")
-    out["cache_read"] = _g(usage, "cache_read_input_tokens")
-    out["cache_write"] = _g(usage, "cache_creation_input_tokens")
+    if (
+        isinstance(usage, dict)
+        and ("input" in usage or "output" in usage)
+        and "input_tokens" not in usage
+        and "prompt_tokens" not in usage
+    ):
+        return {
+            "input": max(0, _g(usage, "input")),
+            "output": max(0, _g(usage, "output")),
+            "cache_read": max(0, _g(usage, "cache_read")),
+            "cache_write": max(0, _g(usage, "cache_write")),
+        }
 
-    # OpenAI cached-token nested shape
-    if not out["cache_read"]:
-        details = (
-            usage.get("prompt_tokens_details")
-            if isinstance(usage, dict)
-            else getattr(usage, "prompt_tokens_details", None)
-        )
-        if details is not None:
-            out["cache_read"] = _g(details, "cached_tokens")
+    # Anthropic usage reports uncached input_tokens separately from
+    # cache_read_input_tokens / cache_creation_input_tokens.
+    # OpenAI Chat Completions (prompt_tokens) and Responses (input_tokens)
+    # include prompt_tokens_details.cached_tokens / input_tokens_details.cached_tokens
+    # inside the total input token count, so subtract cached_tokens once to
+    # keep ``input`` as uncached input tokens across providers.
+    anthropic_cache_read = _g(usage, "cache_read_input_tokens")
+    out["cache_write"] = max(0, _g(usage, "cache_creation_input_tokens"))
+    out["output"] = max(0, _g(usage, "output_tokens") or _g(usage, "completion_tokens"))
+
+    openai_cached = 0
+    if not anthropic_cache_read and not out["cache_write"]:
+        for details_key in ("prompt_tokens_details", "input_tokens_details"):
+            details = (
+                usage.get(details_key)
+                if isinstance(usage, dict)
+                else getattr(usage, details_key, None)
+            )
+            if details is not None:
+                openai_cached = max(0, _g(details, "cached_tokens"))
+                if openai_cached:
+                    break
+
+    raw_input = max(0, _g(usage, "input_tokens") or _g(usage, "prompt_tokens"))
+    if anthropic_cache_read:
+        out["cache_read"] = max(0, anthropic_cache_read)
+        out["input"] = raw_input
+    else:
+        out["cache_read"] = openai_cached
+        out["input"] = max(0, raw_input - openai_cached)
 
     return out
 

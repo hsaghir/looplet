@@ -158,8 +158,12 @@ class SharedModelBudget:
         deadline: float | None = None,
         cancel_token: CancelToken | None = None,
     ) -> Any:
-        from looplet.loop import _ScopedLLMProxy
+        from looplet.loop import _ScopedLLMProxy, _SyncToAsyncLLM
 
+        if isinstance(backend, _SyncToAsyncLLM):
+            return _SyncToAsyncLLM(
+                self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token)
+            )
         if isinstance(backend, _ScopedLLMProxy):
             return _ScopedLLMProxy(
                 self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token),
@@ -1057,25 +1061,41 @@ async def run_sub_loops_async(
 
     Each request supplies the keyword arguments for ``run_sub_loop_async``.
     Failed children cancel their siblings. Shared resources remain caller-owned.
+    At most ``max_concurrency`` child tasks are scheduled at once.
     """
+    from itertools import islice
+
     if (
         isinstance(max_concurrency, bool)
         or not isinstance(max_concurrency, int)
         or max_concurrency < 1
     ):
         raise ValueError("max_concurrency must be a positive integer")
-    semaphore = asyncio.Semaphore(max_concurrency)
 
     async def execute(request: dict[str, Any]) -> dict[str, Any]:
-        async with semaphore:
-            result = await run_sub_loop_async(**request)
-            if result["status"] in {"failed", "cancelled"}:
-                raise ChildRunFailed(result)
-            return result
+        result = await run_sub_loop_async(**request)
+        if result["status"] in {"failed", "cancelled"}:
+            raise ChildRunFailed(result)
+        return result
 
+    indexed_requests = iter(enumerate(requests))
+    results: dict[int, dict[str, Any]] = {}
     async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(execute(request)) for request in requests]
-    return [task.result() for task in tasks]
+        pending = {
+            group.create_task(execute(request)): index
+            for index, request in islice(indexed_requests, max_concurrency)
+        }
+        while pending:
+            completed, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in completed:
+                results[pending.pop(task)] = task.result()
+            pending.update(
+                {
+                    group.create_task(execute(request)): index
+                    for index, request in islice(indexed_requests, len(completed))
+                }
+            )
+    return [results[index] for index in range(len(requests))]
 
 
 async_run_sub_loop = run_sub_loop_async
@@ -1090,9 +1110,11 @@ def run_sub_loops(
 
     Each request supplies the keyword arguments for ``run_sub_loop``.
     Failed or cancelled children raise an ``ExceptionGroup`` of :class:`ChildRunFailed`.
+    At most ``max_concurrency`` child futures are scheduled at once.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     from contextvars import copy_context
+    from itertools import islice
 
     if (
         isinstance(max_concurrency, bool)
@@ -1110,21 +1132,31 @@ def run_sub_loops(
         return result
 
     worker_count = min(max_concurrency, len(requests))
-    results: list[dict[str, Any] | None] = [None] * len(requests)
-    errors: list[Exception] = []
+    indexed_requests = iter(enumerate(requests))
+    results: dict[int, dict[str, Any]] = {}
+    errors: dict[int, Exception] = {}
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
-        futures = [
-            (idx, pool.submit(copy_context().run, _execute, req))
-            for idx, req in enumerate(requests)
-        ]
-        for idx, fut in futures:
-            try:
-                results[idx] = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
+        pending = {
+            pool.submit(copy_context().run, _execute, request): index
+            for index, request in islice(indexed_requests, worker_count)
+        }
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index = pending.pop(future)
+                try:
+                    results[index] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    errors[index] = exc
+            pending.update(
+                {
+                    pool.submit(copy_context().run, _execute, request): index
+                    for index, request in islice(indexed_requests, len(completed))
+                }
+            )
     if errors:
-        raise ExceptionGroup("subagent failures", errors)
-    return [r for r in results if r is not None]
+        raise ExceptionGroup("subagent failures", [errors[index] for index in sorted(errors)])
+    return [results[index] for index in range(len(requests))]
 
 
 run_sub_loops_parallel = run_sub_loops

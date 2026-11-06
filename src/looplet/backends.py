@@ -209,6 +209,7 @@ def _begin_request(backend: Any, request: dict[str, Any]) -> None:
     backend._applied_request_options = options
     backend.last_request = json_snapshot(request)
     backend.last_response = None
+    backend.last_model = None
     backend.last_stop_reason = None
     backend.last_usage = {}
     admission = getattr(backend, "request_admission", None)
@@ -227,6 +228,14 @@ def _begin_request(backend: Any, request: dict[str, Any]) -> None:
 
 def _capture_response(backend: Any, response: Any) -> None:
     backend.last_response = json_snapshot(response)
+    model_id = (
+        response.get("model") if isinstance(response, dict) else getattr(response, "model", None)
+    )
+    backend.last_model = (
+        str(model_id)
+        if isinstance(model_id, str) and model_id
+        else getattr(backend, "_model", None)
+    )
     choices = getattr(response, "choices", None) or []
     reason = getattr(response, "stop_reason", None)
     if reason is None and choices:
@@ -489,6 +498,11 @@ class _ConversationBackend:
         if admission is not None and not callable(admission):
             raise ValueError("request admission must be callable or None")
         self.request_admission = admission
+
+    def close(self) -> Any:
+        """Close the underlying provider client if it exposes ``close()``."""
+        close_fn = getattr(getattr(self, "_client", None), "close", None)
+        return close_fn() if callable(close_fn) else None
 
     @property
     def supported_request_options(self) -> frozenset[str]:

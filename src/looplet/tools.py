@@ -1003,6 +1003,10 @@ class BaseToolRegistry:
             spec._accepts_ctx = _accepts_ctx(spec.execute)
         self._tools[spec.name] = spec
 
+    def unregister(self, name: str) -> ToolSpec:
+        """Remove and return a registered tool. Unknown names raise ``KeyError``."""
+        return self._tools.pop(name)
+
     # Backward-compat alias
     _register = register
 

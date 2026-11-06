@@ -611,6 +611,13 @@ print(c.prompt, c.response, c.duration_ms, c.error)
 llm.save("traces/debug_run/")
 ```
 
+**Unreleased:** Set `capture_dir` on either recording backend to journal each model attempt.
+The intent is committed before provider dispatch and the outcome afterward.
+Streaming methods use this same journal: closing, cancelling, or failing a stream
+records the response captured so far as incomplete and closes the provider iterator.
+Async journal writes run off the event loop and are drained before cancellation returns.
+In-memory recording alone is not a durable journal, and streaming capture begins when iteration starts.
+
 ### The `LLMCall` dataclass
 
 Each entry in `llm.calls` exposes:

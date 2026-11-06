@@ -1,6 +1,6 @@
 # looplet - Agent Guide
 
-> This file is optimized for coding agents (Copilot, Claude Code, etc.).
+> This file is optimized for coding agents and editor assistants.
 > For human-oriented docs, see [README.md](README.md).
 
 ## What is looplet?
@@ -54,7 +54,7 @@ asking "should looplet add X?", check this list first.
 
 - **No built-in TUI.** looplet is a library; it yields `Step` objects.
     A TUI/CLI shell ships separately (e.g. `looplet new`) and stays
-    optional. Anyone wanting a Pi/Claude-Code-style terminal app should
+    optional. Anyone wanting a coding-agent terminal app should
     build it on top, not bake it in.
 - **No approval popups in the default path.** `PermissionEngine`
     defaults to ALLOW. Approval gates lead to fatigue or get disabled

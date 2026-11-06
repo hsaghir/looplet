@@ -1,4 +1,4 @@
-"""Tests for AgentsMdMemorySource - Pi/Claude-Code-style AGENTS.md walking."""
+"""Tests for AgentsMdMemorySource and hierarchical AGENTS.md walking."""
 
 from __future__ import annotations
 

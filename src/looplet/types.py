@@ -806,7 +806,7 @@ class DefaultState:
     def context_summary(self) -> str:
         """Render recent step results into the LLM's context.
 
-        Mirrors Claude Code's tool-result-block pattern: the model
+        Uses a tool-result-block pattern: the model
         sees the **actual data** that previous tools returned, not a
         digest. This eliminates the fabrication failure mode where
         the model invents plausible content for a chained tool's

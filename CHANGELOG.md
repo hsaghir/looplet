@@ -1344,7 +1344,7 @@ First public release of `looplet`.
 - Removed `async_loop.py` (feature-frozen, no consumers).
 - Removed 3 mock examples (calculator, code_review, research).
   Replaced with `hello_world.py` (real LLM) + `coding_agent.py`
-  (Claude Code-equivalent tools: bash, read, write, edit, glob,
+  (standard coding tools: bash, read, write, edit, glob,
   grep, think, done).
 - Removed all back-compat aliases.
 - Removed all internal project references (cadence, primal_security).

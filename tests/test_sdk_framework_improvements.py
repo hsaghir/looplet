@@ -152,6 +152,7 @@ def test_context_summary_respects_prune_and_compaction_without_call_ids() -> Non
             ),
         )
         recorder.record_llm_turn(prompt=f"prompt {idx}", response=f"resp {idx}")
+
         recorder.record_step(step)
 
     assert "PAGE_DATA_1" in state.context_summary()
@@ -320,6 +321,88 @@ def test_sync_and_async_loops_emit_llm_chunk_events() -> None:
     asyncio.run(_run_async())
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("ending", ["complete", "close", "error"])
+async def test_streaming_records_durable_intent_and_partial_outcomes(
+    tmp_path: Path, monkeypatch, asynchronous: bool, ending: str
+) -> None:
+    from looplet.provenance import load_model_attempts
+
+    class SyncBackend:
+        closed = False
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("Streaming must not buffer through generate")
+
+        def parts(self):
+            try:
+                yield "first"
+                if ending == "error":
+                    raise ValueError("provider stream stopped")
+                yield "second"
+            finally:
+                self.closed = True
+
+        def stream(self, prompt, **kwargs):
+            self.active_stream = self.parts()
+            return self.active_stream
+
+    class AsyncBackend(SyncBackend):
+        async def generate(self, prompt, **kwargs):
+            raise AssertionError("Streaming must not buffer through generate")
+
+        async def parts(self):
+            try:
+                yield "first"
+                if ending == "error":
+                    raise ValueError("provider stream stopped")
+                yield "second"
+            finally:
+                self.closed = True
+
+    backend = AsyncBackend() if asynchronous else SyncBackend()
+    wrapper = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    recorder = wrapper(backend, attempt_directory=tmp_path / "model-attempts")
+    writes = []
+    original_write = recorder._write_attempt
+
+    def write(*args, **kwargs):
+        writes.append(threading.get_ident())
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(recorder, "_write_attempt", write)
+    stream = recorder.stream("task", max_tokens=17, temperature=0.3)
+    try:
+        assert (await anext(stream) if asynchronous else next(stream)) == "first"
+        attempts = load_model_attempts(tmp_path)
+        assert len(attempts) == 1
+        assert attempts[0]["outcome"] is None
+        assert attempts[0]["intent"]["request"]["temperature"] == 0.3
+        if ending == "error":
+            with pytest.raises(ValueError, match="provider stream stopped"):
+                if asynchronous:
+                    await anext(stream)
+                else:
+                    next(stream)
+        elif ending == "complete":
+            remaining = [chunk async for chunk in stream] if asynchronous else list(stream)
+            assert remaining == ["second"]
+    finally:
+        if asynchronous:
+            await stream.aclose()
+        else:
+            stream.close()
+
+    attempts = load_model_attempts(tmp_path)
+    assert len(attempts) == len(recorder.calls) == 1
+    outcome = attempts[0]["outcome"]
+    assert outcome["response_complete"] is (ending == "complete")
+    assert outcome["capture"]["response"] == ("firstsecond" if ending == "complete" else "first")
+    assert backend.closed
+    if asynchronous:
+        assert writes and all(identifier != threading.get_ident() for identifier in writes)
+
+
 async def test_streaming_tool_executors_overlap_safe_and_serialize_exclusive() -> None:
     barrier = threading.Barrier(2, timeout=2.0)
     order: list[str] = []
@@ -405,6 +488,96 @@ def test_read_result_and_recall_result_support_line_ranges(tmp_path: Path) -> No
 
 
 # ── 6. Sync Parallel Subagents & Trajectory Provenance Linking ──
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("max_concurrency", [2, 4])
+async def test_child_fanout_bounds_scheduled_work(monkeypatch, asynchronous, max_concurrency):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from looplet import run_sub_loops_async
+
+    loop = asyncio.get_running_loop()
+    ready = asyncio.Event()
+    async_release = asyncio.Event()
+    sync_release = threading.Event()
+    lock = threading.Lock()
+    started = 0
+    scheduled = []
+
+    def admitted():
+        nonlocal started
+        with lock:
+            started += 1
+            if started == max_concurrency:
+                loop.call_soon_threadsafe(ready.set)
+
+    class SyncBackend:
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("Native children must not use text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            admitted()
+            sync_release.wait()
+            return [
+                {"type": "tool_use", "name": "done", "id": "finish", "input": {"summary": "ok"}}
+            ]
+
+    class AsyncBackend(SyncBackend):
+        async def generate(self, prompt, **kwargs):
+            raise AssertionError("Native children must not use text fallback")
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            admitted()
+            await async_release.wait()
+            return [
+                {"type": "tool_use", "name": "done", "id": "finish", "input": {"summary": "ok"}}
+            ]
+
+    if asynchronous:
+        original = asyncio.TaskGroup.create_task
+
+        def create_task(group, coroutine, *args, **kwargs):
+            if coroutine.__qualname__.startswith("run_sub_loops_async.<locals>."):
+                scheduled.append(coroutine.__qualname__)
+            return original(group, coroutine, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio.TaskGroup, "create_task", create_task)
+    else:
+        original = ThreadPoolExecutor.submit
+
+        def submit(pool, function, *args, **kwargs):
+            if args and getattr(args[0], "__qualname__", "").startswith("run_sub_loops.<locals>."):
+                scheduled.append(args[0].__qualname__)
+            return original(pool, function, *args, **kwargs)
+
+        monkeypatch.setattr(ThreadPoolExecutor, "submit", submit)
+
+    requests = [
+        {
+            "llm": AsyncBackend() if asynchronous else SyncBackend(),
+            "tools": tools_from([], include_done=True),
+            "max_steps": 1,
+            "config": LoopConfig(harness_profile="minimal", max_steps=1),
+            "task": "Complete one native child call.",
+        }
+        for _ in range(32)
+    ]
+    result_task = asyncio.create_task(
+        run_sub_loops_async(requests, max_concurrency=max_concurrency)
+        if asynchronous
+        else asyncio.to_thread(run_sub_loops, requests, max_concurrency=max_concurrency)
+    )
+    try:
+        await ready.wait()
+        assert len(scheduled) == max_concurrency
+    finally:
+        async_release.set()
+        sync_release.set()
+        results = await result_task
+
+    assert len(results) == len(requests)
+    assert all(result["status"] == "completed" for result in results)
 
 
 def test_sync_parallel_subagents_and_trajectory_subagent_metadata() -> None:

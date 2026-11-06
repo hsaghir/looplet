@@ -28,7 +28,7 @@ causal isolation of scaffolding or model intelligence.
 | [`REPORT.md`](REPORT.md) | Short-coding + non-coding suite (9 tasks) |
 | [`HARD_REPORT.md`](HARD_REPORT.md) | Hard / long-horizon coding suite (4 tasks) |
 | [`SOFT_REPORT.md`](SOFT_REPORT.md) | Non-coding suite with blind judging (6 tasks) |
-| [`PROMPTS_COMPARISON.md`](PROMPTS_COMPARISON.md) | System-prompt comparison: coder vs Copilot / Codex / Claude Code / Pi |
+| [`PROMPTS_COMPARISON.md`](PROMPTS_COMPARISON.md) | System-prompt comparison: coder vs Copilot / Codex / reference CLI / Pi |
 
 Generated artifacts (`runs_*/`, `results_*.json`, `TABLES_*.md`) are
 git-ignored - re-running regenerates them.

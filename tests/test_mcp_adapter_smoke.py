@@ -101,6 +101,52 @@ class TestMCPToolAdapter:
         assert registry.tool_specs["echo"] is trusted
         assert sent == [{"name": "echo", "arguments": {"targets": ["allowed"]}}]
 
+    @pytest.mark.parametrize("local_replacement", [False, True])
+    def test_refresh_updates_only_adapter_owned_registry_tools(
+        self, monkeypatch, local_replacement
+    ):
+        from looplet import ToolSpec
+
+        adapter = MCPToolAdapter("synthetic server never started")
+        adapter._started = True
+        adapter._proc = SimpleNamespace()
+        adapter._tool_schemas = [{"name": name} for name in ("alpha", "beta")]
+        registry = BaseToolRegistry()
+        adapter.register_all(registry)
+        trusted = ToolSpec("alpha", "Local replacement.", {}, lambda: "local")
+        if local_replacement:
+            registry.register(trusted)
+        monkeypatch.setattr(
+            adapter, "_fetch_all_tools", lambda: [{"name": name} for name in ("beta", "gamma")]
+        )
+
+        specs = adapter.refresh_tools(registry)
+
+        assert [spec.name for spec in specs] == ["beta", "gamma"]
+        assert set(registry.tool_names) == (
+            {"alpha", "beta", "gamma"} if local_replacement else {"beta", "gamma"}
+        )
+        if local_replacement:
+            assert registry.tool_specs["alpha"] is trusted
+
+    def test_refresh_rejects_local_collisions_before_mutating_registry(self, monkeypatch):
+        from looplet import ToolSpec
+
+        adapter = MCPToolAdapter("synthetic server never started")
+        adapter._started = True
+        adapter._proc = SimpleNamespace()
+        adapter._tool_schemas = [{"name": "alpha"}]
+        registry = BaseToolRegistry()
+        adapter.register_all(registry)
+        registry.register(ToolSpec("beta", "Local tool.", {}, lambda: "local"))
+        before = registry.tool_specs
+        monkeypatch.setattr(adapter, "_fetch_all_tools", lambda: [{"name": "beta"}])
+
+        with pytest.raises(ValueError, match="MCP tool name collision"):
+            adapter.refresh_tools(registry)
+
+        assert registry.tool_specs == before
+
     @pytest.mark.parametrize("names", [("fresh", "echo"), ("echo", "fresh"), ("fresh", "fresh")])
     def test_register_all_rejects_collisions_atomically(self, names):
         from looplet import ToolSpec
@@ -874,3 +920,79 @@ def test_real_subprocess_ndjson_round_trip(tmp_path: Path) -> None:
         # Result text is "12"; the adapter MAY wrap or unwrap the
         # MCP content envelope - assert the answer survives in any case.
         assert "12" in str(result)
+
+
+def test_real_subprocess_paginated_tools_and_list_changed_refresh(tmp_path: Path) -> None:
+    """MCPToolAdapter follows nextCursor across pages and refreshes on list_changed."""
+    import textwrap
+
+    server = tmp_path / "paginated_mcp.py"
+    server.write_text(
+        textwrap.dedent(
+            """
+            import json, sys
+
+            added = False
+
+            def emit(payload):
+                sys.stdout.write(json.dumps(payload) + "\\n")
+                sys.stdout.flush()
+
+            def tool_schema(name):
+                return {
+                    "name": name,
+                    "description": name,
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                req = json.loads(line)
+                if "id" not in req:
+                    continue
+                method = req.get("method")
+                msg_id = req["id"]
+                params = req.get("params") or {}
+                if method == "initialize":
+                    emit({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {"listChanged": True}},
+                            "serverInfo": {"name": "paginated", "version": "1.0"},
+                        },
+                    })
+                elif method == "tools/list":
+                    cursor = params.get("cursor")
+                    if cursor == "page2":
+                        tools = [tool_schema("beta")]
+                        if added:
+                            tools.append(tool_schema("gamma"))
+                        emit({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}})
+                    else:
+                        emit({
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "result": {"tools": [tool_schema("alpha")], "nextCursor": "page2"},
+                        })
+                elif method == "tools/call":
+                    added = True
+                    emit({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                    emit({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+                    })
+            """
+        )
+    )
+    with MCPToolAdapter([sys.executable, str(server)], timeout=5.0) as adapter:
+        initial_specs = adapter.tools()
+        assert [s.name for s in initial_specs] == ["alpha", "beta"]
+        call_res = initial_specs[0].execute()
+        assert "ok" in str(call_res)
+        refreshed_specs = adapter.tools()
+        assert [s.name for s in refreshed_specs] == ["alpha", "beta", "gamma"]

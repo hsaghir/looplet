@@ -124,15 +124,19 @@ def extract_usage(raw_response: Any) -> dict[str, int]:
     out["cache_read"] = _g(usage, "cache_read_input_tokens")
     out["cache_write"] = _g(usage, "cache_creation_input_tokens")
 
-    # OpenAI cached-token nested shape
+    # OpenAI cached-token nested shape (Chat Completions + Responses API)
     if not out["cache_read"]:
-        details = (
-            usage.get("prompt_tokens_details")
-            if isinstance(usage, dict)
-            else getattr(usage, "prompt_tokens_details", None)
-        )
-        if details is not None:
-            out["cache_read"] = _g(details, "cached_tokens")
+        for details_key in ("prompt_tokens_details", "input_tokens_details"):
+            details = (
+                usage.get(details_key)
+                if isinstance(usage, dict)
+                else getattr(usage, details_key, None)
+            )
+            if details is not None:
+                cached = _g(details, "cached_tokens")
+                if cached:
+                    out["cache_read"] = cached
+                    break
 
     return out
 

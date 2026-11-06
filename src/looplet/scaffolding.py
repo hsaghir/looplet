@@ -431,6 +431,8 @@ def llm_call_with_retry(
     generate_kwargs: dict[str, Any] | None = None,
     should_continue: Callable[[], bool] | None = None,
     on_chunk: Callable[[str, int], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_stream_reset: Callable[[], None] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -483,6 +485,8 @@ def llm_call_with_retry(
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry backoff"))
+        if attempt > 0 and on_stream_reset is not None:
+            on_stream_reset()
         try:
             if use_native:
                 native_attempted = True
@@ -507,6 +511,8 @@ def llm_call_with_retry(
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
                 if on_chunk is not None and _accepts_kwarg(call, "on_chunk"):
                     call_kwargs["on_chunk"] = on_chunk
+                if on_tool_call is not None and _accepts_kwarg(call, "on_tool_call"):
+                    call_kwargs["on_tool_call"] = on_tool_call
                 if recovery is None:
                     recovery = _NativeTurnRecovery(llm, max_continuations)
                 recovery.begin_call(prompt)
@@ -514,6 +520,8 @@ def llm_call_with_retry(
                 recovery.observe_usage(llm, blocks)
                 stop = getattr(llm, "last_stop_reason", None)
                 while stop == "max_tokens":
+                    if on_stream_reset is not None:
+                        on_stream_reset()
                     if should_continue is not None and not should_continue():
                         break
                     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):

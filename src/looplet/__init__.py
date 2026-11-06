@@ -18,7 +18,12 @@ __version__ = "0.5.0.dev0"
 from looplet.approval import ApprovalHook
 from looplet.assistant_turns import AssistantTurnContext, AssistantTurnDecision
 from looplet.async_loop import async_composable_loop, async_llm_call, run_result_async
-from looplet.backends import AnthropicBackend, OpenAIBackend
+from looplet.backends import (
+    AnthropicBackend,
+    AsyncOpenAIResponsesBackend,
+    OpenAIBackend,
+    OpenAIResponsesBackend,
+)
 from looplet.blueprints import (
     AgentBlueprint,
     BlueprintComparison,
@@ -35,6 +40,11 @@ from looplet.blueprints import (
     wrap_claude_skill_as_bundle,
 )
 from looplet.budget import ContextBudget, RequestTokenBudget, ThresholdCompactHook
+from looplet.builtin_tools.tool_search import (
+    DeferredToolViewHook,
+    make_tool_search_tool,
+    search_registered_tools,
+)
 from looplet.bundled import bundled_cartridge_path
 from looplet.bundles import (
     BundleCard,
@@ -65,6 +75,7 @@ from looplet.checkpoint import (
     CheckpointHook,
     CheckpointStore,
     FileCheckpointStore,
+    branch_from_checkpoint,
     resume_loop_state,
 )
 from looplet.compact import (
@@ -85,7 +96,7 @@ from looplet.context_plan import (
     ScopedContextSource,
 )
 from looplet.context_projection import ContextProjection
-from looplet.conversation import Conversation, Message
+from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
 from looplet.done_steps import (
     is_rejected_done,
     iter_done_steps,
@@ -183,7 +194,7 @@ from looplet.presets import (
 )
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
-from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.resilient import AsyncResilientBackend, ResilientBackend, RetryExhausted
 from looplet.result_store import FileToolResultStore
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
 from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
@@ -209,8 +220,23 @@ from looplet.state_service import (
     StateServiceClient,
     StateServiceHandle,
 )
-from looplet.streaming import StreamingHook
-from looplet.subagent import run_sub_loop, run_sub_loop_async, run_sub_loops_async
+from looplet.streaming import (
+    AsyncStreamingToolExecutor,
+    StreamingHook,
+    StreamingToolExecutor,
+)
+from looplet.subagent import (
+    ChildRunLimitExceeded,
+    ChildRunPolicy,
+    SharedModelBudget,
+    async_run_sub_loop,
+    run_sub_loop,
+    run_sub_loop_async,
+    run_sub_loops,
+    run_sub_loops_async,
+    run_sub_loops_parallel,
+)
+from looplet.subprocess_tool import run_subprocess_tool, terminate_process_tree
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
 from looplet.tools import (
@@ -238,6 +264,7 @@ from looplet.types import (
     RunStatus,
     Step,
     ToolCall,
+    ToolCancelledError,
     ToolContext,
     ToolError,
     ToolResult,
@@ -383,6 +410,8 @@ __all__ = [
     "scaffold_cartridge",
     "resource_ref_for",
     "StreamingHook",
+    "StreamingToolExecutor",
+    "AsyncStreamingToolExecutor",
     "Tracer",
     "TracingHook",
     "MetricsCollector",
@@ -464,7 +493,27 @@ __all__ = [
     "ExecutionSession",
     "AgentRuntime",
     "RunHandle",
+    "AsyncResilientBackend",
+    "ToolCancelledError",
+    "ChildRunLimitExceeded",
+    "ChildRunPolicy",
+    "SharedModelBudget",
     "run_sub_loop",
+    "run_sub_loop_async",
+    "async_run_sub_loop",
+    "run_sub_loops",
+    "run_sub_loops_parallel",
+    "run_sub_loops_async",
+    "OpenAIResponsesBackend",
+    "AsyncOpenAIResponsesBackend",
+    "ContentBlock",
+    "MessageRole",
+    "branch_from_checkpoint",
+    "DeferredToolViewHook",
+    "make_tool_search_tool",
+    "search_registered_tools",
+    "run_subprocess_tool",
+    "terminate_process_tree",
     # ── PRESETS (one-liner agent setup) ─────────────────────────
     "AgentPreset",
     "ShutdownReport",

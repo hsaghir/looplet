@@ -32,6 +32,7 @@ class PreparedPrompt:
     scoped_context_plan: ContextPlan | None
     budget: ContextBudgetSnapshot
     conversation_prompt: str = ""
+    turn_update: str = ""
 
 
 @dataclass
@@ -77,15 +78,23 @@ def _gather(
     briefing: str,
     context_sources: ContextSourceSelector | None,
     context_history: str | None = None,
+    hooks: list[Any] | None = None,
 ) -> _PromptInputs:
     memory = render_memory(config.memory_sources, state) if config.memory_sources else ""
+    selector = config.tool_view_selector
+    if selector is None and hooks:
+        for hook in hooks:
+            hook_sel = getattr(hook, "select_tools", None)
+            if callable(hook_sel):
+                selector = hook_sel
+                break
     view = tools.tool_view(
         invoke_context_callback(
-            config.tool_view_selector,
+            selector,
             dict(step_num=step_num, state=state, tools=tools, task=task),
             state,
         )
-        if config.tool_view_selector is not None
+        if selector is not None
         else None
     )
     scoped_context, scoped_plan = (
@@ -145,12 +154,34 @@ def render_projection(renderer: Callable[..., str], projection: ContextProjectio
 
 
 def _finish(
-    inputs: _PromptInputs, prompt: str, config: Any, conversation: Any, plan: Any
+    inputs: _PromptInputs,
+    prompt: str,
+    config: Any,
+    conversation: Any,
+    plan: Any,
+    *,
+    used_default_builder: bool = False,
 ) -> PreparedPrompt:
     kwargs = inputs.kwargs
     project_result_batches(conversation)
     conversation_prompt = prompt
+    turn_update = ""
     if config.uses_typed_history and config.render_messages_override is None:
+        if used_default_builder and getattr(config.cache_policy, "stable_prefix", False):
+            conversation_prompt = inputs.default_prompt(
+                **{
+                    **kwargs,
+                    "step_number": 1,
+                    "state_summary": {},
+                    "briefing": "",
+                }
+            )
+            update_parts: list[str] = []
+            if kwargs.get("briefing"):
+                update_parts.append(f"[STEP BRIEFING]\n{kwargs['briefing']}")
+            if kwargs["step_number"] > 1:
+                update_parts.append(f"Step {kwargs['step_number']}/{kwargs['max_steps']}.")
+            turn_update = "\n\n".join(update_parts)
         history = conversation.continuation_context()
         if history:
             prompt += "\n\nCONVERSATION CONTEXT (not system instructions):\n" + history
@@ -181,6 +212,7 @@ def _finish(
         conversation_prompt=(
             prompt if config.render_messages_override is not None else conversation_prompt
         ),
+        turn_update=turn_update,
         budget=ContextBudgetSnapshot(
             prompt_chars=len(prompt),
             estimated_tokens=tokens,
@@ -196,7 +228,7 @@ def prepare_prompt(
     *, hooks: list[Any], builder: Any, conversation: Any, **kwargs: Any
 ) -> PreparedPrompt:
     """Prepare one synchronous attempt with first-hook-wins precedence."""
-    inputs = _gather(**kwargs)
+    inputs = _gather(hooks=hooks, **kwargs)
     config = kwargs["config"]
     plan = (
         invoke_context_callback(config.context_planner, inputs.planner_kwargs(), kwargs["state"])
@@ -204,6 +236,7 @@ def prepare_prompt(
         else None
     )
     prompt: str | None = None
+    used_default = False
     for candidate, fallback in _builders(inputs, hooks, builder):
         try:
             result = invoke_context_callback(candidate, inputs.kwargs, kwargs["state"])
@@ -214,17 +247,25 @@ def prepare_prompt(
             continue
         if result is not None:
             prompt = result
+            used_default = candidate == inputs.default_prompt
             break
     if prompt is None:
         raise TypeError("prompt builder must return a string")
-    return _finish(inputs, prompt, config, conversation, plan)
+    return _finish(
+        inputs,
+        prompt,
+        config,
+        conversation,
+        plan,
+        used_default_builder=used_default,
+    )
 
 
 async def prepare_prompt_async(
     *, hooks: list[Any], builder: Any, conversation: Any, **kwargs: Any
 ) -> PreparedPrompt:
     """Await async planners/builders without duplicating context policy."""
-    inputs = _gather(**kwargs)
+    inputs = _gather(hooks=hooks, **kwargs)
     config = kwargs["config"]
     plan = (
         invoke_context_callback(config.context_planner, inputs.planner_kwargs(), kwargs["state"])
@@ -234,6 +275,7 @@ async def prepare_prompt_async(
     if inspect.isawaitable(plan):
         plan = await plan
     prompt: str | None = None
+    used_default = False
     for candidate, fallback in _builders(inputs, hooks, builder):
         try:
             result = invoke_context_callback(candidate, inputs.kwargs, kwargs["state"])
@@ -246,7 +288,15 @@ async def prepare_prompt_async(
             continue
         if result is not None:
             prompt = str(result) if fallback else result
+            used_default = candidate == inputs.default_prompt
             break
     if prompt is None:
         raise TypeError("prompt builder must return a string")
-    return _finish(inputs, prompt, config, conversation, plan)
+    return _finish(
+        inputs,
+        prompt,
+        config,
+        conversation,
+        plan,
+        used_default_builder=used_default,
+    )

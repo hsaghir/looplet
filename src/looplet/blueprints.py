@@ -553,7 +553,7 @@ def _tool_blueprint(spec: ToolSpec) -> ToolBlueprint:
         description=spec.description,
         parameters=_jsonable_mapping(spec.to_json_schema()),
         handler=_callable_ref(spec.execute),
-        concurrent_safe=spec.concurrent_safe,
+        concurrent_safe=spec.concurrent_safe if isinstance(spec.concurrent_safe, bool) else False,
         free=spec.free,
         timeout_s=spec.timeout_s,
     )

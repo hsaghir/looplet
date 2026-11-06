@@ -199,9 +199,31 @@ class FileToolResultStore:
         return self._view_lengths[path.name]
 
     def read_result(
-        self, key: str, *, json_pointer: str = "", offset: int = 0, limit: int = 2000
+        self,
+        key: str,
+        *,
+        json_pointer: str = "",
+        offset: int = 0,
+        limit: int = 2000,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> dict[str, Any]:
         from looplet.builtin_tools.tool_results import read_result
+
+        if start_line is not None or end_line is not None:
+            view = self._text(key, json_pointer)
+            raw_text = view.read_text(encoding="utf-8") if isinstance(view, Path) else view
+            result = read_result(
+                raw_text,
+                result_key=key,
+                json_pointer="",
+                offset=offset,
+                limit=limit,
+                start_line=start_line,
+                end_line=end_line,
+            )
+            result["json_pointer"] = json_pointer
+            return result
 
         result = read_result(
             "",

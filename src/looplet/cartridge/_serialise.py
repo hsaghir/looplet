@@ -1062,6 +1062,8 @@ def _write_tool(
     for opt in ("concurrent_safe", "free", "timeout_s"):
         if hasattr(spec, opt):
             val = getattr(spec, opt)
+            if opt == "concurrent_safe" and callable(val):
+                val = False
             if val is not None:
                 yaml_payload[opt] = val
     # Round-trip the resource-requirements list (workspace tool DI).

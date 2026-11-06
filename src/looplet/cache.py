@@ -110,6 +110,18 @@ class CachePolicy:
     system_prompt: CacheControl | None = None
     tool_schemas: CacheControl | None = None
     memory: CacheControl | None = None
+    stable_prefix: bool = False
+
+    @classmethod
+    def stable(cls, ttl: _CacheTTL = "ephemeral") -> "CachePolicy":
+        """Enable caching across system prompt, tool schemas, memory, and prefix messages."""
+        ctl = CacheControl(ttl=ttl)
+        return cls(
+            system_prompt=ctl,
+            tool_schemas=ctl,
+            memory=ctl,
+            stable_prefix=True,
+        )
 
     def sections(self) -> list[tuple[CacheSection, CacheControl]]:
         """Enumerate configured sections in stable order (important

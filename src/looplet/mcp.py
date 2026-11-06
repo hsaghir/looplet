@@ -43,16 +43,18 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
 from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
-from looplet.types import RunEnvelope
+from looplet.types import RunEnvelope, ToolCancelledError
 
 __all__ = ["MCPProtocolError", "MCPToolError", "MCPToolAdapter"]
 
 logger = logging.getLogger(__name__)
+_ACTIVE_CANCEL_TOKEN: ContextVar[Any | None] = ContextVar("looplet_mcp_cancel_token", default=None)
 
 
 def _register_mcp_tools(registry: BaseToolRegistry, specs: list[ToolSpec]) -> int:
@@ -343,7 +345,7 @@ class MCPToolAdapter:
         try:
             self._write_message(msg, deadline=deadline)
             return self._read_message(expected_id=msg.get("id"), deadline=deadline)
-        except (OSError, MCPProtocolError):
+        except (OSError, MCPProtocolError, ToolCancelledError):
             self.close()
             raise
 
@@ -463,14 +465,19 @@ class MCPToolAdapter:
         *,
         operation: str,
         timeout: float | None = None,
+        cancel_token: Any | None = None,
     ) -> bytes:
         """Run one blocking pipe read with a portable wall-clock bound."""
+        if cancel_token is None:
+            cancel_token = _ACTIVE_CANCEL_TOKEN.get()
         limit = self._timeout if timeout is None else timeout
         remaining = remaining_deadline(self._run_envelope)
         if remaining is not None:
             limit = min(limit, remaining)
         if limit <= 0:
             raise TimeoutError(f"MCP server {operation} exceeded run deadline")
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            raise ToolCancelledError("Tool execution cancelled")
         done = threading.Event()
         values: list[bytes] = []
         errors: list[BaseException] = []
@@ -489,7 +496,24 @@ class MCPToolAdapter:
         with self._reader_lock:
             self._reader_threads.add(reader)
         reader.start()
-        if not done.wait(limit):
+        if cancel_token is None:
+            completed = done.wait(limit)
+        else:
+            end_ts = time.monotonic() + limit
+            completed = False
+            while True:
+                if getattr(cancel_token, "is_cancelled", False):
+                    if operation in {"request", "response"} and self._proc is not None:
+                        self._stop_process_tree(self._proc, wait_timeout=0.2)
+                        done.wait(0.2)
+                    raise ToolCancelledError("Tool execution cancelled")
+                rem = end_ts - time.monotonic()
+                if rem <= 0:
+                    break
+                if done.wait(min(0.02, rem)):
+                    completed = True
+                    break
+        if not completed:
             if operation in {"request", "response"} and self._proc is not None:
                 self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))
                 done.wait(min(5.0, max(0.1, limit)))
@@ -534,16 +558,20 @@ class MCPToolAdapter:
         """Create an execute function that sends already-prepared arguments."""
         param_types = param_types or {}
 
-        def execute(**kwargs: Any) -> dict:
+        def _invoke(kwargs: dict[str, Any], *, cancel_token: Any | None = None) -> dict:
             if self._coerce_structured_args(kwargs, param_types) != kwargs:
                 raise MCPToolError("MCP structured arguments must be prepared before dispatch")
-            resp = self._send_request(
-                "tools/call",
-                {
-                    "name": tool_name,
-                    "arguments": kwargs,
-                },
-            )
+            tok = _ACTIVE_CANCEL_TOKEN.set(cancel_token)
+            try:
+                resp = self._send_request(
+                    "tools/call",
+                    {
+                        "name": tool_name,
+                        "arguments": kwargs,
+                    },
+                )
+            finally:
+                _ACTIVE_CANCEL_TOKEN.reset(tok)
             if resp is None:
                 raise MCPToolError(f"MCP tool '{tool_name}' returned no response")
             if not isinstance(resp, dict):
@@ -575,6 +603,16 @@ class MCPToolAdapter:
                     except (json.JSONDecodeError, ValueError):
                         return {"text": text}
             return {"content": content}
+
+        if "ctx" in param_types:
+
+            def execute_with_ctx_param(**kwargs: Any) -> dict:
+                return _invoke(kwargs)
+
+            return execute_with_ctx_param
+
+        def execute(ctx: Any = None, **kwargs: Any) -> dict:
+            return _invoke(kwargs, cancel_token=getattr(ctx, "cancel_token", None))
 
         return execute
 

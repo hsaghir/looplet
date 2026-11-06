@@ -490,6 +490,10 @@ class ToolValidationError(Exception):
 # ── Cancellation ─────────────────────────────────────────────────
 
 
+class ToolCancelledError(RuntimeError):
+    """Raised when a tool execution is cancelled via :class:`CancelToken`."""
+
+
 @dataclass
 class CancelToken:
     """Cooperative cancellation signal for long-running tools.
@@ -498,11 +502,12 @@ class CancelToken:
     mark it. Tool implementations poll ``is_cancelled`` or call
     ``raise_if_cancelled()`` at safe checkpoints to stop early.
 
-    The token is intentionally simple: no threading primitives, no async
-    events. Tools that need those wrap the token in their own primitive.
+    Child tokens created with :meth:`create_child` observe parent
+    cancellation without propagating child cancellation back to the parent.
     """
 
     _cancelled: bool = False
+    _parents: tuple["CancelToken", ...] = field(default=(), repr=False, compare=False)
 
     def cancel(self) -> None:
         """Mark this token as cancelled. Idempotent."""
@@ -510,17 +515,21 @@ class CancelToken:
 
     @property
     def is_cancelled(self) -> bool:
-        """True once ``cancel()`` has been called."""
-        return self._cancelled
+        """True once ``cancel()`` has been called on this token or any parent."""
+        return self._cancelled or any(parent.is_cancelled for parent in self._parents)
+
+    def create_child(self, *extra_parents: "CancelToken") -> "CancelToken":
+        """Create a child token that observes this token and any extra parents."""
+        return CancelToken(_parents=(self, *extra_parents))
 
     def raise_if_cancelled(self) -> None:
-        """Raise :class:`RuntimeError` if this token has been cancelled.
+        """Raise :class:`ToolCancelledError` (a :class:`RuntimeError`) if cancelled.
 
         Useful as a one-liner at tool checkpoints:
             ctx.cancel_token and ctx.cancel_token.raise_if_cancelled()
         """
-        if self._cancelled:
-            raise RuntimeError("Tool execution cancelled")
+        if self.is_cancelled:
+            raise ToolCancelledError("Tool execution cancelled")
 
 
 # ── ToolContext ──────────────────────────────────────────────────
@@ -841,27 +850,70 @@ class DefaultState:
         rendered: list[tuple[int, str]] = []
         view_numbers: set[int] = set()
         conversation = getattr(self, "conversation", None)
+        conv_messages = getattr(conversation, "messages", [])
         projections = {
             message.tool_result.call_id: message.tool_result
-            for message in getattr(conversation, "messages", [])
+            for message in conv_messages
             if message.tool_result is not None and message.tool_result.call_id is not None
         }
+        step_projections = {
+            message.metadata["step_number"]: message.tool_result
+            for message in conv_messages
+            if message.tool_result is not None
+            and isinstance(getattr(message, "metadata", None), dict)
+            and type(message.metadata.get("step_number")) is int
+        }
+        compacted_call_ids: set[str] = set()
+        compacted_steps: set[int] = set()
+        for message in conv_messages:
+            meta = getattr(message, "metadata", None)
+            if not isinstance(meta, dict) or meta.get("kind") != "compaction_boundary":
+                continue
+            for cid in meta.get("compacted_call_ids") or ():
+                if isinstance(cid, str):
+                    compacted_call_ids.add(cid)
+            for snum in meta.get("compacted_step_numbers") or ():
+                if type(snum) is int:
+                    compacted_steps.add(snum)
+            step_range = meta.get("dropped_step_range")
+            if (
+                isinstance(step_range, (list, tuple))
+                and len(step_range) == 2
+                and type(step_range[0]) is int
+                and type(step_range[1]) is int
+            ):
+                compacted_steps.update(range(step_range[0], step_range[1] + 1))
         recent_steps = self.steps[-CONTEXT_WINDOW_STEPS:] if CONTEXT_WINDOW_STEPS > 0 else []
         for step in recent_steps:
             tr = getattr(step, "tool_result", None)
             if tr is None:
                 rendered.append((id(step), str(step)))
                 continue
+            raw_number = getattr(step, "number", None)
+            call_id = getattr(tr, "call_id", None)
+            in_active_projections = (call_id is not None and call_id in projections) or (
+                type(raw_number) is int and raw_number in step_projections
+            )
+            if not in_active_projections and (
+                (isinstance(call_id, str) and call_id in compacted_call_ids)
+                or (type(raw_number) is int and raw_number in compacted_steps)
+            ):
+                continue
             tool_name = getattr(tr, "tool", "?")
             args_summary = getattr(tr, "args_summary", "") or ""
             err = getattr(tr, "error", None)
-            raw_number = getattr(step, "number", None)
             number_int = int(raw_number) if isinstance(raw_number, int) else len(rendered) + 1
             number_label = str(raw_number) if raw_number is not None else str(number_int)
             if err:
                 block = f"S{number_label} ✗ {tool_name}({args_summary}) → ERROR: {err[:200]}"
             else:
-                selected = projections.get(getattr(tr, "call_id", None), tr)
+                selected: ToolResult = (
+                    projections[call_id]
+                    if call_id is not None and call_id in projections
+                    else step_projections.get(raw_number, tr)
+                    if type(raw_number) is int
+                    else tr
+                )
                 projected = project_tool_result(selected)
                 payload = payload_text(projected)
                 if projected.metadata.get("result_is_view"):

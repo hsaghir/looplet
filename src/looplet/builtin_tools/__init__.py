@@ -43,7 +43,9 @@ from looplet.builtin_tools.skills import (
     SEARCH_SPEC as _SEARCH_SKILLS_SPEC,
 )
 from looplet.builtin_tools.subagent import SPEC as _SUBAGENT_SPEC
+from looplet.builtin_tools.tool_results import RECALL_SPEC as _RECALL_SPEC
 from looplet.builtin_tools.tool_results import SPECS as _RESULT_SPECS
+from looplet.builtin_tools.tool_search import SPEC as _TOOL_SEARCH_SPEC
 from looplet.tools import ToolSpec
 
 AVAILABLE: dict[str, ToolSpec] = {
@@ -51,6 +53,8 @@ AVAILABLE: dict[str, ToolSpec] = {
     _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
     _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
     _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
+    _RECALL_SPEC.name: _RECALL_SPEC,
+    _TOOL_SEARCH_SPEC.name: _TOOL_SEARCH_SPEC,
     **{spec.name: spec for spec in _RESULT_SPECS},
 }
 

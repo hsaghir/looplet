@@ -216,7 +216,10 @@ def json_snapshot(value: Any) -> Any:
     def serialize(item: Any) -> Any:
         dump = getattr(item, "model_dump", None)
         if callable(dump):
-            return dump(mode="json")
+            try:
+                return dump(mode="json", warnings=False)
+            except TypeError:
+                return dump(mode="json")
         if isinstance(item, SimpleNamespace):
             return vars(item)
         return str(item)

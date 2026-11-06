@@ -84,6 +84,7 @@ SPEC_FORBIDDEN_TOP_LEVEL_IMPORTS: frozenset[str] = frozenset(
         "testing",
         "builtin_tools",
         "builtin_hooks",
+        "subprocess_tool",
         "examples",
         "cli",
         "mcp",

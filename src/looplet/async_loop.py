@@ -469,6 +469,9 @@ async def async_llm_call(
     cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
     should_continue: Callable[[], bool] | None = None,
+    on_chunk: Callable[[str, int], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_stream_reset: Callable[[], None] | None = None,
 ) -> LLMResult:
     """Async version of :func:`looplet.scaffolding.llm_call_with_retry`.
 
@@ -536,6 +539,8 @@ async def async_llm_call(
     for attempt in range(attempt_limit):
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry"))
+        if attempt > 0 and on_stream_reset is not None:
+            on_stream_reset()
         try:
             if use_native:
                 native_attempted = True
@@ -554,6 +559,12 @@ async def async_llm_call(
                     "generate_with_tools", "cancel_token"
                 ):
                     call_kwargs["cancel_token"] = cancel_token
+                if on_chunk is not None and _method_accepts("generate_with_tools", "on_chunk"):
+                    call_kwargs["on_chunk"] = on_chunk
+                if on_tool_call is not None and _method_accepts(
+                    "generate_with_tools", "on_tool_call"
+                ):
+                    call_kwargs["on_tool_call"] = on_tool_call
                 if recovery is None:
                     recovery = _NativeTurnRecovery(llm, max_continuations)
                 recovery.begin_call(prompt)
@@ -563,6 +574,8 @@ async def async_llm_call(
                 recovery.observe_usage(llm, result)
                 stop = getattr(llm, "last_stop_reason", None)
                 while stop == "max_tokens":
+                    if on_stream_reset is not None:
+                        on_stream_reset()
                     if should_continue is not None and not should_continue():
                         break
                     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -591,9 +604,43 @@ async def async_llm_call(
                 call_kwargs["cache_breakpoints"] = cache_breakpoints
             if cancel_token is not None and _method_accepts_kwarg("generate", "cancel_token"):
                 call_kwargs["cancel_token"] = cancel_token
-            result = llm.generate(prompt, **call_kwargs)
-            if inspect.isawaitable(result):
-                result = await result
+            stream_fn: Any = (
+                getattr(llm, "stream", None)
+                if on_chunk is not None and getattr(llm, "stream_in_loop", True)
+                else None
+            )
+            if callable(stream_fn) and on_chunk is not None:
+                stream_kwargs = {
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                    **_filtered_kwargs("stream"),
+                }
+                if cache_breakpoints and _method_accepts("stream", "cache_breakpoints"):
+                    stream_kwargs["cache_breakpoints"] = cache_breakpoints
+                if cancel_token is not None and _method_accepts_kwarg("stream", "cancel_token"):
+                    stream_kwargs["cancel_token"] = cancel_token
+                stream_out: Any = stream_fn(prompt, **stream_kwargs)
+                if inspect.isawaitable(stream_out):
+                    stream_out = await stream_out
+                chunks: list[str] = []
+                if hasattr(stream_out, "__aiter__"):
+                    idx = 0
+                    async for chunk in stream_out:
+                        if isinstance(chunk, str) and chunk:
+                            on_chunk(chunk, idx)
+                            chunks.append(chunk)
+                            idx += 1
+                else:
+                    for idx, chunk in enumerate(stream_out):
+                        if isinstance(chunk, str) and chunk:
+                            on_chunk(chunk, idx)
+                            chunks.append(chunk)
+                result = "".join(chunks)
+            else:
+                result = llm.generate(prompt, **call_kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
             stop = getattr(llm, "last_stop_reason", None)
             continuation_count = 0
             accumulated = result if isinstance(result, str) else ""
@@ -873,8 +920,9 @@ async def _async_composable_loop_impl(
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
-    Yields the same :class:`Step` objects. LLM calls are awaited;
-    hooks, tools, and parsing remain synchronous.
+    Yields the same :class:`Step` objects. LLM calls, async hooks, and
+    async tools are awaited; synchronous tools run via worker threads
+    through :meth:`BaseToolRegistry.async_dispatch`.
 
     Usage::
 
@@ -1342,7 +1390,10 @@ async def _async_composable_loop_impl(
             and config.render_messages_override is None
         ):
             effective_llm.prepare_conversation(
-                _conv, _prepared.conversation_prompt, request_prompt=prompt
+                _conv,
+                _prepared.conversation_prompt,
+                request_prompt=prompt,
+                turn_update=_prepared.turn_update,
             )
         _sync_llm = _SyncBridgeLLM(
             effective_llm, loop=asyncio.get_running_loop(), requests=_nested_requests
@@ -1388,7 +1439,14 @@ async def _async_composable_loop_impl(
                     step_num=step_num, model_turn_id=_turns.turn_id if _turns is not None else None
                 )
             )
+        _llm_span = None
+        if not loop_ctx.context_budget.pressure and config.tracer is not None:
+            _llm_span = config.tracer.start_span(
+                f"llm.call.step_{step_num}",
+                attributes={"step": step_num},
+            )
         if loop_ctx.context_budget.pressure:
+            _stream_executor = None
             logger.warning(
                 "Async pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
                 _estimated_tokens,
@@ -1404,20 +1462,94 @@ async def _async_composable_loop_impl(
                 ),
             )
         else:
-            llm_result = await async_llm_call(
-                effective_llm,
-                prompt,
-                max_tokens=config.max_tokens,
-                system_prompt=config.system_prompt,
-                temperature=config.temperature,
-                tools=_tool_schemas,
-                native_policy=native_policy,
-                cancel_token=config.cancel_token,
-                max_continuations=config.max_turn_continuations,
-                cache_breakpoints=_cache_bps,
-                generate_kwargs=config.generate_kwargs or None,
-                should_continue=lambda: not _deadline_expired(loop_ctx),
-            )
+            _chunk_emitters = [h.emitter for h in hooks if isinstance(h, _StreamingHook)]
+            if stream is not None and not _has_streaming_hook:
+                _chunk_emitters.append(stream)
+
+            def _emit_chunk(chunk: str, chunk_index: int) -> None:
+                from looplet.streaming import LLMChunkEvent  # noqa: PLC0415
+
+                ev = LLMChunkEvent(step_num=step_num, chunk=chunk, chunk_index=chunk_index)
+                for em in _chunk_emitters:
+                    em.emit(ev)
+
+            _stream_executor: Any = None
+            _stream_submitted_count = 0
+            if config.streaming_tool_execution and _ckpt_store is None and not hooks:
+                from looplet.streaming import AsyncStreamingToolExecutor  # noqa: PLC0415
+
+                _stream_executor = AsyncStreamingToolExecutor(
+                    tools, max_concurrent=max(1, config.max_parallel_calls)
+                )
+
+            def _on_stream_tool_call(block: dict[str, Any]) -> None:
+                nonlocal _stream_submitted_count
+                if _stream_executor is None:
+                    return
+                if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
+                    return
+                name = block.get("name", "")
+                call_id = block.get("id", "")
+                raw_input = block.get("input", {})
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(call_id, str)
+                    or not call_id
+                    or not isinstance(raw_input, dict)
+                    or name in config.resolve_terminal_outcomes()
+                ):
+                    return
+                spec = tools._tools.get(name)
+                if spec is None or not spec.is_concurrent_safe(raw_input):
+                    return
+                tc = ToolCall(tool=name, args=dict(raw_input), call_id=call_id)
+                t_ctx = _build_tool_ctx(
+                    config,
+                    tools=tools,
+                    hooks=hooks,
+                    tool_call=tc,
+                    step_num=step_num + _stream_submitted_count,
+                    state=state,
+                    session_log=session_log,
+                    llm=_sync_llm,
+                    async_llm=_get_async_tool_llm(),
+                )
+                _stream_submitted_count += 1
+                _stream_executor.submit(tc, ctx=t_ctx)
+
+            def _on_stream_reset() -> None:
+                nonlocal _stream_executor, _stream_submitted_count
+                if _stream_executor is not None:
+                    _stream_executor.discard()
+                    from looplet.streaming import AsyncStreamingToolExecutor  # noqa: PLC0415
+
+                    _stream_executor = AsyncStreamingToolExecutor(
+                        tools, max_concurrent=max(1, config.max_parallel_calls)
+                    )
+                    _stream_submitted_count = 0
+
+            try:
+                llm_result = await async_llm_call(
+                    effective_llm,
+                    prompt,
+                    max_tokens=config.max_tokens,
+                    system_prompt=config.system_prompt,
+                    temperature=config.temperature,
+                    tools=_tool_schemas,
+                    native_policy=native_policy,
+                    cancel_token=config.cancel_token,
+                    max_continuations=config.max_turn_continuations,
+                    cache_breakpoints=_cache_bps,
+                    generate_kwargs=config.generate_kwargs or None,
+                    should_continue=lambda: not _deadline_expired(loop_ctx),
+                    on_chunk=_emit_chunk if _chunk_emitters else None,
+                    on_tool_call=_on_stream_tool_call if _stream_executor is not None else None,
+                    on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
+                )
+            finally:
+                if _llm_span is not None and config.tracer is not None:
+                    config.tracer.end_span(_llm_span)
         loop_ctx.native_tool_stats.record(llm_result)
         llm_calls += llm_result.calls + (
             0 if llm_result.native_attempted else llm_result.continuations
@@ -1525,6 +1657,24 @@ async def _async_composable_loop_impl(
             },
         )
 
+        _step_usage = llm_result.usage or (
+            getattr(effective_llm, "last_usage", None) if llm_result.ok else None
+        )
+        if _step_usage and _turns is None:
+            try:
+                _meta = getattr(state, "metadata", None)
+                if isinstance(_meta, dict):
+                    _meta["last_usage"] = dict(_step_usage)
+                    _totals = _meta.get("usage_total")
+                    if not isinstance(_totals, dict):
+                        _totals = {}
+                    for _k, _v in _step_usage.items():
+                        if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                            _totals[_k] = _totals.get(_k, 0) + _v
+                    _meta["usage_total"] = _totals
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("usage surfacing failed", exc_info=True)
+
         _post_llm_decisions = await emit_event_async(
             hooks,
             _LE.POST_LLM_RESPONSE,
@@ -1534,8 +1684,7 @@ async def _async_composable_loop_impl(
             context=context,
             prompt=prompt,
             raw_response=raw_response,
-            usage=llm_result.usage
-            or (getattr(effective_llm, "last_usage", None) if llm_result.ok else None),
+            usage=_step_usage,
             extra={
                 "native_tool_stats": loop_ctx.native_tool_stats.to_dict(),
                 "model_calls": llm_result.model_calls,
@@ -1858,7 +2007,20 @@ async def _async_composable_loop_impl(
                             )
                             for index, call in dispatch_items
                         ]
-                        if config.concurrent_dispatch:
+                        _pre_streamed = (
+                            {
+                                r.call_id: r
+                                for r in await _stream_executor.results()
+                                if r.call_id is not None
+                            }
+                            if _stream_executor is not None
+                            else {}
+                        )
+                        if _pre_streamed and all(
+                            c.call_id in _pre_streamed for c in calls_to_dispatch
+                        ):
+                            results = [_pre_streamed[c.call_id] for c in calls_to_dispatch]
+                        elif config.concurrent_dispatch:
                             if (
                                 type(tools).dispatch_batch is not BaseToolRegistry.dispatch_batch
                                 and type(tools).async_dispatch_batch
@@ -1909,7 +2071,7 @@ async def _async_composable_loop_impl(
                     "parallel"
                     if config.concurrent_dispatch
                     and tool_spec is not None
-                    and tool_spec.concurrent_safe
+                    and tool_spec.is_concurrent_safe(tool_call.args)
                     else "serial"
                 )
                 event_metadata = _step_metadata(
@@ -1940,7 +2102,7 @@ async def _async_composable_loop_impl(
                 post_dispatch_parts.extend(_pd.extra_context)
                 if _pd.stop_reason is not None:
                     stop_reason = _pd.stop_reason
-                    done = True
+                    _hook_requested_stop = True
 
                 step = Step(
                     number=cur_step,
@@ -2009,7 +2171,7 @@ async def _async_composable_loop_impl(
                             context=context,
                             step_num=cur_step,
                             new_entities=len(step_entities),
-                            requested_reason=stop_reason if done else None,
+                            requested_reason=stop_reason if _hook_requested_stop else None,
                         )
                     if reason is not None:
                         stop_reason = reason

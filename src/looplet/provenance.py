@@ -40,13 +40,14 @@ Design notes:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import inspect
 import json
 import logging
 import re
 import time
-from collections.abc import MutableSequence
+from collections.abc import MutableSequence, Sequence
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -353,6 +354,8 @@ class _RecordingBase:
         duration_ms = (time.time() - started_at) * 1000.0
         execution = self._model_call_context.get()
         self._model_call_context.set(None)
+        if options:
+            options = {k: v for k, v in options.items() if k not in {"on_chunk", "on_tool_call"}}
         if isinstance(response, str):
             stored_response: Any = self._scrub(response)
         elif isinstance(response, list):
@@ -524,6 +527,9 @@ class RecordingLLMBackend(_RecordingBase):
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
+        if hasattr(backend, "stream") and getattr(backend, "stream_in_loop", True):
+            self.stream = self._stream_impl
+            self.stream_in_loop = True
 
     def generate(
         self,
@@ -621,6 +627,55 @@ class RecordingLLMBackend(_RecordingBase):
                 options=options,
             )
 
+    def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Iterator[str]:
+        started = time.time()
+        error: str | None = None
+        termination_reason: str | None = None
+        chunks: list[str] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
+        try:
+            stream_iter = invoke_backend(
+                self._backend.stream,
+                upstream_prompt,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
+            )
+            for chunk in stream_iter:
+                chunks.append(chunk)
+                yield chunk
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
+            raise
+        finally:
+            self._record(
+                method="generate",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                response="".join(chunks),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=None,
+                started_at=started,
+                error=error,
+                termination_reason=termination_reason,
+                options=options,
+            )
+
 
 class AsyncRecordingLLMBackend(_RecordingBase):
     """Async counterpart to :class:`RecordingLLMBackend`."""
@@ -641,6 +696,9 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
+        if hasattr(backend, "stream") and getattr(backend, "stream_in_loop", True):
+            self.stream = self._stream_impl
+            self.stream_in_loop = True
 
     async def generate(
         self,
@@ -738,6 +796,64 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
+                started_at=started,
+                error=error,
+                termination_reason=termination_reason,
+                options=options,
+            )
+
+    async def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Any:
+        import inspect
+
+        started = time.time()
+        error: str | None = None
+        termination_reason: str | None = None
+        chunks: list[str] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
+        try:
+            stream_out = invoke_backend(
+                self._backend.stream,
+                upstream_prompt,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
+            )
+            if inspect.isawaitable(stream_out):
+                stream_out = await stream_out
+            if hasattr(stream_out, "__aiter__"):
+                async for chunk in stream_out:
+                    chunks.append(chunk)
+                    yield chunk
+            else:
+                for chunk in stream_out:
+                    chunks.append(chunk)
+                    yield chunk
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TerminalLLMError):
+                termination_reason = exc.termination_reason
+            raise
+        finally:
+            self._record(
+                method="generate",
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
+                response="".join(chunks),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=None,
                 started_at=started,
                 error=error,
                 termination_reason=termination_reason,
@@ -938,6 +1054,26 @@ class TrajectoryRecorder:
         )
         self._pending_context = ""
         return None
+
+    def on_event(self, payload: Any) -> None:
+        from looplet.events import LifecycleEvent  # noqa: PLC0415
+
+        if getattr(payload, "event", None) == LifecycleEvent.SUBAGENT_STOP:
+            extra = getattr(payload, "extra", None)
+            extra_dict = dict(extra) if isinstance(extra, dict) else {}
+            subagents = self.trajectory.metadata.setdefault("subagents", [])
+            if isinstance(subagents, list):
+                subagents.append(
+                    {
+                        "subagent_id": getattr(payload, "subagent_id", None)
+                        or extra_dict.get("subagent_id"),
+                        "parent_id": extra_dict.get("parent_id"),
+                        "termination_reason": getattr(payload, "termination_reason", None),
+                        "step_count": extra_dict.get("step_count", 0),
+                        "llm_calls": extra_dict.get("llm_calls", 0),
+                        "recovered": extra_dict.get("recovered", False),
+                    }
+                )
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
         from looplet._backend_contract import json_snapshot
@@ -1601,6 +1737,64 @@ def _extract_content_blocks(body: str | None) -> list[dict[str, Any]]:
     return decoded
 
 
+class _RecordedToolReplayHook:
+    """Intercept selected tool calls during replay and return their recorded ToolResult."""
+
+    def __init__(self, recorded_steps: list[dict[str, Any]], stub_tools: set[str] | bool) -> None:
+        self._steps = list(recorded_steps)
+        self._stub_tools = stub_tools
+        self._by_call_id: dict[str, dict[str, Any]] = {}
+        self._by_tool_queue: dict[str, list[dict[str, Any]]] = {}
+        for step in self._steps:
+            tc = step.get("tool_call") or {}
+            tr = step.get("tool_result") or {}
+            tname = tc.get("tool") or tr.get("tool")
+            cid = tc.get("call_id") or tr.get("call_id")
+            if isinstance(cid, str) and cid:
+                self._by_call_id[cid] = tr
+            if isinstance(tname, str) and tname:
+                self._by_tool_queue.setdefault(tname, []).append(tr)
+
+    def _should_stub(self, tool_name: str) -> bool:
+        if self._stub_tools is True:
+            return True
+        if isinstance(self._stub_tools, set):
+            return tool_name in self._stub_tools
+        return False
+
+    def pre_dispatch(
+        self,
+        state: Any,
+        session_log: Any,
+        tool_call: Any,
+        step_num: int,
+    ) -> Any:
+        from looplet.types import ToolResult  # noqa: PLC0415
+
+        if not self._should_stub(tool_call.tool):
+            return None
+        tr_dict = None
+        if tool_call.call_id and tool_call.call_id in self._by_call_id:
+            tr_dict = self._by_call_id[tool_call.call_id]
+        else:
+            queue = self._by_tool_queue.get(tool_call.tool)
+            if queue:
+                tr_dict = queue.pop(0)
+        if tr_dict is None:
+            return None
+        return ToolResult(
+            tool=tool_call.tool,
+            args_summary=str(tr_dict.get("args", "")),
+            data=copy.deepcopy(tr_dict.get("data")),
+            error=tr_dict.get("error"),
+            duration_ms=float(tr_dict.get("duration_ms", 0.0)),
+            result_key=tr_dict.get("result_key"),
+            call_id=tool_call.call_id,
+            warnings=list(tr_dict.get("warnings") or []),
+            metadata={**dict(tr_dict.get("metadata") or {}), "replayed_from_trace": True},
+        )
+
+
 def replay_loop(
     trace_dir: str | Path,
     *,
@@ -1613,6 +1807,7 @@ def replay_loop(
     max_steps: int | None = None,
     assistant_turn_policy: Callable[..., Any] | None = None,
     policy_override_name: str | None = None,
+    stub_tools: Sequence[str] | bool = (),
 ) -> Any:
     """Replay a captured trace through a fresh agent loop.
 
@@ -1676,6 +1871,7 @@ def replay_loop(
             max_steps=max_steps,
             assistant_turn_policy=assistant_turn_policy,
             policy_override_name=policy_override_name,
+            stub_tools=stub_tools,
         )
     )
 
@@ -1692,6 +1888,7 @@ async def async_replay_loop(
     max_steps: int | None = None,
     assistant_turn_policy: Callable[..., Any] | None = None,
     policy_override_name: str | None = None,
+    stub_tools: Sequence[str] | bool = (),
 ) -> Any:
     """Replay captured model responses through the async agent loop.
 
@@ -1718,6 +1915,7 @@ async def async_replay_loop(
         max_steps=max_steps,
         assistant_turn_policy=assistant_turn_policy,
         policy_override_name=policy_override_name,
+        stub_tools=stub_tools,
     )
     async with aclosing(async_composable_loop(**arguments)) as iterator:
         async for step in iterator:
@@ -1736,6 +1934,7 @@ def _prepare_replay(
     max_steps: int | None = None,
     assistant_turn_policy: Callable[..., Any] | None = None,
     policy_override_name: str | None = None,
+    stub_tools: Sequence[str] | bool = (),
 ) -> dict[str, Any]:
     from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
@@ -1750,7 +1949,7 @@ def _prepare_replay(
         call.get("execution", {}).get("assistant_policy_required") is True for call in calls
     )
     trajectory: dict[str, Any] = {}
-    if config is None or task is None or requires_policy:
+    if config is None or task is None or requires_policy or stub_tools:
         descriptor = read_artifact_descriptor(trace_path, expected_kinds=("eval_run", "provenance"))
         trajectory_path = _artifact_path(trace_path, "trajectory.json")
         if trajectory_path.is_file() and (
@@ -1862,6 +2061,14 @@ def _prepare_replay(
     if policy_override_name is not None:
         state.metadata["replay_policy_override"] = policy_override_name
     effective_hooks = list(hooks or ())
+    if stub_tools:
+        recorded_steps = trajectory.get("steps")
+        if not isinstance(recorded_steps, list):
+            raise ValueError("stub_tools replay requires recorded steps in trajectory.json")
+        stub_set: set[str] | bool = (
+            True if stub_tools is True else {str(name) for name in stub_tools}
+        )
+        effective_hooks.insert(0, _RecordedToolReplayHook(recorded_steps, stub_set))
     if recording_sink is not None:
         backend = recording_sink.wrap_llm(backend)
         recorder = recording_sink.trajectory_hook()

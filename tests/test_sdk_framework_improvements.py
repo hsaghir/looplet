@@ -491,6 +491,148 @@ def test_read_result_and_recall_result_support_line_ranges(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+async def test_admitted_text_stream_preserves_chunks_and_accounting(tmp_path, asynchronous):
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    response = json.dumps({"tool": "done", "args": {"summary": "ok"}})
+    chunks = [response[:20], response[20:]]
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append("generate")
+            return response
+
+        def stream(self, prompt, **kwargs):
+            calls.append("stream")
+            yield from chunks
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def stream(self, prompt, **kwargs):
+            calls.append("stream")
+            for chunk in chunks:
+                yield chunk
+
+    recorder = (
+        AsyncRecordingLLMBackend(AsyncBackend(), attempt_directory=tmp_path)
+        if asynchronous
+        else RecordingLLMBackend(Backend(), attempt_directory=tmp_path)
+    )
+    events = []
+    state = DefaultState(max_steps=1)
+    request = {
+        "llm": recorder,
+        "tools": tools_from([], include_done=True),
+        "state": state,
+        "task": "Finish with the completion tool.",
+        "config": LoopConfig(
+            harness_profile="minimal", max_steps=1, max_model_calls=1, use_native_tools=False
+        ),
+        "stream": CallbackEmitter(events.append),
+    }
+    if asynchronous:
+        async for _step in async_composable_loop(**request):
+            pass
+    else:
+        list(composable_loop(**request))
+
+    assert calls == ["stream"]
+    assert [event.chunk for event in events if isinstance(event, LLMChunkEvent)] == chunks
+    assert state.metadata[TURN_STATE_KEY]["model_calls"] == 1
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0].response == response
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("termination", ["complete", "close", "error", "cancel"])
+async def test_admitted_stream_settles_lifecycle_and_budget(tmp_path, asynchronous, termination):
+    from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
+    from looplet.backend_contract import TerminalLLMError
+    from looplet.provenance import load_model_attempts
+
+    calls = []
+    closed = []
+    failures = {
+        "error": RuntimeError("provider failed"),
+        "cancel": asyncio.CancelledError("provider cancelled"),
+    }
+
+    class Backend:
+        def stream(self, prompt, **kwargs):
+            calls.append(prompt)
+            try:
+                yield "partial"
+                if termination in failures:
+                    raise failures[termination]
+                yield "rest"
+            finally:
+                closed.append(True)
+
+    class AsyncBackend(Backend):
+        async def stream(self, prompt, **kwargs):
+            calls.append(prompt)
+            try:
+                yield "partial"
+                if termination in failures:
+                    raise failures[termination]
+                yield "rest"
+            finally:
+                closed.append(True)
+
+    recorder = (
+        AsyncRecordingLLMBackend(AsyncBackend(), attempt_directory=tmp_path / "model-attempts")
+        if asynchronous
+        else RecordingLLMBackend(Backend(), attempt_directory=tmp_path / "model-attempts")
+    )
+    state = DefaultState(max_steps=2)
+    turns = _AssistantTurns(state, LoopConfig(harness_profile="minimal", max_model_calls=1))
+    turns.begin_turn()
+    admitted = turns.wrap(recorder)
+    iterator = admitted.stream("first")
+    if asynchronous:
+        assert await anext(iterator) == "partial"
+        if termination == "close":
+            await iterator.aclose()
+        elif termination in failures:
+            with pytest.raises(type(failures[termination])) as caught:
+                await anext(iterator)
+            assert caught.value is failures[termination]
+        else:
+            assert [chunk async for chunk in iterator] == ["rest"]
+    else:
+        assert next(iterator) == "partial"
+        if termination == "close":
+            iterator.close()
+        elif termination in failures:
+            with pytest.raises(type(failures[termination])) as caught:
+                next(iterator)
+            assert caught.value is failures[termination]
+        else:
+            assert list(iterator) == ["rest"]
+
+    response = "partialrest" if termination == "complete" else "partial"
+    assert calls == ["first"] and closed == [True]
+    assert not turns._active_calls and not turns._pending_calls
+    assert state.metadata[TURN_STATE_KEY]["model_calls"] == 1
+    assert state.metadata[TURN_STATE_KEY]["requests"][0]["response_chars"] == len(response)
+    assert len(recorder.calls) == 1 and recorder.calls[0].response == response
+    attempts = load_model_attempts(tmp_path)
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"]["response_complete"] is (termination == "complete")
+
+    with pytest.raises(TerminalLLMError, match=r"model_call_budget"):
+        refused = admitted.stream("second")
+        if asynchronous:
+            await anext(refused)
+        else:
+            next(refused)
+    assert calls == ["first"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("max_model_calls", [0, 1])
 async def test_default_child_state_honors_model_call_cap(asynchronous, max_model_calls):
     from looplet import run_sub_loop, run_sub_loop_async

@@ -194,8 +194,15 @@ def _execute(
             )
         return result
 
+    from looplet.loop import _SyncToAsyncLLM  # noqa: PLC0415
+
+    child_llm = (
+        ctx.async_llm
+        if ctx.async_llm is not None and not isinstance(ctx.async_llm, _SyncToAsyncLLM)
+        else ctx.llm
+    )
     options = {
-        "llm": ctx.async_llm if ctx.async_llm is not None else ctx.llm,
+        "llm": child_llm,
         "task": {"goal": task},
         "sub_tools": sub_preset.tools,
         "state": sub_preset.state,

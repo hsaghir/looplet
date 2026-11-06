@@ -14,16 +14,20 @@ Typical usage::
 
 from __future__ import annotations
 
+import asyncio
 import queue
+import threading
 import time
-from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from looplet.events import LifecycleEvent
 from looplet.session import SessionLog
-from looplet.types import ToolCall, ToolResult
+from looplet.types import CancelToken, ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
 
 if TYPE_CHECKING:
+    from looplet.tools import BaseToolRegistry
     from looplet.types import AgentState, LLMBackend
 
 
@@ -47,6 +51,8 @@ __all__ = [
     "CompositeEmitter",
     "QueueEmitter",
     "StreamingHook",
+    "StreamingToolExecutor",
+    "AsyncStreamingToolExecutor",
 ]
 
 # ── Base Event ──────────────────────────────────────────────────
@@ -543,3 +549,314 @@ class StreamingHook:
         elif payload.event == LifecycleEvent.DONE_ACCEPTED and payload.model_turn_id is not None:
             self._emitter.emit(StepStartEvent(step_num=payload.step_num))
         return None
+
+
+# ── Streaming Tool Executors ────────────────────────────────────
+
+
+@dataclass
+class _TrackedToolItem:
+    index: int
+    call: ToolCall
+    ctx: ToolContext | None
+    is_concurrent_safe: bool
+    status: str = "queued"
+    result: ToolResult | None = None
+    future: Future[ToolResult] | None = None
+    task: asyncio.Task[ToolResult] | None = None
+
+
+def _cancelled_tool_result(call: ToolCall, message: str) -> ToolResult:
+    from looplet.tools import _summarize_args_dict  # noqa: PLC0415
+
+    clean = {k: v for k, v in call.args.items() if not k.startswith("__")}
+    err = ToolError(kind=ErrorKind.CANCELLED, message=message, retriable=False)
+    return ToolResult(
+        tool=call.tool,
+        args_summary=_summarize_args_dict(clean),
+        data=None,
+        error=err.message,
+        error_detail=err,
+        call_id=call.call_id,
+        metadata={"execution_status": "not_executed"},
+    )
+
+
+def _bind_sibling_token(ctx: ToolContext | None, sibling_token: CancelToken) -> ToolContext:
+    if ctx is None:
+        return ToolContext(cancel_token=sibling_token)
+    if ctx.cancel_token is None:
+        return replace(ctx, cancel_token=sibling_token)
+    return replace(ctx, cancel_token=ctx.cancel_token.create_child(sibling_token))
+
+
+class StreamingToolExecutor:
+    """Execute tool calls as they stream in with concurrency control.
+
+    - Concurrent-safe tools (via ``spec.is_concurrent_safe(call.args)``) can
+      execute in parallel with other concurrent-safe tools immediately upon
+      submission.
+    - Non-concurrent-safe tools wait for active work and execute exclusively.
+    - Results are buffered and returned in exact submission order by
+      :meth:`results`.
+    - :meth:`discard` abandons pending/in-progress tools on streaming fallback.
+    """
+
+    def __init__(
+        self,
+        tools: BaseToolRegistry,
+        *,
+        ctx: ToolContext | None = None,
+        max_workers: int = 10,
+        cancel_on_sibling_error: bool = False,
+    ) -> None:
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        self._tools = tools
+        self._default_ctx = ctx
+        self._max_workers = max_workers
+        self._cancel_on_sibling_error = cancel_on_sibling_error
+        parent_token = ctx.cancel_token if ctx is not None else None
+        self._sibling_token = (
+            parent_token.create_child() if parent_token is not None else CancelToken()
+        )
+        self._items: list[_TrackedToolItem] = []
+        self._lock = threading.RLock()
+        self._cond = threading.Condition(self._lock)
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._discarded = False
+        self._has_errored = False
+        self._errored_tool = ""
+
+    def submit(self, call: ToolCall, *, ctx: ToolContext | None = None) -> None:
+        """Submit a tool call to the streaming execution queue."""
+        with self._lock:
+            effective_ctx = ctx if ctx is not None else self._default_ctx
+            if self._cancel_on_sibling_error:
+                effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
+            spec = self._tools._tools.get(call.tool)
+            is_safe = spec.is_concurrent_safe(call.args) if spec is not None else False
+            item = _TrackedToolItem(
+                index=len(self._items),
+                call=call,
+                ctx=effective_ctx,
+                is_concurrent_safe=is_safe,
+            )
+            self._items.append(item)
+            self._process_queue_locked()
+
+    def discard(self) -> None:
+        """Discard all pending and in-progress tools (e.g. on streaming fallback)."""
+        with self._lock:
+            self._discarded = True
+            self._sibling_token.cancel()
+            for item in self._items:
+                if item.status != "completed":
+                    item.result = _cancelled_tool_result(
+                        item.call, "Streaming fallback - tool execution discarded"
+                    )
+                    item.status = "completed"
+                if item.future is not None:
+                    item.future.cancel()
+            self._cond.notify_all()
+
+    def _can_execute_locked(self, is_concurrent_safe: bool) -> bool:
+        executing = [t for t in self._items if t.status == "executing"]
+        if len(executing) >= self._max_workers:
+            return False
+        return len(executing) == 0 or (
+            is_concurrent_safe and all(t.is_concurrent_safe for t in executing)
+        )
+
+    def _process_queue_locked(self) -> None:
+        for item in self._items:
+            if item.status != "queued":
+                if item.status == "executing" and not item.is_concurrent_safe:
+                    break
+                continue
+            if self._discarded:
+                item.result = _cancelled_tool_result(
+                    item.call, "Streaming fallback - tool execution discarded"
+                )
+                item.status = "completed"
+                continue
+            if self._cancel_on_sibling_error and self._has_errored:
+                item.result = _cancelled_tool_result(
+                    item.call,
+                    f"Cancelled: parallel tool call {self._errored_tool!r} errored",
+                )
+                item.status = "completed"
+                continue
+            if self._can_execute_locked(item.is_concurrent_safe):
+                item.status = "executing"
+                item.future = self._pool.submit(self._execute_item, item)
+                if not item.is_concurrent_safe:
+                    break
+            else:
+                break
+
+    def _execute_item(self, item: _TrackedToolItem) -> ToolResult:
+        try:
+            res = self._tools.dispatch(item.call, ctx=item.ctx)
+        except Exception as exc:  # pragma: no cover - defensive
+            res = _cancelled_tool_result(item.call, str(exc))
+        with self._lock:
+            if self._discarded:
+                item.result = _cancelled_tool_result(
+                    item.call, "Streaming fallback - tool execution discarded"
+                )
+            else:
+                item.result = res
+                if (
+                    res.error is not None
+                    and self._cancel_on_sibling_error
+                    and not self._has_errored
+                ):
+                    self._has_errored = True
+                    self._errored_tool = item.call.tool
+                    self._sibling_token.cancel()
+            item.status = "completed"
+            self._process_queue_locked()
+            self._cond.notify_all()
+        return res
+
+    def results(self, timeout: float | None = None) -> list[ToolResult]:
+        """Wait for all submitted tools and return results in submission order."""
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
+        with self._cond:
+            while any(item.status != "completed" for item in self._items):
+                remaining = (deadline - time.monotonic()) if deadline is not None else None
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("StreamingToolExecutor timed out waiting for tool results")
+                self._cond.wait(timeout=remaining)
+            out = [item.result for item in self._items if item.result is not None]
+        self._pool.shutdown(wait=False)
+        return out
+
+
+class AsyncStreamingToolExecutor:
+    """Async counterpart to :class:`StreamingToolExecutor`."""
+
+    def __init__(
+        self,
+        tools: BaseToolRegistry,
+        *,
+        ctx: ToolContext | None = None,
+        max_concurrent: int = 10,
+        cancel_on_sibling_error: bool = False,
+    ) -> None:
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be >= 1")
+        self._tools = tools
+        self._default_ctx = ctx
+        self._max_concurrent = max_concurrent
+        self._cancel_on_sibling_error = cancel_on_sibling_error
+        parent_token = ctx.cancel_token if ctx is not None else None
+        self._sibling_token = (
+            parent_token.create_child() if parent_token is not None else CancelToken()
+        )
+        self._items: list[_TrackedToolItem] = []
+        self._done_event = asyncio.Event()
+        self._done_event.set()
+        self._discarded = False
+        self._has_errored = False
+        self._errored_tool = ""
+
+    def submit(self, call: ToolCall, *, ctx: ToolContext | None = None) -> None:
+        """Submit a tool call to the async streaming execution queue."""
+        effective_ctx = ctx if ctx is not None else self._default_ctx
+        if self._cancel_on_sibling_error:
+            effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
+        spec = self._tools._tools.get(call.tool)
+        is_safe = spec.is_concurrent_safe(call.args) if spec is not None else False
+        item = _TrackedToolItem(
+            index=len(self._items),
+            call=call,
+            ctx=effective_ctx,
+            is_concurrent_safe=is_safe,
+        )
+        self._items.append(item)
+        self._done_event.clear()
+        self._process_queue()
+
+    def discard(self) -> None:
+        """Discard all pending and in-progress tools."""
+        self._discarded = True
+        self._sibling_token.cancel()
+        for item in self._items:
+            if item.status != "completed":
+                item.result = _cancelled_tool_result(
+                    item.call, "Streaming fallback - tool execution discarded"
+                )
+                item.status = "completed"
+            if item.task is not None and not item.task.done():
+                item.task.cancel()
+        self._done_event.set()
+
+    def _can_execute(self, is_concurrent_safe: bool) -> bool:
+        executing = [t for t in self._items if t.status == "executing"]
+        if len(executing) >= self._max_concurrent:
+            return False
+        return len(executing) == 0 or (
+            is_concurrent_safe and all(t.is_concurrent_safe for t in executing)
+        )
+
+    def _process_queue(self) -> None:
+        for item in self._items:
+            if item.status != "queued":
+                if item.status == "executing" and not item.is_concurrent_safe:
+                    break
+                continue
+            if self._discarded:
+                item.result = _cancelled_tool_result(
+                    item.call, "Streaming fallback - tool execution discarded"
+                )
+                item.status = "completed"
+                continue
+            if self._cancel_on_sibling_error and self._has_errored:
+                item.result = _cancelled_tool_result(
+                    item.call,
+                    f"Cancelled: parallel tool call {self._errored_tool!r} errored",
+                )
+                item.status = "completed"
+                continue
+            if self._can_execute(item.is_concurrent_safe):
+                item.status = "executing"
+                item.task = asyncio.create_task(self._execute_item(item))
+                if not item.is_concurrent_safe:
+                    break
+            else:
+                break
+        if all(item.status == "completed" for item in self._items):
+            self._done_event.set()
+
+    async def _execute_item(self, item: _TrackedToolItem) -> ToolResult:
+        try:
+            res = await self._tools.async_dispatch(item.call, ctx=item.ctx)
+        except asyncio.CancelledError:
+            res = _cancelled_tool_result(
+                item.call,
+                "Streaming fallback - tool execution discarded"
+                if self._discarded
+                else "Tool execution cancelled",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            res = _cancelled_tool_result(item.call, str(exc))
+        if self._discarded:
+            item.result = _cancelled_tool_result(
+                item.call, "Streaming fallback - tool execution discarded"
+            )
+        else:
+            item.result = res
+            if res.error is not None and self._cancel_on_sibling_error and not self._has_errored:
+                self._has_errored = True
+                self._errored_tool = item.call.tool
+                self._sibling_token.cancel()
+        item.status = "completed"
+        self._process_queue()
+        return res
+
+    async def results(self) -> list[ToolResult]:
+        """Await all submitted tools and return results in submission order."""
+        await self._done_event.wait()
+        return [item.result for item in self._items if item.result is not None]

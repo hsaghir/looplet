@@ -43,24 +43,36 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
-from looplet.types import RunEnvelope
+from looplet.types import RunEnvelope, ToolCancelledError
 
 __all__ = ["MCPProtocolError", "MCPToolError", "MCPToolAdapter"]
 
 logger = logging.getLogger(__name__)
+_ACTIVE_CANCEL_TOKEN: ContextVar[Any | None] = ContextVar("looplet_mcp_cancel_token", default=None)
 
 
-def _register_mcp_tools(registry: BaseToolRegistry, specs: list[ToolSpec]) -> int:
-    names = set(registry.tool_names)
+def _register_mcp_tools(
+    registry: BaseToolRegistry,
+    specs: list[ToolSpec],
+    *,
+    previous: Sequence[ToolSpec] = (),
+) -> int:
+    current = registry.tool_specs
+    owned = {spec.name for spec in previous if current.get(spec.name) is spec}
+    names = set(current) - owned
     for spec in specs:
         if spec.name in names:
             raise ValueError(f"MCP tool name collision: {spec.name!r}")
         names.add(spec.name)
+    for name in owned:
+        registry.unregister(name)
     for spec in specs:
         registry.register(spec)
     return len(specs)
@@ -160,6 +172,10 @@ class MCPToolAdapter:
         self._reader_threads: set[threading.Thread] = set()
         self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
+        self._registrations: WeakKeyDictionary[BaseToolRegistry, tuple[ToolSpec, ...]] = (
+            WeakKeyDictionary()
+        )
+        self._tools_dirty = False
         self._started = False
 
     def __enter__(self) -> "MCPToolAdapter":
@@ -171,9 +187,29 @@ class MCPToolAdapter:
 
     # ── Public API ───────────────────────────────────────────────
 
+    def refresh_tools(self, registry: BaseToolRegistry | None = None) -> list[ToolSpec]:
+        """Refresh the catalog and optionally synchronize a registry.
+
+        Only tools installed by this adapter are replaced or removed.
+        Local replacements are retained. Name collisions reject the update
+        before any registry mutation. Call between model turns.
+        """
+        self._ensure_started()
+        if self._proc is not None:
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
+        specs = self.tools()
+        if registry is not None:
+            _register_mcp_tools(registry, specs, previous=self._registrations.get(registry, ()))
+            self._registrations[registry] = tuple(specs)
+        return specs
+
     def tools(self) -> list[ToolSpec]:
         """Return a ToolSpec for each tool the MCP server exposes."""
         self._ensure_started()
+        if self._tools_dirty and self._proc is not None:
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
         specs = []
         for schema in self._tool_schemas:
             name = schema["name"]
@@ -205,7 +241,10 @@ class MCPToolAdapter:
         Reject name collisions before registering any discovered tool.
         Returns the number of tools registered.
         """
-        return _register_mcp_tools(registry, self.tools())
+        specs = self.tools()
+        count = _register_mcp_tools(registry, specs)
+        self._registrations[registry] = tuple(specs)
+        return count
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent protocol requests."""
@@ -216,6 +255,7 @@ class MCPToolAdapter:
         proc = self._proc
         self._proc = None
         self._started = False
+        self._tools_dirty = False
         self._pending_messages.clear()
         self._tool_schemas.clear()
         if proc is not None:
@@ -285,10 +325,10 @@ class MCPToolAdapter:
                 )
             # Send initialized notification
             self._send_notification("notifications/initialized", {})
-            # List tools
-            tools_resp = self._send_request("tools/list", {})
-            if tools_resp and "tools" in tools_resp:
-                self._tool_schemas = tools_resp["tools"]
+            # List tools across all pagination pages
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
+            if self._tool_schemas:
                 logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
             self._started = True
         except BaseException as exc:
@@ -304,6 +344,32 @@ class MCPToolAdapter:
                     f"(exit_code={rc}); stderr: {stderr_tail!r}"
                 ) from exc
             raise
+
+    def _fetch_all_tools(self) -> list[dict[str, Any]]:
+        """Fetch all ``tools/list`` pages following ``nextCursor``."""
+        schemas: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        for _ in range(100):
+            params: dict[str, Any] = {"cursor": cursor} if cursor is not None else {}
+            tools_resp = self._send_request("tools/list", params)
+            if not isinstance(tools_resp, dict):
+                break
+            page_tools = tools_resp.get("tools")
+            if isinstance(page_tools, list):
+                schemas.extend(page_tools)
+            next_cursor = tools_resp.get("nextCursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
+                break
+            if next_cursor in seen_cursors:
+                raise MCPProtocolError(
+                    f"MCP tools/list pagination cycle detected on cursor {next_cursor!r}"
+                )
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            raise MCPProtocolError("MCP tools/list pagination exceeded 100 pages")
+        return schemas
 
     def _send_request(self, method: str, params: dict) -> dict | None:
         """Send a JSON-RPC request and wait for the response."""
@@ -343,7 +409,7 @@ class MCPToolAdapter:
         try:
             self._write_message(msg, deadline=deadline)
             return self._read_message(expected_id=msg.get("id"), deadline=deadline)
-        except (OSError, MCPProtocolError):
+        except (OSError, MCPProtocolError, ToolCancelledError):
             self.close()
             raise
 
@@ -412,6 +478,8 @@ class MCPToolAdapter:
                     continue
 
             if expected_id is not None and data.get("id") is None:
+                if data.get("method") == "notifications/tools/list_changed":
+                    self._tools_dirty = True
                 logger.debug(
                     "MCP notification received while awaiting response: %s", data.get("method")
                 )
@@ -463,14 +531,19 @@ class MCPToolAdapter:
         *,
         operation: str,
         timeout: float | None = None,
+        cancel_token: Any | None = None,
     ) -> bytes:
         """Run one blocking pipe read with a portable wall-clock bound."""
+        if cancel_token is None:
+            cancel_token = _ACTIVE_CANCEL_TOKEN.get()
         limit = self._timeout if timeout is None else timeout
         remaining = remaining_deadline(self._run_envelope)
         if remaining is not None:
             limit = min(limit, remaining)
         if limit <= 0:
             raise TimeoutError(f"MCP server {operation} exceeded run deadline")
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            raise ToolCancelledError("Tool execution cancelled")
         done = threading.Event()
         values: list[bytes] = []
         errors: list[BaseException] = []
@@ -489,7 +562,24 @@ class MCPToolAdapter:
         with self._reader_lock:
             self._reader_threads.add(reader)
         reader.start()
-        if not done.wait(limit):
+        if cancel_token is None:
+            completed = done.wait(limit)
+        else:
+            end_ts = time.monotonic() + limit
+            completed = False
+            while True:
+                if getattr(cancel_token, "is_cancelled", False):
+                    if operation in {"request", "response"} and self._proc is not None:
+                        self._stop_process_tree(self._proc, wait_timeout=0.2)
+                        done.wait(0.2)
+                    raise ToolCancelledError("Tool execution cancelled")
+                rem = end_ts - time.monotonic()
+                if rem <= 0:
+                    break
+                if done.wait(min(0.02, rem)):
+                    completed = True
+                    break
+        if not completed:
             if operation in {"request", "response"} and self._proc is not None:
                 self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))
                 done.wait(min(5.0, max(0.1, limit)))
@@ -534,16 +624,20 @@ class MCPToolAdapter:
         """Create an execute function that sends already-prepared arguments."""
         param_types = param_types or {}
 
-        def execute(**kwargs: Any) -> dict:
+        def _invoke(kwargs: dict[str, Any], *, cancel_token: Any | None = None) -> dict:
             if self._coerce_structured_args(kwargs, param_types) != kwargs:
                 raise MCPToolError("MCP structured arguments must be prepared before dispatch")
-            resp = self._send_request(
-                "tools/call",
-                {
-                    "name": tool_name,
-                    "arguments": kwargs,
-                },
-            )
+            tok = _ACTIVE_CANCEL_TOKEN.set(cancel_token)
+            try:
+                resp = self._send_request(
+                    "tools/call",
+                    {
+                        "name": tool_name,
+                        "arguments": kwargs,
+                    },
+                )
+            finally:
+                _ACTIVE_CANCEL_TOKEN.reset(tok)
             if resp is None:
                 raise MCPToolError(f"MCP tool '{tool_name}' returned no response")
             if not isinstance(resp, dict):
@@ -575,6 +669,16 @@ class MCPToolAdapter:
                     except (json.JSONDecodeError, ValueError):
                         return {"text": text}
             return {"content": content}
+
+        if "ctx" in param_types:
+
+            def execute_with_ctx_param(**kwargs: Any) -> dict:
+                return _invoke(kwargs)
+
+            return execute_with_ctx_param
+
+        def execute(ctx: Any = None, **kwargs: Any) -> dict:
+            return _invoke(kwargs, cancel_token=getattr(ctx, "cancel_token", None))
 
         return execute
 

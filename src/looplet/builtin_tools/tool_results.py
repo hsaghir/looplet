@@ -63,13 +63,45 @@ def list_results(
 
 
 def read_result(
-    data: Any, *, result_key: str, json_pointer: str, offset: int, limit: int
+    data: Any,
+    *,
+    result_key: str,
+    json_pointer: str = "",
+    offset: int = 0,
+    limit: int = 2000,
+    start_line: int | None = None,
+    end_line: int | None = None,
 ) -> dict[str, Any]:
     _integer(offset, "offset")
     _integer(limit, "limit", maximum=8000)
     if not limit:
         raise ValueError("limit must be positive")
     text = _text(data, json_pointer)
+    if start_line is not None or end_line is not None:
+        s_line = 1 if start_line is None else start_line
+        if type(s_line) is not int or s_line < 1:
+            raise ValueError("start_line must be a positive 1-based integer")
+        lines = text.splitlines(keepends=True)
+        e_line = len(lines) if end_line is None else end_line
+        if type(e_line) is not int or e_line < s_line:
+            raise ValueError("end_line must be an integer >= start_line")
+        selected_lines = lines[s_line - 1 : e_line]
+        char_offset = sum(len(line) for line in lines[: s_line - 1])
+        joined = "".join(selected_lines)
+        content = joined[:limit]
+        end_char = char_offset + len(content)
+        return {
+            "result_key": result_key,
+            "json_pointer": json_pointer,
+            "start_line": s_line,
+            "end_line": min(e_line, len(lines)),
+            "total_lines": len(lines),
+            "offset": char_offset,
+            "offset_unit": "characters",
+            "total_chars": len(text),
+            "content": content,
+            "next_offset": end_char if end_char < len(text) else None,
+        }
     content = text[offset : offset + limit]
     end = offset + len(content)
     return {
@@ -81,6 +113,9 @@ def read_result(
         "content": content,
         "next_offset": end if end < len(text) else None,
     }
+
+
+recall_result = read_result
 
 
 def search_result(
@@ -135,11 +170,21 @@ def _read(
     json_pointer: str = "",
     offset: int = 0,
     limit: int = 2000,
+    start_line: int | None = None,
+    end_line: int | None = None,
     ctx: ToolContext,
 ) -> dict[str, Any]:
-    return _store(ctx).read_result(
-        result_key, json_pointer=json_pointer, offset=offset, limit=limit
-    )
+    store = _store(ctx)
+    if start_line is not None or end_line is not None:
+        return store.read_result(
+            result_key,
+            json_pointer=json_pointer,
+            offset=offset,
+            limit=limit,
+            start_line=start_line,
+            end_line=end_line,
+        )
+    return store.read_result(result_key, json_pointer=json_pointer, offset=offset, limit=limit)
 
 
 def _search(
@@ -197,6 +242,7 @@ SPECS = (
         execute=_list,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        read_only=True,
         result_is_view=True,
     ),
     ToolSpec(
@@ -207,10 +253,23 @@ SPECS = (
             "json_pointer": _POINTER,
             "offset": _OFFSET,
             "limit": {"type": "integer", "minimum": 1, "maximum": 8000, "default": 2000},
+            "start_line": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "default": None,
+                "description": "Optional 1-based starting line number.",
+            },
+            "end_line": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "default": None,
+                "description": "Optional 1-based inclusive ending line number.",
+            },
         },
         execute=_read,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        read_only=True,
         result_is_view=True,
     ),
     ToolSpec(
@@ -226,6 +285,18 @@ SPECS = (
         execute=_search,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        read_only=True,
         result_is_view=True,
     ),
+)
+
+RECALL_SPEC = ToolSpec(
+    name="recall_result",
+    description="Read a bounded character page, line range, or JSON Pointer field from a retained tool result.",
+    parameters=dict(SPECS[1].parameters),
+    execute=_read,
+    requires=["tool_result_store"],
+    concurrent_safe=True,
+    read_only=True,
+    result_is_view=True,
 )

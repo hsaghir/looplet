@@ -232,6 +232,17 @@ class Conversation:
             for m in to_compact
             if m.metadata.get("kind") != "compaction_boundary"
         ]
+        compacted_call_ids: list[str] = []
+        compacted_steps: list[int] = []
+        for m in to_compact:
+            if m.metadata.get("kind") == "compaction_boundary" or m.tool_result is None:
+                continue
+            cid = getattr(m.tool_result, "call_id", None) or m.metadata.get("tool_call_id")
+            if isinstance(cid, str) and cid and cid not in compacted_call_ids:
+                compacted_call_ids.append(cid)
+            snum = m.metadata.get("step_number")
+            if type(snum) is int and snum not in compacted_steps:
+                compacted_steps.append(snum)
         summary_text = fn(summary_input) if summary_input else ""
         summary_msg = Message(
             role=MessageRole.USER if typed else MessageRole.SYSTEM,
@@ -240,6 +251,8 @@ class Conversation:
                 "kind": "compaction_boundary",
                 "summary": summary_text,
                 "dropped_message_count": len(to_compact) - len(boundaries_to_keep),
+                **({"compacted_call_ids": compacted_call_ids} if compacted_call_ids else {}),
+                **({"compacted_step_numbers": compacted_steps} if compacted_steps else {}),
                 **({"origin": "summary", "trust": "untrusted_summary"} if typed else {}),
             },
         )

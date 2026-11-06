@@ -32,8 +32,10 @@ from typing import (
 
 from looplet.backend_contract import json_snapshot
 from looplet.types import (
+    CancelToken,
     ErrorKind,
     ToolCall,
+    ToolCancelledError,
     ToolContext,
     ToolError,
     ToolResult,
@@ -145,7 +147,7 @@ def _classify_exception(e: BaseException) -> ToolError:
     # BaseException, so check it before the stdlib Exception branches.
     import asyncio as _asyncio  # noqa: PLC0415
 
-    if isinstance(e, _asyncio.CancelledError):
+    if isinstance(e, (_asyncio.CancelledError, ToolCancelledError)):
         return ToolError(kind=ErrorKind.CANCELLED, message=msg, retriable=False)
     # Tool authors signalling a caller-fixable input mistake - treat
     # the message as the full, LLM-facing explanation (skip the type
@@ -411,8 +413,14 @@ class ToolSpec:
     execute: Callable[..., Any] = field(repr=False)
     """Callable invoked when the tool is dispatched. Receives kwargs matching parameters."""
 
-    concurrent_safe: bool = False
-    """True if the tool is read-only and can run concurrently with other safe tools."""
+    concurrent_safe: bool | Callable[[dict[str, Any]], bool] = False
+    """True (or an input predicate) if the call can run concurrently with other safe tools."""
+
+    read_only: bool | Callable[[dict[str, Any]], bool] = False
+    """True (or an input predicate) if the call does not mutate external state."""
+
+    destructive: bool | Callable[[dict[str, Any]], bool] = False
+    """True (or an input predicate) if the call performs destructive or irreversible mutations."""
 
     free: bool = False
     """Preserve DefaultState budget after a successful nonterminal call.
@@ -512,6 +520,45 @@ class ToolSpec:
         default preserves argument values exactly.
         """
         return args
+
+    def is_concurrent_safe(self, args: dict[str, Any] | None = None) -> bool:
+        """Evaluate whether a call with ``args`` is safe for concurrent dispatch.
+
+        Callable predicates fail closed (return ``False`` on exception).
+        """
+        if callable(self.concurrent_safe):
+            clean = {k: v for k, v in (args or {}).items() if not k.startswith("__")}
+            try:
+                return bool(self.concurrent_safe(clean))
+            except Exception:
+                return False
+        return bool(self.concurrent_safe)
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        """Evaluate whether a call with ``args`` is read-only.
+
+        Callable predicates fail closed (return ``False`` on exception).
+        """
+        if callable(self.read_only):
+            clean = {k: v for k, v in (args or {}).items() if not k.startswith("__")}
+            try:
+                return bool(self.read_only(clean))
+            except Exception:
+                return False
+        return bool(self.read_only)
+
+    def is_destructive(self, args: dict[str, Any] | None = None) -> bool:
+        """Evaluate whether a call with ``args`` is destructive.
+
+        Callable predicates fail closed (return ``True`` on exception).
+        """
+        if callable(self.destructive):
+            clean = {k: v for k, v in (args or {}).items() if not k.startswith("__")}
+            try:
+                return bool(self.destructive(clean))
+            except Exception:
+                return True
+        return bool(self.destructive)
 
     @property
     def is_json_schema(self) -> bool:
@@ -714,7 +761,9 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
-    concurrent_safe: bool = False,
+    concurrent_safe: bool | Callable[[dict[str, Any]], bool] = False,
+    read_only: bool | Callable[[dict[str, Any]], bool] = False,
+    destructive: bool | Callable[[dict[str, Any]], bool] = False,
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
@@ -727,7 +776,9 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
-    concurrent_safe: bool = False,
+    concurrent_safe: bool | Callable[[dict[str, Any]], bool] = False,
+    read_only: bool | Callable[[dict[str, Any]], bool] = False,
+    destructive: bool | Callable[[dict[str, Any]], bool] = False,
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
@@ -739,7 +790,9 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
-    concurrent_safe: bool = False,
+    concurrent_safe: bool | Callable[[dict[str, Any]], bool] = False,
+    read_only: bool | Callable[[dict[str, Any]], bool] = False,
+    destructive: bool | Callable[[dict[str, Any]], bool] = False,
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
@@ -775,6 +828,8 @@ def tool(
             parameters=_schema_from_callable(inner),
             execute=inner,
             concurrent_safe=concurrent_safe,
+            read_only=read_only,
+            destructive=destructive,
             free=free,
             timeout_s=timeout_s,
             result_is_view=result_is_view,
@@ -947,6 +1002,10 @@ class BaseToolRegistry:
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)
         self._tools[spec.name] = spec
+
+    def unregister(self, name: str) -> ToolSpec:
+        """Remove and return a registered tool. Unknown names raise ``KeyError``."""
+        return self._tools.pop(name)
 
     # Backward-compat alias
     _register = register
@@ -1449,6 +1508,7 @@ class BaseToolRegistry:
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
         max_concurrent: int | None = None,
+        cancel_on_sibling_error: bool = False,
     ) -> list[ToolResult]:
         """Dispatch calls asynchronously while preserving input order.
 
@@ -1457,6 +1517,7 @@ class BaseToolRegistry:
         Cancelled concurrent groups drain their started dispatches.
         """
         import asyncio  # noqa: PLC0415
+        from dataclasses import replace  # noqa: PLC0415
 
         if not calls:
             return []
@@ -1471,8 +1532,22 @@ class BaseToolRegistry:
         if ctxs is not None and len(ctxs) != len(calls):
             raise ValueError("ctx sequence length must match calls length")
 
+        sibling_token = CancelToken() if cancel_on_sibling_error else None
+
+        def _wrap_ctx(call_ctx: ToolContext | None) -> ToolContext | None:
+            if sibling_token is None:
+                return call_ctx
+            if call_ctx is None:
+                return ToolContext(cancel_token=sibling_token)
+            if call_ctx.cancel_token is None:
+                return replace(call_ctx, cancel_token=sibling_token)
+            return replace(call_ctx, cancel_token=call_ctx.cancel_token.create_child(sibling_token))
+
         async def _dispatch(call: ToolCall, call_ctx: ToolContext | None) -> ToolResult:
-            return await self.async_dispatch(call, ctx=call_ctx)
+            res = await self.async_dispatch(call, ctx=_wrap_ctx(call_ctx))
+            if sibling_token is not None and res.error is not None:
+                sibling_token.cancel()
+            return res
 
         results: list[ToolResult] = []
         offset = 0
@@ -1518,10 +1593,10 @@ class BaseToolRegistry:
                 results.extend(cast(list[ToolResult], batch_results))
             elif batch_ctxs is not None:
                 for call, call_ctx in zip(batch_calls, batch_ctxs):
-                    results.append(await self.async_dispatch(call, ctx=call_ctx))
+                    results.append(await _dispatch(call, call_ctx))
             else:
                 for call in batch_calls:
-                    results.append(await self.async_dispatch(call, ctx=shared_ctx))
+                    results.append(await _dispatch(call, shared_ctx))
             offset += len(batch_calls)
         return results
 
@@ -1572,11 +1647,27 @@ class BaseToolRegistry:
         )
 
     def read_result(
-        self, key: str, *, json_pointer: str = "", offset: int = 0, limit: int = 2000
+        self,
+        key: str,
+        *,
+        json_pointer: str = "",
+        offset: int = 0,
+        limit: int = 2000,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> dict[str, Any]:
-        """Read a bounded character page from a retained result or JSON field."""
+        """Read a bounded character page or line range from a retained result or JSON field."""
         store = self._external_result_store()
         if store is not None:
+            if start_line is not None or end_line is not None:
+                return store.read_result(
+                    key,
+                    json_pointer=json_pointer,
+                    offset=offset,
+                    limit=limit,
+                    start_line=start_line,
+                    end_line=end_line,
+                )
             return store.read_result(key, json_pointer=json_pointer, offset=offset, limit=limit)
         from looplet.builtin_tools.tool_results import read_result  # noqa: PLC0415
 
@@ -1586,7 +1677,11 @@ class BaseToolRegistry:
             json_pointer=json_pointer,
             offset=offset,
             limit=limit,
+            start_line=start_line,
+            end_line=end_line,
         )
+
+    recall_result = read_result
 
     def search_result(
         self,
@@ -1687,6 +1782,7 @@ class BaseToolRegistry:
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
         max_workers: int | None = None,
+        cancel_on_sibling_error: bool = False,
     ) -> list[ToolResult]:
         """Dispatch multiple tool calls, preserving original order.
 
@@ -1695,6 +1791,8 @@ class BaseToolRegistry:
         a single context forwarded to every call, or a per-call sequence of
         contexts aligned with ``calls``.
         """
+        from dataclasses import replace  # noqa: PLC0415
+
         if not calls:
             return []
         if max_workers is not None and max_workers <= 0:
@@ -1705,27 +1803,49 @@ class BaseToolRegistry:
         if ctxs is not None and len(ctxs) != len(calls):
             raise ValueError("ctx sequence length must match calls length")
 
+        sibling_token = CancelToken() if cancel_on_sibling_error else None
+
+        def _wrap_ctx(call_ctx: ToolContext | None) -> ToolContext | None:
+            if sibling_token is None:
+                return call_ctx
+            if call_ctx is None:
+                return ToolContext(cancel_token=sibling_token)
+            if call_ctx.cancel_token is None:
+                return replace(call_ctx, cancel_token=sibling_token)
+            return replace(call_ctx, cancel_token=call_ctx.cancel_token.create_child(sibling_token))
+
+        if sibling_token is not None:
+            if ctxs is not None:
+                ctxs = [_wrap_ctx(c) for c in ctxs]
+            else:
+                shared_ctx = _wrap_ctx(shared_ctx)
+
+        def _dispatch_one(c: ToolCall, call_ctx: ToolContext | None) -> ToolResult:
+            res = self.dispatch(c, ctx=call_ctx)
+            if sibling_token is not None and res.error is not None:
+                sibling_token.cancel()
+            return res
+
         results: list[ToolResult] = []
         offset = 0
         for batch in self._partition_calls(calls):
             batch_calls = batch["calls"]
             batch_ctxs = ctxs[offset : offset + len(batch_calls)] if ctxs is not None else None
             if batch["concurrent"] and len(batch["calls"]) > 1:
-                results.extend(
-                    self._dispatch_concurrent_batch(
-                        batch_calls,
-                        ctx=batch_ctxs if batch_ctxs is not None else shared_ctx,
-                        max_workers=max_workers,
-                    )
+                batch_res = self._dispatch_concurrent_batch(
+                    batch_calls,
+                    ctx=batch_ctxs if batch_ctxs is not None else shared_ctx,
+                    max_workers=max_workers,
+                    _sibling_token=sibling_token,
                 )
+                results.extend(batch_res)
             else:
                 if batch_ctxs is not None:
                     results.extend(
-                        self.dispatch(c, ctx=call_ctx)
-                        for c, call_ctx in zip(batch_calls, batch_ctxs)
+                        _dispatch_one(c, call_ctx) for c, call_ctx in zip(batch_calls, batch_ctxs)
                     )
                 else:
-                    results.extend(self.dispatch(c, ctx=shared_ctx) for c in batch_calls)
+                    results.extend(_dispatch_one(c, shared_ctx) for c in batch_calls)
             offset += len(batch_calls)
         return results
 
@@ -1735,23 +1855,29 @@ class BaseToolRegistry:
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
         max_workers: int | None = None,
+        _sibling_token: CancelToken | None = None,
     ) -> list[ToolResult]:
         """Dispatch a batch of concurrent-safe tools in parallel via ThreadPoolExecutor."""
         ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
         shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
         if ctxs is not None and len(ctxs) != len(calls):
             raise ValueError("ctx sequence length must match calls length")
+
+        def _run(c: ToolCall, call_ctx: ToolContext | None) -> ToolResult:
+            res = self.dispatch(c, ctx=call_ctx)
+            if _sibling_token is not None and res.error is not None:
+                _sibling_token.cancel()
+            return res
+
         if len(calls) <= 1:
             call_ctx = ctxs[0] if ctxs else shared_ctx
-            return [self.dispatch(c, ctx=call_ctx) for c in calls]
+            return [_run(c, call_ctx) for c in calls]
         worker_count = min(max_workers or 10, len(calls))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             if ctxs is not None:
-                futures = [
-                    pool.submit(self.dispatch, c, ctx=call_ctx) for c, call_ctx in zip(calls, ctxs)
-                ]
+                futures = [pool.submit(_run, c, call_ctx) for c, call_ctx in zip(calls, ctxs)]
             else:
-                futures = [pool.submit(self.dispatch, c, ctx=shared_ctx) for c in calls]
+                futures = [pool.submit(_run, c, shared_ctx) for c in calls]
             return [f.result() for f in futures]
 
     def _partition_calls(self, calls: list[ToolCall]) -> list[dict[str, Any]]:
@@ -1763,7 +1889,7 @@ class BaseToolRegistry:
         batches: list[dict[str, Any]] = []
         for call in calls:
             spec = self._tools.get(call.tool)
-            is_safe = spec.concurrent_safe if spec else False
+            is_safe = spec.is_concurrent_safe(call.args) if spec else False
             if batches and batches[-1]["concurrent"] == is_safe and is_safe:
                 batches[-1]["calls"].append(call)
             else:
@@ -1792,7 +1918,9 @@ class BaseToolRegistry:
                     "name": spec.name,
                     "description": spec.description,
                     "parameters": spec.to_json_schema(),
-                    "concurrent_safe": spec.concurrent_safe,
+                    "concurrent_safe": (
+                        spec.concurrent_safe if isinstance(spec.concurrent_safe, bool) else False
+                    ),
                     "free": spec.free,
                 }
             )

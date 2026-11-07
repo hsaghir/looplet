@@ -437,6 +437,105 @@ async def test_streaming_tool_executors_overlap_safe_and_serialize_exclusive() -
     assert all(r.error_detail and r.error_detail.kind == ErrorKind.CANCELLED for r in discarded)
 
 
+async def test_async_streaming_discard_settles_running_tools_before_return() -> None:
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    release = asyncio.Event()
+
+    @tool(concurrent_safe=True)
+    async def suspended_tool() -> str:
+        started.set()
+        try:
+            await release.wait()
+            return "released"
+        finally:
+            closed.set()
+
+    executor = AsyncStreamingToolExecutor(tools_from([suspended_tool]), max_concurrent=1)
+    executor.submit(ToolCall(tool="suspended_tool", args={}))
+    await started.wait()
+    try:
+        executor.discard()
+        results = await executor.results()
+        assert closed.is_set(), "discarded tool cleanup must finish before results return"
+        assert len(results) == 1
+        assert results[0].error_detail is not None
+        assert results[0].error_detail.kind == ErrorKind.CANCELLED
+    finally:
+        await asyncio.wait_for(closed.wait(), timeout=1.0)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_streaming_discard_cancels_owned_token_without_cancelling_parent(
+    asynchronous: bool,
+) -> None:
+    parent = CancelToken()
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    observed: list[CancelToken] = []
+
+    @tool(concurrent_safe=True)
+    def waiting_tool(ctx: ToolContext) -> str:
+        assert ctx.cancel_token is not None
+        observed.append(ctx.cancel_token)
+        started.set()
+        try:
+            assert release.wait(timeout=2.0)
+            return "released"
+        finally:
+            closed.set()
+
+    registry = tools_from([waiting_tool])
+    context = ToolContext(cancel_token=parent)
+    executor = (
+        AsyncStreamingToolExecutor(registry, ctx=context, max_concurrent=1)
+        if asynchronous
+        else StreamingToolExecutor(registry, ctx=context, max_workers=1)
+    )
+    executor.submit(ToolCall(tool="waiting_tool", args={}))
+    assert await asyncio.to_thread(started.wait, 1.0)
+    try:
+        executor.discard()
+        assert observed[0].is_cancelled, "discard must reach the running tool's owned token"
+        assert not parent.is_cancelled
+    finally:
+        release.set()
+        if asynchronous:
+            await executor.results()
+        else:
+            await asyncio.to_thread(executor.results, 2.0)
+        assert await asyncio.to_thread(closed.wait, 1.0)
+
+
+def test_sync_streaming_discard_waits_for_worker_with_result_deadline() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    @tool(concurrent_safe=True)
+    def waiting_tool() -> str:
+        started.set()
+        try:
+            assert release.wait(timeout=2.0)
+            return "released"
+        finally:
+            closed.set()
+
+    executor = StreamingToolExecutor(tools_from([waiting_tool]), max_workers=1)
+    executor.submit(ToolCall(tool="waiting_tool", args={}))
+    assert started.wait(timeout=1.0)
+    try:
+        executor.discard()
+        with pytest.raises(TimeoutError, match="waiting for tool results"):
+            executor.results(timeout=0.0)
+    finally:
+        release.set()
+        results = executor.results(timeout=2.0)
+        assert closed.is_set()
+        assert len(results) == 1
+
+
 # ── 5. Result Recall & Line-Range Slicing ───────────────────────
 
 

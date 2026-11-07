@@ -661,28 +661,17 @@ class _WorkspaceFileCache:
     """Track read snapshots in a preset workspace to detect external modifications."""
 
     def __init__(self) -> None:
-        self._snapshots: dict[str, tuple[int, str]] = {}
+        self._snapshots: dict[str, str] = {}
 
     def record(self, resolved_path: str, content: str) -> None:
-        try:
-            mtime_ns = os.stat(resolved_path).st_mtime_ns
-        except OSError:
-            return
-        self._snapshots[resolved_path] = (mtime_ns, content)
+        self._snapshots[resolved_path] = content
 
     def clear(self) -> None:
         self._snapshots.clear()
 
     def is_stale(self, resolved_path: str, current_content: str) -> bool:
         snapshot = self._snapshots.get(resolved_path)
-        if snapshot is None:
-            return False
-        recorded_mtime, recorded_content = snapshot
-        try:
-            current_mtime = os.stat(resolved_path).st_mtime_ns
-        except OSError:
-            return False
-        return current_mtime > recorded_mtime and current_content != recorded_content
+        return snapshot is not None and current_content != snapshot
 
 
 def _fuzzy_line_hints(text: str, needle: str) -> list[tuple[int, float, str]]:
@@ -741,7 +730,7 @@ def _read(
         with open(full, encoding="utf-8", errors="replace") as f:
             text = f.read()
         lines = text.splitlines(keepends=True)
-        if _cache is not None and start_line == 0 and end_line == 0:
+        if _cache is not None:
             _cache.record(full, text)
         start_idx = max(0, start_line - 1) if start_line > 0 else 0
         end_idx = end_line if end_line > 0 else len(lines)

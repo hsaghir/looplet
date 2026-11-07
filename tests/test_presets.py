@@ -971,3 +971,48 @@ class TestPresetIntegration:
         assert ok_edit.data.get("replacements") == 1
         assert "-line 1" in ok_edit.data.get("diff", "")
         assert "+line one" in ok_edit.data.get("diff", "")
+
+    def test_coding_preset_stale_content_with_preserved_mtime(self, tmp_path):
+        import os
+
+        from looplet.presets import coding_agent_preset
+        from looplet.types import ToolCall
+
+        for bounds in ({}, {"start_line": 1, "end_line": 1}):
+            target = tmp_path / "module.py"
+            target.write_text("value = 1\nlabel = 'old'\n")
+            preset = coding_agent_preset(workspace=str(tmp_path), require_tests=False)
+            read_result = preset.tools.dispatch(
+                ToolCall(tool="read", args={"file_path": "module.py", **bounds})
+            )
+            assert read_result.error is None
+            previous_stat = target.stat()
+            external_content = "value = 2\nlabel = 'old'\n"
+            target.write_text(external_content)
+            os.utime(target, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+
+            rejected = preset.tools.dispatch(
+                ToolCall(
+                    tool="edit",
+                    args={
+                        "file_path": "module.py",
+                        "old_string": "label = 'old'",
+                        "new_string": "label = 'new'",
+                    },
+                )
+            )
+            assert rejected.data.get("stale") is True
+            assert target.read_text() == external_content
+
+            preset.tools.dispatch(ToolCall(tool="read", args={"file_path": "module.py"}))
+            accepted = preset.tools.dispatch(
+                ToolCall(
+                    tool="edit",
+                    args={
+                        "file_path": "module.py",
+                        "old_string": "label = 'old'",
+                        "new_string": "label = 'new'",
+                    },
+                )
+            )
+            assert accepted.data.get("replacements") == 1

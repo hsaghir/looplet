@@ -711,6 +711,12 @@ class LoopConfig:
     max_parallel_calls: int = 10
     """Maximum number of concurrent-safe calls executed at once."""
 
+    streaming_tool_execution: bool = False
+    """If True, start executing concurrent-safe native tool calls via
+    StreamingToolExecutor as their blocks finish streaming from the LLM.
+    Provider recovery stops once early tool work has been submitted.
+    Hooks and checkpointing disable early execution."""
+
     reactive_recovery: bool = True
     """If True, attempt multi-strategy recovery when a prompt exceeds
     the context window (prompt-too-long error). Default True - essential
@@ -3473,7 +3479,10 @@ def _composable_loop_impl(
             and config.render_messages_override is None
         ):
             effective_llm.prepare_conversation(
-                _conv, _prepared.conversation_prompt, request_prompt=prompt
+                _conv,
+                _prepared.conversation_prompt,
+                request_prompt=prompt,
+                turn_update=_prepared.turn_update,
             )
 
         # Fire PRE_LLM_CALL - observers only; return decisions are
@@ -3501,6 +3510,7 @@ def _composable_loop_impl(
             break
 
         if preflight_too_long:
+            _stream_executor = None
             logger.warning(
                 "Pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
                 estimated_tokens,
@@ -3585,21 +3595,83 @@ def _composable_loop_impl(
                 for em in _chunk_emitters:
                     em.emit(ev)
 
-            llm_result = llm_call_with_retry(
-                effective_llm,
-                prompt,
-                max_tokens=config.max_tokens,
-                system_prompt=config.system_prompt,
-                temperature=config.temperature,
-                tools=_tool_schemas,
-                native_policy=native_policy,
-                cancel_token=config.cancel_token,
-                max_continuations=config.max_turn_continuations,
-                cache_breakpoints=_cache_bps,
-                generate_kwargs=config.generate_kwargs or None,
-                should_continue=lambda: not _deadline_expired(loop_ctx),
-                on_chunk=_emit_chunk if _chunk_emitters else None,
-            )
+            _stream_executor: Any = None
+            _stream_submitted_count = 0
+            if config.streaming_tool_execution and _ckpt_store is None and not hooks:
+                from looplet.streaming import StreamingToolExecutor  # noqa: PLC0415
+
+                _stream_executor = StreamingToolExecutor(
+                    tools, max_workers=max(1, config.max_parallel_calls)
+                )
+
+            def _on_stream_tool_call(block: dict[str, Any]) -> None:
+                nonlocal _stream_submitted_count
+                if _stream_executor is None:
+                    return
+                index = block.get("index")
+                if type(index) is not int or index != _stream_submitted_count:
+                    return
+                if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
+                    return
+                name = block.get("name", "")
+                call_id = block.get("id", "")
+                raw_input = block.get("input", {})
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(call_id, str)
+                    or not call_id
+                    or not isinstance(raw_input, dict)
+                    or name in config.resolve_terminal_outcomes()
+                ):
+                    return
+                spec = tools._tools.get(name)
+                if spec is None or not spec.is_concurrent_safe(raw_input):
+                    return
+                tc = ToolCall(tool=name, args=dict(raw_input), call_id=call_id)
+                t_ctx = _build_tool_ctx(
+                    config,
+                    tools=tools,
+                    hooks=hooks,
+                    tool_call=tc,
+                    step_num=step_num + _stream_submitted_count,
+                    state=state,
+                    session_log=session_log,
+                    llm=effective_llm,
+                )
+                _stream_submitted_count += 1
+                _stream_executor.submit(tc, ctx=t_ctx)
+
+            def _on_stream_reset() -> bool:
+                return _stream_submitted_count == 0
+
+            try:
+                llm_result = llm_call_with_retry(
+                    effective_llm,
+                    prompt,
+                    max_tokens=config.max_tokens,
+                    system_prompt=config.system_prompt,
+                    temperature=config.temperature,
+                    tools=_tool_schemas,
+                    native_policy=native_policy,
+                    cancel_token=config.cancel_token,
+                    max_continuations=config.max_turn_continuations,
+                    cache_breakpoints=_cache_bps,
+                    generate_kwargs=config.generate_kwargs or None,
+                    should_continue=lambda: not _deadline_expired(loop_ctx),
+                    on_chunk=_emit_chunk if _chunk_emitters else None,
+                    on_tool_call=_on_stream_tool_call if _stream_executor is not None else None,
+                    on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
+                )
+            except BaseException:
+                if _stream_executor is not None:
+                    _stream_executor.discard()
+                    _stream_executor.results()
+                raise
+            else:
+                if _stream_executor is not None and not llm_result.ok:
+                    _stream_executor.discard()
+                    _stream_executor.results()
             loop_ctx.native_tool_stats.record(llm_result)
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations
@@ -4095,7 +4167,20 @@ def _composable_loop_impl(
                             )
                             for index, call in dispatch_items
                         ]
-                        if config.concurrent_dispatch:
+                        _pre_streamed = (
+                            {
+                                r.call_id: r
+                                for r in _stream_executor.results()
+                                if r.call_id is not None
+                            }
+                            if _stream_executor is not None
+                            else {}
+                        )
+                        if _pre_streamed and all(
+                            c.call_id in _pre_streamed for c in calls_to_dispatch
+                        ):
+                            results = [_pre_streamed[c.call_id] for c in calls_to_dispatch]
+                        elif config.concurrent_dispatch:
                             if type(tools).dispatch_batch is BaseToolRegistry.dispatch_batch:
                                 results = tools.dispatch_batch(
                                     calls_to_dispatch,

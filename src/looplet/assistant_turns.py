@@ -494,7 +494,12 @@ class _AdmissionBackend:
         self.context_error = False
 
     def prepare_conversation(
-        self, conversation: Any, prompt: str, *, request_prompt: str | None = None
+        self,
+        conversation: Any,
+        prompt: str,
+        *,
+        request_prompt: str | None = None,
+        turn_update: str = "",
     ) -> None:
         self.request_prompt = request_prompt if request_prompt is not None else prompt
         mode = getattr(self.backend, "conversation_mode", "text")
@@ -505,7 +510,11 @@ class _AdmissionBackend:
             if not callable(getattr(self.backend, "set_conversation_input", None)):
                 self.context_error = True
                 return
-            self.conversation_input = {"conversation": conversation.serialize(), "prompt": prompt}
+            self.conversation_input = {
+                "conversation": conversation.serialize(),
+                "prompt": prompt,
+                **({"turn_update": turn_update} if turn_update else {}),
+            }
         local_chars = (
             len(json.dumps(self.conversation_input)) if self.conversation_input else len(prompt)
         )

@@ -240,6 +240,30 @@ def _capture_response(backend: Any, response: Any) -> None:
     reason = getattr(response, "stop_reason", None)
     if reason is None and choices:
         reason = getattr(choices[0], "finish_reason", None)
+    if reason is None:
+        status = getattr(response, "status", None)
+        if status == "incomplete":
+            details = getattr(response, "incomplete_details", None)
+            inc_reason = (
+                details.get("reason")
+                if isinstance(details, dict)
+                else getattr(details, "reason", None)
+            )
+            reason = (
+                "max_tokens"
+                if inc_reason == "max_output_tokens"
+                else "refusal"
+                if inc_reason == "content_filter"
+                else "incomplete"
+            )
+        elif status == "completed":
+            output_items = getattr(response, "output", None) or []
+            has_fn = any(
+                (item.get("type") if isinstance(item, dict) else getattr(item, "type", None))
+                == "function_call"
+                for item in output_items
+            )
+            reason = "tool_use" if has_fn else "stop"
     backend.last_stop_reason = (
         {
             "length": "max_tokens",
@@ -364,6 +388,36 @@ def _openai_prompt_cache_key(cache_breakpoints: list[Any]) -> str:
     return "looplet-" + "-".join(parts)
 
 
+# ── Multimodal & Conversation Helpers ───────────────────────────
+
+
+def _resolve_image_url(block: dict[str, Any]) -> str:
+    url = block.get("url")
+    if url is None:
+        img_url = block.get("image_url")
+        url = img_url.get("url") if isinstance(img_url, dict) else img_url
+    if url is None and isinstance(block.get("data"), str) and block["data"]:
+        media_type = block.get("media_type", "image/png")
+        url = f"data:{media_type};base64,{block['data']}"
+    if not isinstance(url, str) or not url:
+        raise TerminalLLMError("Invalid image block", termination_reason="unsupported_context")
+    return url
+
+
+def _to_anthropic_image_block(block: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(block.get("source"), dict):
+        return {"type": "image", "source": dict(block["source"])}
+    url = _resolve_image_url(block)
+    if url.startswith("data:") and ";base64," in url:
+        header, b64 = url.split(";base64,", 1)
+        media_type = header.removeprefix("data:") or "image/png"
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64},
+        }
+    return {"type": "image", "source": {"type": "url", "url": url}}
+
+
 # ── OpenAI Backend ───────────────────────────────────────────────
 
 
@@ -433,8 +487,27 @@ def _conversation_messages(
                 )
             pending.add(identifier)
         if native_blocks:
-            messages.append({"role": role, "content": blocks})
+            normalized_blocks = [
+                _to_anthropic_image_block(b) if b.get("type") == "image" else b for b in blocks
+            ]
+            messages.append({"role": role, "content": normalized_blocks})
         else:
+            if (
+                role == "user"
+                and not calls
+                and all(b.get("type") in {"text", "image"} for b in blocks)
+                and any(b.get("type") == "image" for b in blocks)
+            ):
+                user_parts: list[dict[str, Any]] = []
+                for b in blocks:
+                    if b.get("type") == "text":
+                        user_parts.append({"type": "text", "text": str(b.get("text", ""))})
+                    else:
+                        user_parts.append(
+                            {"type": "image_url", "image_url": {"url": _resolve_image_url(b)}}
+                        )
+                messages.append({"role": "user", "content": user_parts})
+                continue
             if any(block.get("type") not in {"text", "tool_use"} for block in blocks):
                 raise TerminalLLMError(
                     "Provider content cannot be replayed by this adapter",
@@ -461,6 +534,9 @@ def _conversation_messages(
         raise TerminalLLMError(
             "Provider tool calls lack results", termination_reason="unsupported_context"
         )
+    turn_update = snapshot.get("turn_update")
+    if isinstance(turn_update, str) and turn_update:
+        messages.append({"role": "user", "content": turn_update})
     if messages[-1]["role"] != "user":
         messages.append({"role": "user", "content": "Continue the task."})
     if native_blocks:
@@ -631,6 +707,7 @@ class OpenAIBackend(_ConversationBackend):
     """
 
     _provider = "openai"
+    request_policy = BackendRequestPolicy(manages_retries=True, supports_single_model_request=True)
 
     def __init__(
         self,
@@ -835,6 +912,260 @@ class OpenAIStreamingBackend(OpenAIBackend):
             text = _openai_message_text(delta)
             if text:
                 yield text
+
+    def stream_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Stream text chunks and completed native calls.
+
+        Callbacks include each call's index after the provider completion marker.
+        """
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
+
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": _to_openai_tools(tools),
+            "tool_choice": self._tool_choice,
+            "stream": True,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
+
+        _begin_request(self, kwargs)
+        stream_resp = self._request_client().chat.completions.create(**kwargs)
+        try:
+            blocks, stop_reason, last_chunk = _consume_openai_tool_stream(
+                stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
+            )
+        finally:
+            close = getattr(stream_resp, "close", None)
+            if close is not None:
+                close()
+        if last_chunk is not None:
+            _capture_response(self, last_chunk)
+        if stop_reason is not None:
+            self.last_stop_reason = {
+                "length": "max_tokens",
+                "end_turn": "stop",
+                "tool_calls": "tool_use",
+                "content_filter": "refusal",
+            }.get(stop_reason, stop_reason)
+        return blocks
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        if on_chunk is not None or on_tool_call is not None:
+            return self.stream_with_tools(
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                cache_breakpoints=cache_breakpoints,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+            )
+        return super().generate_with_tools(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            cache_breakpoints=cache_breakpoints,
+        )
+
+
+def _finalize_streamed_tool_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    raw_args = "".join(entry["arg_parts"])
+    try:
+        input_args = json.loads(raw_args) if raw_args else {}
+        if not isinstance(input_args, dict):
+            input_args = {}
+    except (ValueError, TypeError):
+        input_args = {"_raw_arguments": raw_args}
+    return {
+        "type": "tool_use",
+        "id": entry["id"],
+        "name": entry["name"],
+        "input": input_args,
+    }
+
+
+def _consume_openai_tool_stream(
+    stream_resp: Any,
+    *,
+    on_chunk: Callable[[str, int], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict[str, Any]], str | None, Any]:
+    text_parts: list[str] = []
+    chunk_index = 0
+    tool_entries: dict[int, dict[str, Any]] = {}
+    emitted_indices: set[int] = set()
+    ordered_tool_blocks: list[dict[str, Any]] = []
+    stop_reason: str | None = None
+    last_chunk: Any = None
+
+    for chunk in stream_resp:
+        last_chunk = chunk
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        choice = choices[0]
+        fr = getattr(choice, "finish_reason", None)
+        if isinstance(fr, str) and fr:
+            stop_reason = fr
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        text = _openai_message_text(delta)
+        if text:
+            if on_chunk is not None:
+                on_chunk(text, chunk_index)
+            chunk_index += 1
+            text_parts.append(text)
+        tc_deltas = getattr(delta, "tool_calls", None) or []
+        for tc_delta in tc_deltas:
+            idx = getattr(tc_delta, "index", None)
+            if not isinstance(idx, int):
+                idx = 0
+            entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
+            tc_id = getattr(tc_delta, "id", None)
+            if isinstance(tc_id, str) and tc_id:
+                entry["id"] = tc_id
+            fn = getattr(tc_delta, "function", None)
+            if fn is not None:
+                fn_name = getattr(fn, "name", None)
+                if isinstance(fn_name, str) and fn_name:
+                    entry["name"] += fn_name
+                fn_args = getattr(fn, "arguments", None)
+                if isinstance(fn_args, str) and fn_args:
+                    entry["arg_parts"].append(fn_args)
+
+        if fr == "tool_calls":
+            for idx in sorted(tool_entries):
+                if idx not in emitted_indices:
+                    emitted_indices.add(idx)
+                    block = _finalize_streamed_tool_entry(tool_entries[idx])
+                    ordered_tool_blocks.append(block)
+                    if on_tool_call is not None:
+                        on_tool_call({**block, "index": idx})
+
+    for idx in sorted(tool_entries):
+        if idx not in emitted_indices:
+            emitted_indices.add(idx)
+            block = _finalize_streamed_tool_entry(tool_entries[idx])
+            ordered_tool_blocks.append(block)
+            if on_tool_call is not None:
+                on_tool_call({**block, "index": idx})
+
+    blocks: list[dict[str, Any]] = []
+    full_text = "".join(text_parts)
+    if full_text:
+        blocks.append({"type": "text", "text": full_text})
+    blocks.extend(ordered_tool_blocks)
+    return blocks, stop_reason, last_chunk
+
+
+async def _consume_openai_tool_stream_async(
+    stream_resp: Any,
+    *,
+    on_chunk: Callable[[str, int], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict[str, Any]], str | None, Any]:
+    text_parts: list[str] = []
+    chunk_index = 0
+    tool_entries: dict[int, dict[str, Any]] = {}
+    emitted_indices: set[int] = set()
+    ordered_tool_blocks: list[dict[str, Any]] = []
+    stop_reason: str | None = None
+    last_chunk: Any = None
+
+    async for chunk in stream_resp:
+        last_chunk = chunk
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        choice = choices[0]
+        fr = getattr(choice, "finish_reason", None)
+        if isinstance(fr, str) and fr:
+            stop_reason = fr
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        text = _openai_message_text(delta)
+        if text:
+            if on_chunk is not None:
+                on_chunk(text, chunk_index)
+            chunk_index += 1
+            text_parts.append(text)
+        tc_deltas = getattr(delta, "tool_calls", None) or []
+        for tc_delta in tc_deltas:
+            idx = getattr(tc_delta, "index", None)
+            if not isinstance(idx, int):
+                idx = 0
+            entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
+            tc_id = getattr(tc_delta, "id", None)
+            if isinstance(tc_id, str) and tc_id:
+                entry["id"] = tc_id
+            fn = getattr(tc_delta, "function", None)
+            if fn is not None:
+                fn_name = getattr(fn, "name", None)
+                if isinstance(fn_name, str) and fn_name:
+                    entry["name"] += fn_name
+                fn_args = getattr(fn, "arguments", None)
+                if isinstance(fn_args, str) and fn_args:
+                    entry["arg_parts"].append(fn_args)
+
+        if fr == "tool_calls":
+            for idx in sorted(tool_entries):
+                if idx not in emitted_indices:
+                    emitted_indices.add(idx)
+                    block = _finalize_streamed_tool_entry(tool_entries[idx])
+                    ordered_tool_blocks.append(block)
+                    if on_tool_call is not None:
+                        on_tool_call({**block, "index": idx})
+
+    for idx in sorted(tool_entries):
+        if idx not in emitted_indices:
+            emitted_indices.add(idx)
+            block = _finalize_streamed_tool_entry(tool_entries[idx])
+            ordered_tool_blocks.append(block)
+            if on_tool_call is not None:
+                on_tool_call({**block, "index": idx})
+
+    blocks: list[dict[str, Any]] = []
+    full_text = "".join(text_parts)
+    if full_text:
+        blocks.append({"type": "text", "text": full_text})
+    blocks.extend(ordered_tool_blocks)
+    return blocks, stop_reason, last_chunk
 
 
 # ── Anthropic Backend ────────────────────────────────────────────
@@ -1201,6 +1532,686 @@ class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
     """Async OpenAI backend with token-level streaming enabled in the loop."""
 
     stream_in_loop = True
+
+    async def stream_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Stream text chunks and completed native calls asynchronously.
+
+        Callbacks include each call's index after the provider completion marker.
+        """
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
+
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": _to_openai_tools(tools),
+            "tool_choice": self._tool_choice,
+            "stream": True,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
+
+        _begin_request(self, kwargs)
+        stream_resp = await self._request_client().chat.completions.create(**kwargs)
+        try:
+            blocks, stop_reason, last_chunk = await _consume_openai_tool_stream_async(
+                stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
+            )
+        finally:
+            close = getattr(stream_resp, "aclose", None) or getattr(stream_resp, "close", None)
+            if close is not None:
+                await close()
+        if last_chunk is not None:
+            _capture_response(self, last_chunk)
+        if stop_reason is not None:
+            self.last_stop_reason = {
+                "length": "max_tokens",
+                "end_turn": "stop",
+                "tool_calls": "tool_use",
+                "content_filter": "refusal",
+            }.get(stop_reason, stop_reason)
+        return blocks
+
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        if on_chunk is not None or on_tool_call is not None:
+            return await self.stream_with_tools(
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                cache_breakpoints=cache_breakpoints,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+            )
+        return await super().generate_with_tools(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            cache_breakpoints=cache_breakpoints,
+        )
+
+
+# ── OpenAI Responses API Backend (/v1/responses) ─────────────────
+
+
+def _to_responses_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "name": s["name"],
+            "description": s.get("description", ""),
+            "parameters": s.get("input_schema", {"type": "object", "properties": {}}),
+        }
+        for s in schemas
+    ]
+
+
+def _responses_user_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[dict[str, Any]] = []
+        for b in content:
+            kind = b.get("kind") or b.get("type")
+            data = b.get("data", b)
+            if kind == "text":
+                parts.append({"type": "input_text", "text": str(data.get("text", ""))})
+            elif kind == "image":
+                parts.append({"type": "input_image", "image_url": _resolve_image_url(data)})
+            else:
+                raise TerminalLLMError(
+                    f"Unsupported Responses user block kind: {kind!r}",
+                    termination_reason="unsupported_context",
+                )
+        return parts
+    return str(content)
+
+
+def _responses_conversation_items(
+    snapshot: dict[str, Any] | None, prompt: str
+) -> list[dict[str, Any]]:
+    from looplet.result_projection import model_result_payload
+
+    if snapshot is None:
+        return [{"type": "message", "role": "user", "content": prompt}]
+    items: list[dict[str, Any]] = [
+        {"type": "message", "role": "user", "content": snapshot["prompt"]}
+    ]
+    pending: set[str] = set()
+    for message in snapshot["conversation"].get("messages", []):
+        content = message.get("content", "")
+        metadata = message.get("metadata", {})
+        role = message["role"]
+        result = message.get("tool_result")
+        if result is not None:
+            call_id = result.get("call_id") or metadata.get("tool_call_id")
+            payload = model_result_payload(
+                result.get("data"),
+                error=result.get("error"),
+                result_key=result.get("result_key"),
+                warnings=result.get("warnings"),
+                delivery=result.get("metadata", {}).get("model_projection", {}).get("delivery"),
+            )
+            rendered = json.dumps(payload, ensure_ascii=False)
+            if call_id in pending:
+                pending.remove(call_id)
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": rendered,
+                    }
+                )
+            else:
+                if pending:
+                    raise TerminalLLMError(
+                        "Unpaired provider tool result", termination_reason="unsupported_context"
+                    )
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": f"[TOOL RESULT {result['tool']}] {rendered}",
+                    }
+                )
+            continue
+        if metadata.get("kind") == "compaction_boundary" or role == "system":
+            items.append(
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "[PRIOR CONTEXT, NOT VERIFIED FACTS] " + str(content),
+                }
+            )
+            continue
+        if role != "user" and metadata.get("origin") not in {"model", "host"}:
+            continue
+        if role == "user":
+            items.append(
+                {"type": "message", "role": "user", "content": _responses_user_content(content)}
+            )
+            continue
+        if isinstance(content, str):
+            if content:
+                items.append({"type": "message", "role": "assistant", "content": content})
+            continue
+        blocks = [{"type": block["kind"], **block["data"]} for block in content]
+        for block in blocks:
+            btype = block.get("type")
+            if btype == "text" and block.get("text"):
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": str(block.get("text", "")),
+                    }
+                )
+            elif btype == "tool_use":
+                identifier = block.get("id")
+                if not isinstance(identifier, str) or not identifier or identifier in pending:
+                    raise TerminalLLMError(
+                        "Invalid provider tool identifier", termination_reason="unsupported_context"
+                    )
+                pending.add(identifier)
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": identifier,
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {})),
+                    }
+                )
+            elif btype == "reasoning":
+                continue
+            else:
+                raise TerminalLLMError(
+                    "Provider content cannot be replayed by this adapter",
+                    termination_reason="unsupported_context",
+                )
+    if pending:
+        raise TerminalLLMError(
+            "Provider tool calls lack results", termination_reason="unsupported_context"
+        )
+    turn_update = snapshot.get("turn_update")
+    if isinstance(turn_update, str) and turn_update:
+        items.append({"type": "message", "role": "user", "content": turn_update})
+    return items
+
+
+def _responses_output_text(response: Any) -> str:
+    out_text = getattr(response, "output_text", None)
+    if isinstance(out_text, str) and out_text:
+        return out_text
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        itype = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        if itype == "message":
+            content_list = (
+                item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+            ) or []
+            for part in content_list:
+                ptype = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                if ptype in {"output_text", "text"}:
+                    text = (
+                        part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+                    )
+                    if isinstance(text, str):
+                        parts.append(text)
+    return "".join(parts)
+
+
+def _responses_output_to_blocks(response: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for item in getattr(response, "output", None) or []:
+        itype = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        if itype == "reasoning":
+            summary = (
+                item.get("summary") if isinstance(item, dict) else getattr(item, "summary", None)
+            )
+            if isinstance(summary, list):
+                r_text = "".join(
+                    (s.get("text", "") if isinstance(s, dict) else getattr(s, "text", "") or "")
+                    for s in summary
+                )
+                if r_text:
+                    blocks.append({"type": "reasoning", "text": r_text})
+        elif itype == "message":
+            content_list = (
+                item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+            ) or []
+            for part in content_list:
+                ptype = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                if ptype in {"output_text", "text"}:
+                    text = (
+                        part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+                    )
+                    if isinstance(text, str) and text:
+                        blocks.append({"type": "text", "text": text})
+                elif ptype == "refusal":
+                    refusal = (
+                        part.get("refusal")
+                        if isinstance(part, dict)
+                        else getattr(part, "refusal", None)
+                    )
+                    if isinstance(refusal, str) and refusal:
+                        blocks.append({"type": "refusal", "refusal": refusal})
+        elif itype == "function_call":
+            call_id = (
+                (item.get("call_id") or item.get("id"))
+                if isinstance(item, dict)
+                else (getattr(item, "call_id", None) or getattr(item, "id", None))
+            ) or ""
+            name = (
+                item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+            ) or ""
+            raw_args = (
+                item.get("arguments")
+                if isinstance(item, dict)
+                else getattr(item, "arguments", None)
+            ) or ""
+            try:
+                input_args = json.loads(raw_args) if raw_args else {}
+                if not isinstance(input_args, dict):
+                    input_args = {}
+            except (ValueError, TypeError):
+                input_args = {"_raw_arguments": raw_args}
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": str(call_id),
+                    "name": str(name),
+                    "input": input_args,
+                }
+            )
+    return blocks
+
+
+def _is_lost_previous_response_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "unknown previous_response_id" in text
+        or ("previous_response_id" in text and ("not found" in text or "404" in text))
+        or ("no tool call found" in text and "output" in text)
+    )
+
+
+class OpenAIResponsesBackend(_ConversationBackend):
+    """Sync LLM backend for the OpenAI Responses API (``/v1/responses``).
+
+    Supports stateful server-side chaining via ``previous_response_id``,
+    automatic stateless transcript replay fallback on expired server state,
+    native function tool calling, and multimodal ``input_image`` inputs.
+    """
+
+    _provider = "openai"
+
+    def __init__(
+        self,
+        client: Any = None,
+        *,
+        model: str = "gpt-4o",
+        default_max_tokens: int | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        tool_choice: str = "auto",
+        use_previous_response_id: bool = True,
+        store: bool = True,
+        request_options: dict[str, Any] | None = None,
+    ) -> None:
+        self.configure_request_options(request_options)
+        if client is None:
+            from openai import OpenAI  # noqa: PLC0415
+
+            kwargs: dict[str, Any] = {}
+            if base_url is not None:
+                kwargs["base_url"] = base_url
+            if api_key is not None:
+                kwargs["api_key"] = api_key
+            client = OpenAI(**kwargs)
+        self._client = client
+        self._model = model
+        self._default_max_tokens = default_max_tokens
+        self._tool_choice = tool_choice
+        self._use_previous_response_id = use_previous_response_id
+        self._store = store
+        self._previous_response_id: str | None = None
+        self._synced_item_count: int = 0
+        self.last_usage: dict[str, int] = {}
+
+    @property
+    def previous_response_id(self) -> str | None:
+        return self._previous_response_id
+
+    def reset_conversation(self) -> None:
+        self._previous_response_id = None
+        self._synced_item_count = 0
+        self._conversation_input = None
+
+    def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
+        detached = json_snapshot(snapshot)
+        if detached is not None:
+            _responses_conversation_items(detached, detached["prompt"])
+        self._conversation_input = detached
+
+    def apply_context_compaction(self, snapshot: dict[str, Any]) -> bool:
+        self._previous_response_id = None
+        self._synced_item_count = 0
+        self.set_conversation_input(snapshot)
+        return True
+
+    def _build_responses_kwargs(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        system_prompt: str,
+        temperature: float | None,
+        images: list[str] | None = None,
+        stateless: bool = False,
+    ) -> tuple[dict[str, Any], int]:
+        snapshot = getattr(self, "_conversation_input", None)
+        full_items = _responses_conversation_items(snapshot, prompt)
+        if images:
+            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+            for img in images:
+                content_parts.append({"type": "input_image", "image_url": img})
+            full_items[-1] = {"type": "message", "role": "user", "content": content_parts}
+
+        use_prev = (
+            self._use_previous_response_id
+            and self._store
+            and not stateless
+            and self._previous_response_id is not None
+            and snapshot is not None
+            and len(full_items) > self._synced_item_count > 0
+        )
+        if use_prev:
+            delta_items = [
+                item
+                for item in full_items[self._synced_item_count :]
+                if item.get("type") == "function_call_output"
+                or (item.get("type") == "message" and item.get("role") == "user")
+            ]
+            input_payload = delta_items or [
+                {"type": "message", "role": "user", "content": "Continue the task."}
+            ]
+        else:
+            input_payload = full_items
+
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "input": input_payload,
+            "temperature": temperature,
+            "store": self._store,
+        }
+        if system_prompt:
+            kwargs["instructions"] = system_prompt
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_output_tokens"] = _mt
+        if tools is not None:
+            kwargs["tools"] = _to_responses_tools(tools)
+            kwargs["tool_choice"] = self._tool_choice
+        if use_prev and self._previous_response_id is not None:
+            kwargs["previous_response_id"] = self._previous_response_id
+        return kwargs, len(full_items)
+
+    def _prepare_and_begin(self, kwargs: dict[str, Any]) -> None:
+        _begin_request(self, kwargs)
+        if "reasoning_effort" in kwargs:
+            effort = kwargs.pop("reasoning_effort")
+            kwargs["reasoning"] = {"effort": effort}
+
+    def _recover_lost_previous_response(self, kwargs: dict[str, Any], error: BaseException) -> bool:
+        """Clear expired state and replay only outside single-request admission."""
+        if "previous_response_id" not in kwargs or not _is_lost_previous_response_error(error):
+            return False
+        self._previous_response_id = None
+        self._synced_item_count = 0
+        return not single_model_request_active()
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        images: list[str] | None = None,
+    ) -> str:
+        kwargs, total_items = self._build_responses_kwargs(
+            prompt,
+            tools=None,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            images=images,
+        )
+        self._prepare_and_begin(kwargs)
+        try:
+            response = self._request_client().responses.create(**kwargs)
+        except Exception as exc:
+            if self._recover_lost_previous_response(kwargs, exc):
+                kwargs, total_items = self._build_responses_kwargs(
+                    prompt,
+                    tools=None,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    images=images,
+                    stateless=True,
+                )
+                self._prepare_and_begin(kwargs)
+                response = self._request_client().responses.create(**kwargs)
+            else:
+                raise
+        _capture_response(self, response)
+        resp_id = getattr(response, "id", None)
+        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
+            self._previous_response_id = resp_id
+            out_items = getattr(response, "output", None) or []
+            self._synced_item_count = total_items + len(out_items)
+        return _responses_output_text(response)
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        images: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        kwargs, total_items = self._build_responses_kwargs(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            images=images,
+        )
+        self._prepare_and_begin(kwargs)
+        try:
+            response = self._request_client().responses.create(**kwargs)
+        except Exception as exc:
+            if self._recover_lost_previous_response(kwargs, exc):
+                kwargs, total_items = self._build_responses_kwargs(
+                    prompt,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    images=images,
+                    stateless=True,
+                )
+                self._prepare_and_begin(kwargs)
+                response = self._request_client().responses.create(**kwargs)
+            else:
+                raise
+        _capture_response(self, response)
+        resp_id = getattr(response, "id", None)
+        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
+            self._previous_response_id = resp_id
+            out_items = getattr(response, "output", None) or []
+            self._synced_item_count = total_items + len(out_items)
+        return _responses_output_to_blocks(response)
+
+
+class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
+    """Async LLM backend for the OpenAI Responses API (``/v1/responses``)."""
+
+    def __init__(
+        self,
+        client: Any = None,
+        *,
+        model: str = "gpt-4o",
+        default_max_tokens: int | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        tool_choice: str = "auto",
+        use_previous_response_id: bool = True,
+        store: bool = True,
+        request_options: dict[str, Any] | None = None,
+    ) -> None:
+        self.configure_request_options(request_options)
+        if client is None:
+            from openai import AsyncOpenAI  # noqa: PLC0415
+
+            kwargs: dict[str, Any] = {}
+            if base_url is not None:
+                kwargs["base_url"] = base_url
+            if api_key is not None:
+                kwargs["api_key"] = api_key
+            client = AsyncOpenAI(**kwargs)
+        self._client = client
+        self._model = model
+        self._default_max_tokens = default_max_tokens
+        self._tool_choice = tool_choice
+        self._use_previous_response_id = use_previous_response_id
+        self._store = store
+        self._previous_response_id: str | None = None
+        self._synced_item_count: int = 0
+        self.last_usage: dict[str, int] = {}
+
+    async def generate(  # type: ignore[override]
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        images: list[str] | None = None,
+    ) -> str:
+        kwargs, total_items = self._build_responses_kwargs(
+            prompt,
+            tools=None,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            images=images,
+        )
+        self._prepare_and_begin(kwargs)
+        try:
+            response = await self._request_client().responses.create(**kwargs)
+        except Exception as exc:
+            if self._recover_lost_previous_response(kwargs, exc):
+                kwargs, total_items = self._build_responses_kwargs(
+                    prompt,
+                    tools=None,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    images=images,
+                    stateless=True,
+                )
+                self._prepare_and_begin(kwargs)
+                response = await self._request_client().responses.create(**kwargs)
+            else:
+                raise
+        _capture_response(self, response)
+        resp_id = getattr(response, "id", None)
+        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
+            self._previous_response_id = resp_id
+            out_items = getattr(response, "output", None) or []
+            self._synced_item_count = total_items + len(out_items)
+        return _responses_output_text(response)
+
+    async def generate_with_tools(  # type: ignore[override]
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        images: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        kwargs, total_items = self._build_responses_kwargs(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            images=images,
+        )
+        self._prepare_and_begin(kwargs)
+        try:
+            response = await self._request_client().responses.create(**kwargs)
+        except Exception as exc:
+            if self._recover_lost_previous_response(kwargs, exc):
+                kwargs, total_items = self._build_responses_kwargs(
+                    prompt,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    images=images,
+                    stateless=True,
+                )
+                self._prepare_and_begin(kwargs)
+                response = await self._request_client().responses.create(**kwargs)
+            else:
+                raise
+        _capture_response(self, response)
+        resp_id = getattr(response, "id", None)
+        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
+            self._previous_response_id = resp_id
+            out_items = getattr(response, "output", None) or []
+            self._synced_item_count = total_items + len(out_items)
+        return _responses_output_to_blocks(response)
 
 
 # ── Async Anthropic Backend ──────────────────────────────────────

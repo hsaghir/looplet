@@ -74,6 +74,7 @@ import tempfile
 import time
 import uuid
 import warnings
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import get_close_matches
@@ -246,6 +247,36 @@ class EvalRunRecord(NamedTuple):
         self.cleanup()
 
 
+def _resolve_expected_graders(
+    expected_graders: Sequence[str | dict[str, Any]] | str | Path | None,
+) -> list[str]:
+    if expected_graders is None:
+        return []
+    raw: Any = expected_graders
+    if isinstance(expected_graders, (str, Path)):
+        path = Path(expected_graders)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            raw = raw.get("required_graders", raw.get("graders", []))
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError(
+            "expected_graders must be a sequence of grader names or a JSON manifest path"
+        )
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+        elif (
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and item.get("required", True)
+        ):
+            names.append(item["name"].strip())
+        elif not isinstance(item, dict):
+            raise ValueError(f"Invalid expected_graders entry: {item!r}")
+    return list(dict.fromkeys(names))
+
+
 @dataclass(frozen=True)
 class EvalReport:
     """A versioned assessment, without agent inputs or collected artifacts."""
@@ -326,18 +357,44 @@ class EvalReport:
         records: list[EvalRunRecord],
         *,
         grader_manifest: list[dict[str, Any]] | None = None,
+        expected_graders: Sequence[str | dict[str, Any]] | str | Path | None = None,
         threshold: float = 0.5,
         output_dir: str | None = None,
         version: int = 2,
         integrity_failures: list[str] | None = None,
     ) -> "EvalReport":
         """Assess existing observations without executing agents or collectors."""
+        integrity_failures = list(integrity_failures or [])
         if grader_manifest is None:
             manifests = [record.context.metadata.get("eval_grader_manifest") for record in records]
-            grader_manifest = manifests[0] if manifests and isinstance(manifests[0], list) else []
-            integrity_failures = list(integrity_failures or [])
+            grader_manifest = (
+                deepcopy(manifests[0]) if manifests and isinstance(manifests[0], list) else []
+            )
             if not grader_manifest or any(item != grader_manifest for item in manifests):
                 integrity_failures.append("Missing or inconsistent recorded grader inventory")
+        else:
+            grader_manifest = deepcopy(grader_manifest)
+
+        expected_names = _resolve_expected_graders(expected_graders)
+        if expected_names:
+            manifest_by_name = {
+                entry.get("name"): entry
+                for entry in grader_manifest
+                if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+            }
+            for exp_name in expected_names:
+                existing = manifest_by_name.get(exp_name)
+                if existing is None:
+                    integrity_failures.append(
+                        f"Expected required grader missing from discovery: {exp_name}"
+                    )
+                    grader_manifest.append(
+                        {"name": exp_name, "required": True, "marks": ["required"]}
+                    )
+                elif not existing.get("required", False):
+                    integrity_failures.append(
+                        f"Expected required grader is not marked required: {exp_name}"
+                    )
         return cls(
             _assess_eval_records(
                 records=records,
@@ -2177,6 +2234,7 @@ def eval_assess(
     judge_llm: LLMBackend | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    expected_graders: Sequence[str | dict[str, Any]] | str | Path | None = None,
     threshold: float = 0.5,
     version: int = 2,
     case: EvalCase | None = None,
@@ -2191,7 +2249,11 @@ def eval_assess(
         exclude=exclude,
     )
     return EvalReport.from_records(
-        records, grader_manifest=manifest, threshold=threshold, version=version
+        records,
+        grader_manifest=manifest,
+        expected_graders=expected_graders,
+        threshold=threshold,
+        version=version,
     )
 
 
@@ -2281,12 +2343,14 @@ class EvalHook:
         judge_llm: LLMBackend | None = None,
         collectors: list[Callable[[Any], dict[str, Any]]] | None = None,
         expected: dict[str, Any] | None = None,
+        expected_graders: Sequence[str | dict[str, Any]] | str | Path | None = None,
         verbose: bool = False,
     ) -> None:
         self.evaluators = evaluators
         self.judge_llm = judge_llm
         self.collectors = list(collectors) if collectors else []
         self.expected = dict(expected) if expected is not None else None
+        self.expected_graders = expected_graders
         self.verbose = verbose
         self._results: list[EvalResult] = []
         self._task: dict[str, Any] = {}
@@ -2345,7 +2409,13 @@ class EvalHook:
         """One-line summary of eval results."""
         return _format_summary(self._results)
 
-    def assessment(self, *, threshold: float = 0.5, version: int = 2) -> EvalReport:
+    def assessment(
+        self,
+        *,
+        threshold: float = 0.5,
+        version: int = 2,
+        expected_graders: Sequence[str | dict[str, Any]] | str | Path | None = None,
+    ) -> EvalReport:
         """Assess the last run without repeating collection or grading."""
         records = (
             [EvalRunRecord(None, self._context, list(self._results), Path("run"))]
@@ -2357,6 +2427,9 @@ class EvalHook:
             grader_manifest=self._grader_manifest,
             threshold=threshold,
             version=version,
+            expected_graders=(
+                expected_graders if expected_graders is not None else self.expected_graders
+            ),
         )
 
     def report(self) -> str:

@@ -131,8 +131,12 @@ def extract_usage(raw_response: Any) -> dict[str, int]:
     out["cache_write"] = _g(usage, "cache_creation_input_tokens")
 
     if not out["cache_read"] and not out["cache_write"]:
-        for key in ("prompt_tokens_details", "input_tokens_details"):
-            details = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        for details_key in ("prompt_tokens_details", "input_tokens_details"):
+            details = (
+                usage.get(details_key)
+                if isinstance(usage, dict)
+                else getattr(usage, details_key, None)
+            )
             if details is not None:
                 out["cache_read"] = _g(details, "cached_tokens")
                 out["input"] = max(0, out["input"] - out["cache_read"])

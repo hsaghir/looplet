@@ -985,3 +985,91 @@ def resume_loop_state(checkpoint: Checkpoint, *, max_steps: int | None = None) -
         "run_envelope": checkpoint.run_envelope,
         "metadata": checkpoint.metadata,
     }
+
+
+def branch_from_checkpoint(
+    source: Checkpoint | CheckpointStore,
+    *,
+    key: str | None = None,
+    step_number: int | None = None,
+    source_run_id: str | None = None,
+    new_run_id: str | None = None,
+    inject_message: str | None = None,
+) -> Checkpoint:
+    """Create a runnable branch checkpoint with a fresh ``run_id`` from a saved checkpoint.
+
+    Allows time-travel branching from any historical step (including a completed
+    terminal checkpoint) while preserving conversation history, session log, and
+    retained tool results up to that step.
+    """
+    from uuid import uuid4  # noqa: PLC0415
+
+    if isinstance(source, Checkpoint):
+        cp = Checkpoint.from_dict(source.to_dict())
+    else:
+        loaded: Checkpoint | None = None
+        if key is not None:
+            loaded = source.load(key, run_id=source_run_id)
+        elif step_number is not None:
+            loaded = source.load(f"step_{step_number}", run_id=source_run_id)
+            if loaded is None:
+                loaded = source.load(f"step_{step_number}_done", run_id=source_run_id)
+        else:
+            load_latest = getattr(source, "load_latest", None)
+            if callable(load_latest):
+                candidate = load_latest(run_id=source_run_id)
+                if isinstance(candidate, Checkpoint):
+                    loaded = candidate
+        if loaded is None:
+            raise FileNotFoundError("Checkpoint not found for branching")
+        cp = Checkpoint.from_dict(loaded.to_dict())
+
+    if cp.metadata.get("pending_calls"):
+        raise UncertainToolEffect(cp.metadata["pending_calls"])
+
+    from looplet.assistant_turns import TURN_STATE_KEY  # noqa: PLC0415
+
+    turns = cp.metadata.get(TURN_STATE_KEY, {})
+    if isinstance(turns, dict) and turns.get("pending_model_call"):
+        raise UncertainModelCall(
+            "Cannot branch from a checkpoint with an unacknowledged model call"
+        )
+
+    branch_id = new_run_id or uuid4().hex[:12]
+    FileCheckpointStore._validate_run_id(branch_id)
+    parent_id = cp.run_id or source_run_id
+    cp.run_envelope = {
+        **(cp.run_envelope or {}),
+        "run_id": branch_id,
+        "parent_run_id": parent_id,
+    }
+    cp.run_status = "running"
+    cp.run_phase = "prompting"
+    cp.termination_reason = None
+    cp.metadata = dict(cp.metadata)
+    cp.metadata.pop("status", None)
+    cp.metadata.pop("accepted_terminal_tool", None)
+    cp.metadata["branched_from_run_id"] = parent_id
+    cp.metadata["branched_from_step"] = cp.step_number
+    if TURN_STATE_KEY in cp.metadata and isinstance(cp.metadata[TURN_STATE_KEY], dict):
+        cp.metadata[TURN_STATE_KEY] = dict(cp.metadata[TURN_STATE_KEY])
+        cp.metadata[TURN_STATE_KEY].pop("terminal_status", None)
+
+    if inject_message is not None and inject_message.strip():
+        from looplet.conversation import Conversation, Message, MessageRole  # noqa: PLC0415
+
+        conv = (
+            Conversation.deserialize(cp.conversation_data)
+            if cp.conversation_data
+            else Conversation()
+        )
+        conv.append(
+            Message(
+                role=MessageRole.USER,
+                content=inject_message,
+                metadata={"origin": "host", "kind": "branch_steering"},
+            )
+        )
+        cp.conversation_data = conv.serialize()
+
+    return cp

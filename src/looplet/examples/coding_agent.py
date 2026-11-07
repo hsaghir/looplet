@@ -18,7 +18,7 @@ Demonstrates how a well-structured agent harness works:
 
 This agent:
   - Receives a task ("implement a fibonacci function with tests")
-  - Uses the same tools as Claude Code: bash, read, write, edit, glob, grep, think
+    - Uses standard coding tools: bash, read, write, edit, glob, grep, think
   - Gets just-in-time review feedback via a ``post_dispatch`` hook
   - Keeps running until tests pass (``check_done`` quality gate)
     - Has persistent memory (coding standards survive compaction)
@@ -62,7 +62,7 @@ from looplet.session import SessionLog
 from looplet.types import ToolCall, ToolResult
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. TOOLS - same core set as Claude Code / Claude Agent SDK
+# 1. TOOLS - standard local coding capabilities
 #
 # bash, read, write, edit, glob, grep, think, done
 #
@@ -214,7 +214,7 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
 
 
 def build_tools(workspace: str):
-    """Build the tool registry with Claude Code-equivalent tools.
+    """Build the tool registry for local coding workflows.
 
     Core set: bash, read, write, edit, glob, grep, think, done.
     """

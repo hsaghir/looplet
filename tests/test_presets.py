@@ -889,3 +889,130 @@ class TestPresetIntegration:
         steps = list(preset.run(llm, task={"goal": "finish"}))
         assert len(steps) == 1
         assert steps[0].tool_call.tool == "done"
+
+    def test_coding_preset_workspace_containment_and_edit_safeguards(self, tmp_path):
+        """Coding preset tools block workspace escapes, support line ranges, and detect stale edits."""
+        import os
+
+        from looplet.presets import coding_agent_preset
+        from looplet.types import ToolCall
+
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret\n")
+
+        preset = coding_agent_preset(workspace=str(ws), require_tests=False)
+
+        escape_read = preset.tools.dispatch(
+            ToolCall(tool="read", args={"file_path": "../outside.txt"})
+        )
+        assert "outside the workspace" in str(escape_read.data.get("error", ""))
+
+        escape_write = preset.tools.dispatch(
+            ToolCall(tool="write", args={"file_path": "../escape.txt", "content": "x"})
+        )
+        assert "outside the workspace" in str(escape_write.data.get("error", ""))
+        assert not (tmp_path / "escape.txt").exists()
+
+        target = ws / "module.py"
+        target.write_text("line 1\ndef compute_total(items):\n    return sum(items)\n")
+
+        ranged = preset.tools.dispatch(
+            ToolCall(tool="read", args={"file_path": "module.py", "start_line": 2, "end_line": 3})
+        )
+        assert "   2 | def compute_total" in ranged.data["content"]
+        assert "line 1" not in ranged.data["content"]
+
+        full_read = preset.tools.dispatch(ToolCall(tool="read", args={"file_path": "module.py"}))
+        assert full_read.data["line_count"] == 3
+
+        fuzzy_miss = preset.tools.dispatch(
+            ToolCall(
+                tool="edit",
+                args={
+                    "file_path": "module.py",
+                    "old_string": "def compute_totals(items):",
+                    "new_string": "def compute_total(items):",
+                },
+            )
+        )
+        assert fuzzy_miss.data.get("similar_lines") == [2]
+
+        # External modification after read is rejected as stale
+        stat_before = os.stat(target)
+        target.write_text("line 1\ndef compute_total(items):\n    return sum(items) + 1\n")
+        os.utime(target, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1_000_000))
+
+        stale_edit = preset.tools.dispatch(
+            ToolCall(
+                tool="edit",
+                args={
+                    "file_path": "module.py",
+                    "old_string": "line 1",
+                    "new_string": "line one",
+                },
+            )
+        )
+        assert stale_edit.data.get("stale") is True
+
+        # Re-reading refreshes the snapshot so the edit succeeds and returns a diff
+        preset.tools.dispatch(ToolCall(tool="read", args={"file_path": "module.py"}))
+        ok_edit = preset.tools.dispatch(
+            ToolCall(
+                tool="edit",
+                args={
+                    "file_path": "module.py",
+                    "old_string": "line 1",
+                    "new_string": "line one",
+                },
+            )
+        )
+        assert ok_edit.data.get("replacements") == 1
+        assert "-line 1" in ok_edit.data.get("diff", "")
+        assert "+line one" in ok_edit.data.get("diff", "")
+
+    def test_coding_preset_stale_content_with_preserved_mtime(self, tmp_path):
+        import os
+
+        from looplet.presets import coding_agent_preset
+        from looplet.types import ToolCall
+
+        for bounds in ({}, {"start_line": 1, "end_line": 1}):
+            target = tmp_path / "module.py"
+            target.write_text("value = 1\nlabel = 'old'\n")
+            preset = coding_agent_preset(workspace=str(tmp_path), require_tests=False)
+            read_result = preset.tools.dispatch(
+                ToolCall(tool="read", args={"file_path": "module.py", **bounds})
+            )
+            assert read_result.error is None
+            previous_stat = target.stat()
+            external_content = "value = 2\nlabel = 'old'\n"
+            target.write_text(external_content)
+            os.utime(target, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+
+            rejected = preset.tools.dispatch(
+                ToolCall(
+                    tool="edit",
+                    args={
+                        "file_path": "module.py",
+                        "old_string": "label = 'old'",
+                        "new_string": "label = 'new'",
+                    },
+                )
+            )
+            assert rejected.data.get("stale") is True
+            assert target.read_text() == external_content
+
+            preset.tools.dispatch(ToolCall(tool="read", args={"file_path": "module.py"}))
+            accepted = preset.tools.dispatch(
+                ToolCall(
+                    tool="edit",
+                    args={
+                        "file_path": "module.py",
+                        "old_string": "label = 'old'",
+                        "new_string": "label = 'new'",
+                    },
+                )
+            )
+            assert accepted.data.get("replacements") == 1

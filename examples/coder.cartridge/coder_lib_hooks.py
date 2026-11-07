@@ -114,7 +114,7 @@ class TestGuardHook:
 class StaleFileHook:
     """Detects when bash commands modify files the model previously read.
 
-    Mirrors Claude Code's staleReadFileStateHint: after each bash step,
+    After each bash step,
     checks cached file mtimes and warns the model to re-read before editing.
     """
 
@@ -141,7 +141,7 @@ class StaleFileHook:
 class LinterHook:
     """Runs ruff check after Python file edits, injects diagnostics.
 
-    Mirrors Claude Code's automatic LSP error reporting after file edits.
+    Reports diagnostics automatically after file edits.
     Only runs when ruff is available in the workspace.
     """
 

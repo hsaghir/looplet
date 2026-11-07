@@ -622,15 +622,90 @@ class _AdmissionBackend:
         return record, call_number
 
     def _finish(self, record: dict[str, Any], response: Any) -> None:
-        record["response_chars"] = (
-            len(response) if isinstance(response, str) else len(json.dumps(response, default=str))
+        self._finish_record(
+            record,
+            len(response) if isinstance(response, str) else len(json.dumps(response, default=str)),
         )
+
+    def _finish_record(self, record: dict[str, Any], response_chars: int) -> None:
+        record["response_chars"] = response_chars
         usage = getattr(self.backend, "last_usage", None)
         if isinstance(usage, dict):
             record["usage"] = copy.deepcopy(usage)
         self.turns.surface_usage()
 
     def __getattr__(self, name: str) -> Any:
+        if name == "stream_in_loop":
+            return getattr(self.backend, name)
+        if name == "stream":
+            method = getattr(self.backend, name)
+            if inspect.isasyncgenfunction(method) or self.turns.async_checkpoint is not None:
+
+                @wraps(method)
+                async def stream_async(*args: Any, **kwargs: Any) -> Any:
+                    record, call_number = self._begin(args, kwargs)
+                    if self.turns.async_checkpoint is not None:
+                        try:
+                            await self.turns.async_checkpoint()
+                        except BaseException:
+                            self.turns.abandon(call_number)
+                            raise
+                    response_chars = 0
+                    try:
+                        with single_model_request():
+                            iterator = method(*args, **kwargs)
+                            if inspect.isawaitable(iterator):
+                                iterator = await iterator
+                            try:
+                                if hasattr(iterator, "__aiter__"):
+                                    async for chunk in iterator:
+                                        response_chars += len(chunk)
+                                        yield chunk
+                                else:
+                                    for chunk in iterator:
+                                        response_chars += len(chunk)
+                                        yield chunk
+                            finally:
+                                close_async: Callable[[], Any] | None = getattr(
+                                    iterator, "aclose", None
+                                )
+                                if callable(close_async):
+                                    await close_async()
+                                else:
+                                    close = getattr(iterator, "close", None)
+                                    if callable(close):
+                                        close()
+                    finally:
+                        try:
+                            self._finish_record(record, response_chars)
+                        finally:
+                            self.turns.acknowledge(call_number)
+
+                return stream_async
+
+            @wraps(method)
+            def stream_sync(*args: Any, **kwargs: Any) -> Any:
+                record, call_number = self._begin(args, kwargs)
+                response_chars = 0
+                try:
+                    with single_model_request():
+                        iterator = method(*args, **kwargs)
+                        try:
+                            for chunk in iterator:
+                                response_chars += len(chunk)
+                                yield chunk
+                        finally:
+                            close = getattr(iterator, "close", None)
+                            if callable(close):
+                                close()
+                finally:
+                    try:
+                        self._finish_record(record, response_chars)
+                    finally:
+                        self.turns.acknowledge(call_number)
+
+            return stream_sync
+
         if name in {"request_policy", "_looplet_manages_retries"}:
             policy = backend_request_policy(self.backend)
             if name == "request_policy":

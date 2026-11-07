@@ -73,8 +73,11 @@ from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.checkpoint import (
     Checkpoint,
     CheckpointHook,
+    CheckpointParticipant,
+    CheckpointParticipants,
     CheckpointStore,
     FileCheckpointStore,
+    UncertainToolEffect,
     branch_from_checkpoint,
     resume_loop_state,
 )
@@ -392,8 +395,15 @@ __all__ = [
     "PermissionRule",
     "PermissionDecision",
     # ── CHECKPOINTS ─────────────────────────────────────────────
+    "Checkpoint",
+    "CheckpointHook",
+    "CheckpointParticipant",
+    "CheckpointParticipants",
+    "CheckpointStore",
     "FileCheckpointStore",
     "FileToolResultStore",
+    "UncertainToolEffect",
+    "resume_loop_state",
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
     "ProvenanceSink",

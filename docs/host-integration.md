@@ -292,18 +292,25 @@ The following APIs use the existing loop drivers:
 | --- | --- |
 | `run_sub_loop(...)` | Run one synchronous child. |
 | `await run_sub_loop_async(...)` | Run one async child. |
+| `run_sub_loops(requests, max_concurrency=4)` | Run bounded synchronous parallel children. |
 | `await run_sub_loops_async(requests, max_concurrency=4)` | Run bounded parallel children. |
 
 The async APIs and recovery fields are included in Looplet `0.4.0`.
 Each request contains keyword arguments for `run_sub_loop_async`.
 Parallel results keep request order.
-A failed or cancelled child cancels its siblings.
+A failed or cancelled async child cancels its siblings.
 Python's `ExceptionGroup` contains `ChildRunFailed`, whose `result` retains the child failure.
 Budget stops and approval requests return incomplete results instead.
 Cancellation closes active child loops.
 The caller still owns supplied presets and resources.
 Create separate state and mutable hooks for each child.
 Use concurrency-safe shared backends and tools.
+
+**Unreleased:** `run_sub_loops` accepts keyword arguments for `run_sub_loop`.
+It runs all requests and aggregates failures in request order rather than cancelling siblings.
+Both fan-out APIs schedule at most `max_concurrency` child tasks or futures at once,
+refilling available slots as children finish instead of eagerly queuing every request.
+The aliases `run_sub_loops_parallel` and `async_run_sub_loop` refer to the same implementations.
 
 Both child helpers and the built-in `subagent` tool return these fields:
 

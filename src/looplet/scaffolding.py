@@ -850,8 +850,7 @@ def truncate_tool_result(
     When ``persist_dir`` is set and the raw data exceeds
     ``persist_threshold`` characters, the full output is written to a
     file in ``persist_dir`` and the result includes the file path and
-    byte count so the model can read it later if needed (mirrors
-    Claude Code's large-output persistence pattern).
+    byte count so the model can read it later if needed.
     """
     if data is None:
         return data

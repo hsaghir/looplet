@@ -641,13 +641,101 @@ def _bash(*, command: str, workspace: str = "") -> dict:
         }
 
 
-def _read(*, file_path: str, workspace: str = "") -> dict:
-    """Read a file with line numbers."""
-    full = os.path.join(workspace, file_path) if workspace else file_path
+def _resolve_workspace_path(workspace: str, file_path: str) -> str | None:
+    """Resolve ``file_path`` inside ``workspace``, or return ``None`` if it escapes."""
+    from pathlib import Path
+
+    if not workspace:
+        return file_path
+    root = Path(workspace).resolve()
+    candidate = Path(file_path)
+    target = (candidate if candidate.is_absolute() else root / candidate).resolve()
     try:
-        with open(full) as f:
-            lines = f.readlines()
-        numbered = "".join(f"{i + 1:4d} | {line}" for i, line in enumerate(lines))
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return str(target)
+
+
+class _WorkspaceFileCache:
+    """Track read snapshots in a preset workspace to detect external modifications."""
+
+    def __init__(self) -> None:
+        self._snapshots: dict[str, str] = {}
+
+    def record(self, resolved_path: str, content: str) -> None:
+        self._snapshots[resolved_path] = content
+
+    def clear(self) -> None:
+        self._snapshots.clear()
+
+    def is_stale(self, resolved_path: str, current_content: str) -> bool:
+        snapshot = self._snapshots.get(resolved_path)
+        return snapshot is not None and current_content != snapshot
+
+
+def _fuzzy_line_hints(text: str, needle: str) -> list[tuple[int, float, str]]:
+    """Return up to 3 closest lines when an exact string replacement fails."""
+    import difflib
+
+    target = needle.strip().splitlines()[0].strip() if needle.strip() else ""
+    if not target:
+        return []
+    scored: list[tuple[int, float, str]] = []
+    for index, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = difflib.SequenceMatcher(None, target, stripped).ratio()
+        if ratio >= 0.55:
+            scored.append((index, ratio, line))
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    return scored[:3]
+
+
+def _read(
+    *,
+    file_path: str,
+    workspace: str = "",
+    start_line: int = 0,
+    end_line: int = 0,
+    _cache: _WorkspaceFileCache | None = None,
+) -> dict:
+    """Read a file with line numbers and optional 1-based inclusive line bounds."""
+    full = _resolve_workspace_path(workspace, file_path)
+    if full is None:
+        return {
+            "error": f"Path '{file_path}' is outside the workspace directory.",
+            "remediation": "Use a relative path inside the workspace.",
+        }
+    if start_line < 0 or end_line < 0:
+        return {
+            "error": "start_line and end_line must be non-negative (1-based).",
+            "remediation": "Pass positive 1-based line numbers or 0 for full file.",
+        }
+    if start_line > 0 and end_line > 0 and end_line < start_line:
+        return {
+            "error": f"end_line ({end_line}) must be >= start_line ({start_line}).",
+            "remediation": "Ensure start_line <= end_line.",
+        }
+    try:
+        with open(full, "rb") as raw_f:
+            sample = raw_f.read(8192)
+        if b"\x00" in sample:
+            return {
+                "error": f"Refused: '{file_path}' appears to be a binary file.",
+                "binary": True,
+                "remediation": "read only handles text files.",
+            }
+        with open(full, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        lines = text.splitlines(keepends=True)
+        if _cache is not None:
+            _cache.record(full, text)
+        start_idx = max(0, start_line - 1) if start_line > 0 else 0
+        end_idx = end_line if end_line > 0 else len(lines)
+        selected = lines[start_idx:end_idx]
+        numbered = "".join(f"{start_idx + i + 1:4d} | {line}" for i, line in enumerate(selected))
         if len(numbered) > 12000:
             numbered = numbered[:6000] + "\n...(truncated)...\n" + numbered[-6000:]
         return {"path": file_path, "content": numbered, "line_count": len(lines)}
@@ -656,58 +744,128 @@ def _read(*, file_path: str, workspace: str = "") -> dict:
             "error": f"File not found: {file_path}",
             "remediation": "Use glob to find files, or write to create.",
         }
+    except IsADirectoryError:
+        return {
+            "error": f"'{file_path}' is a directory, not a file.",
+            "remediation": "Use glob to list files inside the directory.",
+        }
 
 
-def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
+def _write(
+    *,
+    file_path: str,
+    content: str,
+    workspace: str = "",
+    _cache: _WorkspaceFileCache | None = None,
+) -> dict:
     """Create or overwrite a file."""
-    full = os.path.join(workspace, file_path) if workspace else file_path
+    full = _resolve_workspace_path(workspace, file_path)
+    if full is None:
+        return {
+            "error": f"Path '{file_path}' is outside the workspace directory.",
+            "remediation": "Use a relative path inside the workspace.",
+        }
     os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
-    with open(full, "w") as f:
+    with open(full, "w", encoding="utf-8") as f:
         f.write(content)
+    if _cache is not None:
+        _cache.record(full, content)
     return {"written": file_path, "lines": content.count("\n") + 1}
 
 
-def _edit(*, file_path: str, old_string: str, new_string: str, workspace: str = "") -> dict:
-    """Replace exact string match in a file."""
-    full = os.path.join(workspace, file_path) if workspace else file_path
+def _edit(
+    *,
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    workspace: str = "",
+    _cache: _WorkspaceFileCache | None = None,
+) -> dict:
+    """Replace exact string match in a file with staleness detection and diff output."""
+    import difflib
+
+    full = _resolve_workspace_path(workspace, file_path)
+    if full is None:
+        return {
+            "error": f"Path '{file_path}' is outside the workspace directory.",
+            "remediation": "Use a relative path inside the workspace.",
+        }
     try:
-        text = open(full).read()
+        with open(full, encoding="utf-8") as f:
+            text = f.read()
     except FileNotFoundError:
         return {
             "error": f"File not found: {file_path}",
             "remediation": "Use write to create the file first.",
         }
+    if _cache is not None and _cache.is_stale(full, text):
+        return {
+            "error": f"File '{file_path}' was modified since it was last read.",
+            "stale": True,
+            "remediation": "Call read first to inspect the latest file contents before editing.",
+        }
     count = text.count(old_string)
     if count == 0:
-        return {
+        hints = _fuzzy_line_hints(text, old_string)
+        result: dict[str, Any] = {
             "error": "old_string not found",
             "remediation": "Use read to see current content. Match exactly.",
         }
+        if hints:
+            result["similar_lines"] = [line_no for line_no, _, _ in hints]
+        return result
     if count > 1:
         return {
             "error": f"old_string matches {count} locations - ambiguous",
             "remediation": "Include more context to make it unique.",
         }
-    with open(full, "w") as f:
-        f.write(text.replace(old_string, new_string, 1))
-    return {"edited": file_path, "replacements": 1}
+    updated = text.replace(old_string, new_string, 1)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(updated)
+    if _cache is not None:
+        _cache.record(full, updated)
+    diff_text = "".join(
+        difflib.unified_diff(
+            text.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{file_path}",
+            tofile=f"b/{file_path}",
+            n=3,
+        )
+    )
+    if len(diff_text) > 2000:
+        diff_text = diff_text[:2000] + "\n... [diff truncated]"
+    return {"edited": file_path, "replacements": 1, "diff": diff_text}
 
 
 def _glob(*, pattern: str, workspace: str = "") -> dict:
     """Find files matching a glob pattern."""
     import glob as globmod
+    from pathlib import Path
 
     base = workspace or "."
+    root = Path(base).resolve()
     matches = sorted(globmod.glob(os.path.join(base, pattern), recursive=True))
-    rel = [os.path.relpath(m, base) for m in matches]
+    rel: list[str] = []
+    for match in matches:
+        try:
+            Path(match).resolve().relative_to(root)
+        except ValueError:
+            continue
+        rel.append(os.path.relpath(match, base))
     if len(rel) > 100:
-        return {"pattern": pattern, "files": rel[:100], "truncated": True, "total": len(matches)}
+        return {"pattern": pattern, "files": rel[:100], "truncated": True, "total": len(rel)}
     return {"pattern": pattern, "files": rel, "total": len(rel)}
 
 
 def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
     """Search file contents with regex."""
-    full = os.path.join(workspace, path) if workspace else path
+    full = _resolve_workspace_path(workspace, path)
+    if full is None:
+        return {
+            "error": f"Path '{path}' is outside the workspace directory.",
+            "remediation": "Use a relative path inside the workspace.",
+        }
     try:
         result = subprocess.run(
             [
@@ -736,8 +894,12 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
         return {"error": "Search timed out", "remediation": "Narrow your pattern."}
 
 
-def _build_coding_tools(workspace: str) -> BaseToolRegistry:
+def _build_coding_tools(
+    workspace: str,
+    file_cache: _WorkspaceFileCache | None = None,
+) -> BaseToolRegistry:
     """Build a coding agent tool registry (bash, read, write, edit, glob, grep, think, done)."""
+    cache = file_cache if file_cache is not None else _WorkspaceFileCache()
 
     @tool(
         description=(
@@ -749,12 +911,18 @@ def _build_coding_tools(workspace: str) -> BaseToolRegistry:
         return _bash(command=command, workspace=workspace)
 
     @tool(description="Read a file with line numbers. Use relative paths.", concurrent_safe=True)
-    def read(*, file_path: str) -> dict:
-        return _read(file_path=file_path, workspace=workspace)
+    def read(*, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
+        return _read(
+            file_path=file_path,
+            workspace=workspace,
+            start_line=start_line,
+            end_line=end_line,
+            _cache=cache,
+        )
 
     @tool(description="Create or overwrite a file. Use relative paths.")
     def write(*, file_path: str, content: str) -> dict:
-        return _write(file_path=file_path, content=content, workspace=workspace)
+        return _write(file_path=file_path, content=content, workspace=workspace, _cache=cache)
 
     @tool(
         description=(
@@ -767,6 +935,7 @@ def _build_coding_tools(workspace: str) -> BaseToolRegistry:
             old_string=old_string,
             new_string=new_string,
             workspace=workspace,
+            _cache=cache,
         )
 
     @tool(description="Find files by glob pattern.", concurrent_safe=True)

@@ -1,7 +1,7 @@
 """Tool reliability features - timeout enforcement & large-output persistence.
 
 Tests for the platform-level reliability improvements inspired by
-Claude Code's tool implementation patterns:
+the coding preset's tool implementation contracts:
 - ToolSpec.timeout_s: framework-enforced execution deadline
 - truncate_tool_result persist_dir: large outputs saved to disk
 """

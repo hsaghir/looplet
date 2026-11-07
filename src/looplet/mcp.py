@@ -46,6 +46,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
@@ -57,12 +58,21 @@ logger = logging.getLogger(__name__)
 _ACTIVE_CANCEL_TOKEN: ContextVar[Any | None] = ContextVar("looplet_mcp_cancel_token", default=None)
 
 
-def _register_mcp_tools(registry: BaseToolRegistry, specs: list[ToolSpec]) -> int:
-    names = set(registry.tool_names)
+def _register_mcp_tools(
+    registry: BaseToolRegistry,
+    specs: list[ToolSpec],
+    *,
+    previous: Sequence[ToolSpec] = (),
+) -> int:
+    current = registry.tool_specs
+    owned = {spec.name for spec in previous if current.get(spec.name) is spec}
+    names = set(current) - owned
     for spec in specs:
         if spec.name in names:
             raise ValueError(f"MCP tool name collision: {spec.name!r}")
         names.add(spec.name)
+    for name in owned:
+        registry.unregister(name)
     for spec in specs:
         registry.register(spec)
     return len(specs)
@@ -162,6 +172,10 @@ class MCPToolAdapter:
         self._reader_threads: set[threading.Thread] = set()
         self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
+        self._registrations: WeakKeyDictionary[BaseToolRegistry, tuple[ToolSpec, ...]] = (
+            WeakKeyDictionary()
+        )
+        self._tools_dirty = False
         self._started = False
 
     def __enter__(self) -> "MCPToolAdapter":
@@ -173,9 +187,29 @@ class MCPToolAdapter:
 
     # ── Public API ───────────────────────────────────────────────
 
+    def refresh_tools(self, registry: BaseToolRegistry | None = None) -> list[ToolSpec]:
+        """Refresh the catalog and optionally synchronize a registry.
+
+        Only tools installed by this adapter are replaced or removed.
+        Local replacements are retained. Name collisions reject the update
+        before any registry mutation. Call between model turns.
+        """
+        self._ensure_started()
+        if self._proc is not None:
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
+        specs = self.tools()
+        if registry is not None:
+            _register_mcp_tools(registry, specs, previous=self._registrations.get(registry, ()))
+            self._registrations[registry] = tuple(specs)
+        return specs
+
     def tools(self) -> list[ToolSpec]:
         """Return a ToolSpec for each tool the MCP server exposes."""
         self._ensure_started()
+        if self._tools_dirty and self._proc is not None:
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
         specs = []
         for schema in self._tool_schemas:
             name = schema["name"]
@@ -207,7 +241,10 @@ class MCPToolAdapter:
         Reject name collisions before registering any discovered tool.
         Returns the number of tools registered.
         """
-        return _register_mcp_tools(registry, self.tools())
+        specs = self.tools()
+        count = _register_mcp_tools(registry, specs)
+        self._registrations[registry] = tuple(specs)
+        return count
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent protocol requests."""
@@ -218,6 +255,7 @@ class MCPToolAdapter:
         proc = self._proc
         self._proc = None
         self._started = False
+        self._tools_dirty = False
         self._pending_messages.clear()
         self._tool_schemas.clear()
         if proc is not None:
@@ -287,10 +325,10 @@ class MCPToolAdapter:
                 )
             # Send initialized notification
             self._send_notification("notifications/initialized", {})
-            # List tools
-            tools_resp = self._send_request("tools/list", {})
-            if tools_resp and "tools" in tools_resp:
-                self._tool_schemas = tools_resp["tools"]
+            # List tools across all pagination pages
+            self._tool_schemas = self._fetch_all_tools()
+            self._tools_dirty = False
+            if self._tool_schemas:
                 logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
             self._started = True
         except BaseException as exc:
@@ -306,6 +344,32 @@ class MCPToolAdapter:
                     f"(exit_code={rc}); stderr: {stderr_tail!r}"
                 ) from exc
             raise
+
+    def _fetch_all_tools(self) -> list[dict[str, Any]]:
+        """Fetch all ``tools/list`` pages following ``nextCursor``."""
+        schemas: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        for _ in range(100):
+            params: dict[str, Any] = {"cursor": cursor} if cursor is not None else {}
+            tools_resp = self._send_request("tools/list", params)
+            if not isinstance(tools_resp, dict):
+                break
+            page_tools = tools_resp.get("tools")
+            if isinstance(page_tools, list):
+                schemas.extend(page_tools)
+            next_cursor = tools_resp.get("nextCursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
+                break
+            if next_cursor in seen_cursors:
+                raise MCPProtocolError(
+                    f"MCP tools/list pagination cycle detected on cursor {next_cursor!r}"
+                )
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            raise MCPProtocolError("MCP tools/list pagination exceeded 100 pages")
+        return schemas
 
     def _send_request(self, method: str, params: dict) -> dict | None:
         """Send a JSON-RPC request and wait for the response."""
@@ -414,6 +478,8 @@ class MCPToolAdapter:
                     continue
 
             if expected_id is not None and data.get("id") is None:
+                if data.get("method") == "notifications/tools/list_changed":
+                    self._tools_dirty = True
                 logger.debug(
                     "MCP notification received while awaiting response: %s", data.get("method")
                 )

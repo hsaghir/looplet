@@ -40,6 +40,45 @@ def test_extract_usage_openai_dict() -> None:
     }
     u = extract_usage(resp)
     assert u == {"input": 200, "output": 200, "cache_read": 600, "cache_write": 0}
+    tracker = CostTracker(
+        model="gpt-4o",
+        prices={"gpt-4o": ModelPrice(input=2.0, output=4.0, cache_read=1.0)},
+    )
+    tracker.record(u)
+    assert tracker.total_tokens == 1000
+    assert tracker.cache_hit_ratio == 0.75
+    assert tracker.total_cost == round((200 * 2.0 + 200 * 4.0 + 600 * 1.0) / 1e6, 6)
+
+
+def test_extract_usage_openai_responses_dict() -> None:
+    response = {
+        "usage": {
+            "input_tokens": 500,
+            "output_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 400},
+        }
+    }
+    assert extract_usage(response) == {
+        "input": 100,
+        "output": 100,
+        "cache_read": 400,
+        "cache_write": 0,
+    }
+
+
+def test_extract_usage_normalized_counts_are_not_normalized_again() -> None:
+    usage = {
+        "input": 100,
+        "output": 100,
+        "cache_read": 400,
+        "cache_write": 0,
+        "prompt_tokens": 500,
+        "completion_tokens": 100,
+        "total_tokens": 600,
+    }
+    assert extract_usage(usage) == {
+        key: usage[key] for key in ("input", "output", "cache_read", "cache_write")
+    }
 
 
 def test_extract_usage_none_safe() -> None:

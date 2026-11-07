@@ -353,7 +353,8 @@ The optional `AgentRuntime` can report host errors as failed results.
 ## Tools
 
 Use `run_sub_loop` for a child loop.
-Use `run_sub_loop_async` or `run_sub_loops_async` for async or bounded parallel children.
+Use `run_sub_loop_async` for one async child.
+Use `run_sub_loops` or `run_sub_loops_async` for bounded parallel children.
 They accept explicit backends, tools, state, hooks, and configuration.
 See [bounded delegation](host-integration.md#bounded-delegation) for parent controls, result fields, and recovery.
 
@@ -373,6 +374,13 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 | `ToolContext`                          | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool.                                |
 | `ToolContext.async_llm`                | Run-owned async model access inside async tools or child loops.                                                                           |
 | `ToolError` / `ToolValidationError`    | Return or test structured failures without parsing exception text.                                                                       |
+
+**Unreleased:** `MCPToolAdapter.refresh_tools()` refreshes only the adapter's catalog.
+Call `adapter.refresh_tools(registry)` explicitly between model turns to update a registered catalog.
+Registry updates remove only the adapter's own prior specs and preserve local replacements.
+Local name collisions are rejected before registry mutation.
+`BaseToolRegistry.unregister(name)` removes a spec and returns it; unknown names raise `KeyError`.
+MCP list-change notifications mark the catalog stale but do not silently alter a running registry.
 
 **Unreleased:** async dispatch runs synchronous external result stores in worker threads.
 Supply a thread-safe store.

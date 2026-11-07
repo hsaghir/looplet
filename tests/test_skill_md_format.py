@@ -2,7 +2,7 @@
 
 The Agent Skills spec (https://agentskills.io) defines a markdown file
 with YAML frontmatter carrying at minimum ``name`` and ``description``.
-Pi, Claude Code, and looplet all consume this format.
+Coding-agent hosts and looplet consume this format.
 """
 
 from __future__ import annotations

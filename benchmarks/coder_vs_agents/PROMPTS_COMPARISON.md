@@ -1,4 +1,4 @@
-# Agent system prompts: looplet coder vs Copilot CLI, Codex, Claude Code
+# Agent system prompts: looplet coder vs Copilot CLI, Codex, reference CLI
 
 A structural comparison of the four coding-agent system prompts, gathered
 2026-07-04. Ties back to the [non-coding benchmark](SOFT_REPORT.md), where
@@ -11,11 +11,11 @@ a causally isolated result.
 > | --- | --- | --- | --- |
 > | **OpenAI Codex CLI** | ✅ Yes (Apache-2.0) | Official repo `openai/codex` → `codex-rs/core/gpt_5_codex_prompt.md` | authoritative, current |
 > | **GitHub Copilot CLI** | ❌ No (proprietary) | Extracted from the installed npm bundle `@github/copilot/app.js` | authoritative (the real prompt used in our benchmark) |
-> | **Claude Code** | ❌ No (proprietary) | Community extraction (x1xhlol leak repo) | indicative, ~Sonnet-4 / Aug-2025 snapshot - may be partial/dated |
+> | **Reference CLI** | ❌ No (proprietary) | Community extraction (x1xhlol leak repo) | indicative, ~Sonnet-4 / Aug-2025 snapshot - may be partial/dated |
 > | **looplet coder** | ✅ Yes (your repo) | `examples/coder.cartridge/prompts/system.md` | authoritative |
 >
 > So: only Codex is genuinely open source. Copilot's ships (obfuscated) in
-> the package you install and is extractable. Claude Code's is neither
+> the package you install and is extractable. The reference CLI's is neither
 > published nor in a readable package - what circulates is reverse-engineered.
 
 ---
@@ -39,7 +39,7 @@ a causally isolated result.
   huge *cached* input-token counts.
 - **Codex CLI** - one **large Markdown file** (`gpt_5_codex_prompt.md`),
   five top sections, dominated by a very detailed *output formatting* spec.
-- **Claude Code** - one **large prompt** (several thousand words) with ~9
+- **Reference CLI** - one **large prompt** (several thousand words) with ~9
   sections, heavy on tone/verbosity rules and TodoWrite task-management.
 
 ## 2. Identity line (how each frames itself)
@@ -48,15 +48,15 @@ a causally isolated result.
 | --- | --- |
 | looplet coder | "You are an expert software engineer. … You never guess - you read first, then act." |
 | Copilot CLI | "You are the GitHub Copilot CLI, a terminal assistant built by GitHub. **You are an interactive CLI tool that helps users with software engineering tasks.**" |
-| Claude Code | "**You are an interactive CLI tool that helps users with software engineering tasks.**" |
+| Reference CLI | "**You are an interactive CLI tool that helps users with software engineering tasks.**" |
 | Codex CLI | "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer." |
 
-> **Notable:** Copilot CLI's identity sentence is **verbatim Claude Code's** -
-> Copilot CLI is clearly descended from the Claude Code prompt lineage.
+> **Notable:** The identity sentences coincide in this historical snapshot.
+> This comparison does not establish prompt lineage.
 
 ## 3. Feature-by-feature
 
-| Dimension | looplet coder | Copilot CLI | Codex CLI | Claude Code |
+| Dimension | looplet coder | Copilot CLI | Codex CLI | Reference CLI |
 | --- | --- | --- | --- | --- |
 | Size (static) | ~600 tok | few-K tok, composed | large | large |
 | Read-before-edit | ✅ explicit | ✅ | ✅ | ✅ ("understand conventions first") |
@@ -83,7 +83,7 @@ a causally isolated result.
   & permission aware, cache-optimised, self-identifying.
 - **Codex CLI** - *presentation-obsessed teammate*: correctness + a very
   precise spec for how the final message should read.
-- **Claude Code** - *minimal-token operator*: extreme concision, aggressive
+- **Reference CLI** - *minimal-token operator*: extreme concision, aggressive
   TodoWrite planning, strong safety refusals.
 
 ---
@@ -94,7 +94,7 @@ a causally isolated result.
 same *engineering discipline* the big three spend thousands of tokens on:
 read-before-edit, test-after-every-change, write-a-failing-test-first,
 minimal diffs, type hints/docstrings, `think()` when stuck. Philosophically
-it's closest to **Claude Code** (terse, read-first, mimic conventions,
+it's closest to the **reference CLI** (terse, read-first, mimic conventions,
 verify) - which is striking for a hand-written example file.
 
 **What it deliberately omits** (and how that may relate to the benchmark):
@@ -106,12 +106,12 @@ verify) - which is striking for a hand-written example file.
    plausibly why it trailed on the **non-coding design/explanation tasks**
    (17.2 vs 18.8): the model was told to be a terse code-changer, so it
    produced accurate-but-lean essays.
-2. **No "verify the library/API exists first"** (both Codex and Claude Code
+2. **No "verify the library/API exists first"** (both Codex and the reference CLI
    stress this - a real hallucination guard).
 3. **No environment/sandbox or don't-revert-unrelated-changes rules** that
    Copilot and Codex use to stay safe in messy real repos.
-4. **Parallel tool calls off** (`concurrent_dispatch:false`) where Claude
-   Code/Copilot lean hard into batching for speed.
+4. **Parallel tool calls off** (`concurrent_dispatch:false`) where the reference
+  CLI and Copilot lean hard into batching for speed.
 
 ## 6. Concrete, cheap borrowings for looplet's coder
 
@@ -180,7 +180,7 @@ Key design points:
 
 | Agent | Fetch a URL | Search the web | Backend |
 | --- | --- | --- | --- |
-| Claude Code | `WebFetch` | **`WebSearch`** | Anthropic server-side |
+| Reference CLI | `WebFetch` | **`WebSearch`** | Anthropic server-side |
 | Codex CLI | (via tools) | **`web_search`** | OpenAI server-side (config/`--search`) |
 | Copilot CLI | `fetch` | via **MCP** (fetch/search servers) + `--allow-all-urls` | pluggable MCP |
 | **looplet coder** | ✅ **`web_fetch`** (stdlib, zero-dep) | ❌ **none** | - |
@@ -188,7 +188,7 @@ Key design points:
 
 So looplet already matches the **fetch** capability (its `web_fetch` is a
 dependency-free `urllib` + `HTMLParser` reader with optional LLM
-summarization). The only gap versus Claude Code / Codex is a **`web_search`**
+summarization). The only gap versus the reference CLI / Codex is a **`web_search`**
 tool - *query a search engine, get ranked results* - so the agent can find
 the right URL before fetching it.
 
@@ -222,7 +222,7 @@ Everything else belongs in tool descriptions.
    quality* or a new one-line note - *"When explaining or designing instead
    of editing: lead with the key decision, be specific and quantify, and
    name the main tradeoffs."*
-2. Hallucination guard (Codex/Claude Code/Pi all have it): in *Tool rules* -
+2. Hallucination guard (Codex/reference CLI/Pi all have it): in *Tool rules* -
    *"Before using a library or API, confirm it already exists in this repo
    (imports, manifest) - don't assume."*
 3. Repo-safety (Codex): in *Tool rules* - *"Never revert changes you didn't
@@ -232,7 +232,7 @@ Everything else belongs in tool descriptions.
 **B. One new tool (no prompt bloat):** the zero-dep `web_search` above.
 
 **C. Deliberately NOT adding** (would bloat, low ROI for the coder): Codex's
-giant final-answer formatting section; Claude Code's "<4 lines" verbosity
+giant final-answer formatting section; the reference CLI's "<4 lines" verbosity
 regime; sandbox/environment blocks; parallel-tool-call essay. If any of
 these matter, they belong in a *different cartridge* or in `config.yaml`
 (e.g., flip `concurrent_dispatch` for parallel reads), not `system.md`.

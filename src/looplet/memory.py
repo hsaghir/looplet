@@ -16,7 +16,7 @@ Three tiny convenience implementations are shipped:
   pinned entities = [...]").
 * :class:`AgentsMdMemorySource` - walks parent directories from a
   starting path collecting ``AGENTS.md`` / ``CLAUDE.md`` files (the
-  convention shared by Claude Code, Pi, and Cursor). Read on
+    convention shared by coding-agent hosts). Read on
   construction; pass to ``LoopConfig.memory_sources``.
 
 For other filesystem-backed sources, callers can compose
@@ -92,7 +92,7 @@ _AGENTS_MD_FILENAMES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
 class AgentsMdMemorySource:
     """Walk parent directories from ``start`` collecting agent context files.
 
-    The convention (shared by Claude Code, Pi, Cursor, and others) is
+    The coding-agent memory convention is
     that a repository may carry an ``AGENTS.md`` (or ``CLAUDE.md``)
     file holding project-level instructions for an LLM coding agent.
     A user may also place one in ``$HOME`` or any parent directory.

@@ -93,8 +93,12 @@ def extract_usage(raw_response: Any) -> dict[str, int]:
       ``cache_creation_input_tokens``.
     * OpenAI: ``response.usage.prompt_tokens`` / ``completion_tokens`` /
       ``prompt_tokens_details.cached_tokens``.
+        * OpenAI Responses: ``input_tokens`` / ``output_tokens`` /
+            ``input_tokens_details.cached_tokens``.
     * Plain dict: same keys at top level or under ``usage``.
 
+        ``input`` excludes cached tokens. Already normalized dictionaries retain
+        their counts, even when they also carry raw provider totals.
     Returns zeros for fields not found. Never raises.
     """
     out = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -118,21 +122,21 @@ def extract_usage(raw_response: Any) -> dict[str, int]:
         except (TypeError, ValueError):
             return 0
 
-    # Anthropic shape
+    if isinstance(usage, dict) and ("input" in usage or "output" in usage):
+        return {key: _g(usage, key) for key in out}
+
     out["input"] = _g(usage, "input_tokens") or _g(usage, "prompt_tokens")
     out["output"] = _g(usage, "output_tokens") or _g(usage, "completion_tokens")
     out["cache_read"] = _g(usage, "cache_read_input_tokens")
     out["cache_write"] = _g(usage, "cache_creation_input_tokens")
 
-    # OpenAI cached-token nested shape
-    if not out["cache_read"]:
-        details = (
-            usage.get("prompt_tokens_details")
-            if isinstance(usage, dict)
-            else getattr(usage, "prompt_tokens_details", None)
-        )
-        if details is not None:
-            out["cache_read"] = _g(details, "cached_tokens")
+    if not out["cache_read"] and not out["cache_write"]:
+        for key in ("prompt_tokens_details", "input_tokens_details"):
+            details = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+            if details is not None:
+                out["cache_read"] = _g(details, "cached_tokens")
+                out["input"] = max(0, out["input"] - out["cache_read"])
+                break
 
     return out
 

@@ -65,13 +65,15 @@ class PermissionRule:
 
     Rules are checked in order; the first matching rule wins. A rule
     matches when the tool name equals ``tool`` (``"*"`` matches any)
-    and - if provided - ``arg_matcher(args)`` is truthy.
+    and - if provided - ``arg_matcher(args)`` and ``call_matcher(call)``
+    are truthy.
     """
 
     tool: str
     decision: PermissionDecision
     arg_matcher: ArgMatcher | None = None
     reason: str = ""
+    call_matcher: Callable[[ToolCall], bool] | None = None
 
     def matches(self, call: ToolCall) -> bool:
         matched, _ = self._match(call)
@@ -80,10 +82,14 @@ class PermissionRule:
     def _match(self, call: ToolCall) -> tuple[bool, bool]:
         if self.tool != "*" and self.tool != call.tool:
             return False, False
-        if self.arg_matcher is None:
+        if self.arg_matcher is None and self.call_matcher is None:
             return True, False
         try:
-            return bool(self.arg_matcher(call.args)), False
+            if self.arg_matcher is not None and not bool(self.arg_matcher(call.args)):
+                return False, False
+            if self.call_matcher is not None and not bool(self.call_matcher(call)):
+                return False, False
+            return True, False
         except Exception as exc:
             # A buggy matcher must fail closed, which means different things
             # depending on the rule's decision:
@@ -93,7 +99,7 @@ class PermissionRule:
             #   DEFAULT → act as if it did NOT match
             fail_closed_match = self.decision in (PermissionDecision.DENY, PermissionDecision.ASK)
             logger.warning(
-                "PermissionRule arg_matcher for '%s' (decision=%s) raised %s - "
+                "PermissionRule matcher for '%s' (decision=%s) raised %s - "
                 "failing closed (matches=%s)",
                 self.tool,
                 self.decision.value,
@@ -147,7 +153,14 @@ class PermissionEngine:
             self.default,
             self.ask_handler,
             tuple(
-                (id(rule), rule.tool, rule.decision, rule.arg_matcher, rule.reason)
+                (
+                    id(rule),
+                    rule.tool,
+                    rule.decision,
+                    rule.arg_matcher,
+                    rule.call_matcher,
+                    rule.reason,
+                )
                 for rule in self.rules
             ),
         )
@@ -186,6 +199,63 @@ class PermissionEngine:
                 tool=tool,
                 decision=PermissionDecision.ASK,
                 arg_matcher=arg_matcher,
+                reason=reason,
+            )
+        )
+        return self
+
+    def allow_read_only(
+        self, tools: Any, *, reason: str = "read-only tool call"
+    ) -> "PermissionEngine":
+        """Allow any tool call whose :class:`ToolSpec` reports ``is_read_only(args)``."""
+
+        def _matches(call: ToolCall) -> bool:
+            spec = getattr(tools, "_tools", {}).get(call.tool)
+            return bool(spec is not None and spec.is_read_only(call.args))
+
+        self.rules.append(
+            PermissionRule(
+                tool="*",
+                decision=PermissionDecision.ALLOW,
+                call_matcher=_matches,
+                reason=reason,
+            )
+        )
+        return self
+
+    def deny_destructive(
+        self, tools: Any, *, reason: str = "destructive tool call denied"
+    ) -> "PermissionEngine":
+        """Deny any tool call whose :class:`ToolSpec` reports ``is_destructive(args)``."""
+
+        def _matches(call: ToolCall) -> bool:
+            spec = getattr(tools, "_tools", {}).get(call.tool)
+            return bool(spec is not None and spec.is_destructive(call.args))
+
+        self.rules.append(
+            PermissionRule(
+                tool="*",
+                decision=PermissionDecision.DENY,
+                call_matcher=_matches,
+                reason=reason,
+            )
+        )
+        return self
+
+    def ask_destructive(
+        self, tools: Any, *, reason: str = "destructive tool call requires approval"
+    ) -> "PermissionEngine":
+        """Require approval for any tool call whose :class:`ToolSpec` reports ``is_destructive(args)``."""
+
+        def _matches(call: ToolCall) -> bool:
+            spec = getattr(tools, "_tools", {}).get(call.tool)
+            return bool(spec is not None and spec.is_destructive(call.args))
+
+        self.rules.append(
+            PermissionRule(
+                tool="*",
+                decision=PermissionDecision.ASK,
+                call_matcher=_matches,
                 reason=reason,
             )
         )

@@ -39,7 +39,7 @@ def test_extract_usage_openai_dict() -> None:
         }
     }
     u = extract_usage(resp)
-    assert u == {"input": 800, "output": 200, "cache_read": 600, "cache_write": 0}
+    assert u == {"input": 200, "output": 200, "cache_read": 600, "cache_write": 0}
 
 
 def test_extract_usage_none_safe() -> None:

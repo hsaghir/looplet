@@ -18,7 +18,7 @@ import asyncio
 import queue
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
@@ -599,7 +599,8 @@ class StreamingToolExecutor:
     - Non-concurrent-safe tools wait for active work and execute exclusively.
     - Results are buffered and returned in exact submission order by
       :meth:`results`.
-    - :meth:`discard` abandons pending/in-progress tools on streaming fallback.
+        - :meth:`discard` cancels pending work and signals running tools.
+            :meth:`results` waits for started workers to finish.
     """
 
     def __init__(
@@ -632,8 +633,7 @@ class StreamingToolExecutor:
         """Submit a tool call to the streaming execution queue."""
         with self._lock:
             effective_ctx = ctx if ctx is not None else self._default_ctx
-            if self._cancel_on_sibling_error:
-                effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
+            effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
             spec = self._tools._tools.get(call.tool)
             is_safe = spec.is_concurrent_safe(call.args) if spec is not None else False
             item = _TrackedToolItem(
@@ -730,7 +730,14 @@ class StreamingToolExecutor:
                     raise TimeoutError("StreamingToolExecutor timed out waiting for tool results")
                 self._cond.wait(timeout=remaining)
             out = [item.result for item in self._items if item.result is not None]
-        self._pool.shutdown(wait=False)
+        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
+        _, pending = wait(
+            (item.future for item in self._items if item.future is not None),
+            timeout=remaining,
+        )
+        if pending:
+            raise TimeoutError("StreamingToolExecutor timed out waiting for tool results")
+        self._pool.shutdown(wait=True)
         return out
 
 
@@ -765,8 +772,7 @@ class AsyncStreamingToolExecutor:
     def submit(self, call: ToolCall, *, ctx: ToolContext | None = None) -> None:
         """Submit a tool call to the async streaming execution queue."""
         effective_ctx = ctx if ctx is not None else self._default_ctx
-        if self._cancel_on_sibling_error:
-            effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
+        effective_ctx = _bind_sibling_token(effective_ctx, self._sibling_token)
         spec = self._tools._tools.get(call.tool)
         is_safe = spec.is_concurrent_safe(call.args) if spec is not None else False
         item = _TrackedToolItem(
@@ -859,4 +865,8 @@ class AsyncStreamingToolExecutor:
     async def results(self) -> list[ToolResult]:
         """Await all submitted tools and return results in submission order."""
         await self._done_event.wait()
+        await asyncio.gather(
+            *(item.task for item in self._items if item.task is not None),
+            return_exceptions=True,
+        )
         return [item.result for item in self._items if item.result is not None]

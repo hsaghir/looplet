@@ -367,7 +367,9 @@ class EvalReport:
         integrity_failures = list(integrity_failures or [])
         if grader_manifest is None:
             manifests = [record.context.metadata.get("eval_grader_manifest") for record in records]
-            grader_manifest = manifests[0] if manifests and isinstance(manifests[0], list) else []
+            grader_manifest = (
+                deepcopy(manifests[0]) if manifests and isinstance(manifests[0], list) else []
+            )
             if not grader_manifest or any(item != grader_manifest for item in manifests):
                 integrity_failures.append("Missing or inconsistent recorded grader inventory")
         else:

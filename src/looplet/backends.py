@@ -693,6 +693,7 @@ class OpenAIBackend(_ConversationBackend):
     """
 
     _provider = "openai"
+    request_policy = BackendRequestPolicy(manages_retries=True, supports_single_model_request=True)
 
     def __init__(
         self,
@@ -910,7 +911,10 @@ class OpenAIStreamingBackend(OpenAIBackend):
         on_chunk: Callable[[str, int], None] | None = None,
         on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Stream an OpenAI tool-calling turn, emitting text chunks and completed tool blocks live."""
+        """Stream text chunks and completed native calls.
+
+        Callbacks include each call's index after the provider completion marker.
+        """
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -932,9 +936,14 @@ class OpenAIStreamingBackend(OpenAIBackend):
 
         _begin_request(self, kwargs)
         stream_resp = self._request_client().chat.completions.create(**kwargs)
-        blocks, stop_reason, last_chunk = _consume_openai_tool_stream(
-            stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
-        )
+        try:
+            blocks, stop_reason, last_chunk = _consume_openai_tool_stream(
+                stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
+            )
+        finally:
+            close = getattr(stream_resp, "close", None)
+            if close is not None:
+                close()
         if last_chunk is not None:
             _capture_response(self, last_chunk)
         if stop_reason is not None:
@@ -1032,14 +1041,6 @@ def _consume_openai_tool_stream(
             idx = getattr(tc_delta, "index", None)
             if not isinstance(idx, int):
                 idx = 0
-            # Any prior tool index < idx is now complete and can be emitted immediately
-            for prev_idx in sorted(tool_entries):
-                if prev_idx < idx and prev_idx not in emitted_indices:
-                    emitted_indices.add(prev_idx)
-                    block = _finalize_streamed_tool_entry(tool_entries[prev_idx])
-                    ordered_tool_blocks.append(block)
-                    if on_tool_call is not None:
-                        on_tool_call(block)
             entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
             tc_id = getattr(tc_delta, "id", None)
             if isinstance(tc_id, str) and tc_id:
@@ -1053,13 +1054,22 @@ def _consume_openai_tool_stream(
                 if isinstance(fn_args, str) and fn_args:
                     entry["arg_parts"].append(fn_args)
 
+        if fr == "tool_calls":
+            for idx in sorted(tool_entries):
+                if idx not in emitted_indices:
+                    emitted_indices.add(idx)
+                    block = _finalize_streamed_tool_entry(tool_entries[idx])
+                    ordered_tool_blocks.append(block)
+                    if on_tool_call is not None:
+                        on_tool_call({**block, "index": idx})
+
     for idx in sorted(tool_entries):
         if idx not in emitted_indices:
             emitted_indices.add(idx)
             block = _finalize_streamed_tool_entry(tool_entries[idx])
             ordered_tool_blocks.append(block)
             if on_tool_call is not None:
-                on_tool_call(block)
+                on_tool_call({**block, "index": idx})
 
     blocks: list[dict[str, Any]] = []
     full_text = "".join(text_parts)
@@ -1106,13 +1116,6 @@ async def _consume_openai_tool_stream_async(
             idx = getattr(tc_delta, "index", None)
             if not isinstance(idx, int):
                 idx = 0
-            for prev_idx in sorted(tool_entries):
-                if prev_idx < idx and prev_idx not in emitted_indices:
-                    emitted_indices.add(prev_idx)
-                    block = _finalize_streamed_tool_entry(tool_entries[prev_idx])
-                    ordered_tool_blocks.append(block)
-                    if on_tool_call is not None:
-                        on_tool_call(block)
             entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
             tc_id = getattr(tc_delta, "id", None)
             if isinstance(tc_id, str) and tc_id:
@@ -1126,13 +1129,22 @@ async def _consume_openai_tool_stream_async(
                 if isinstance(fn_args, str) and fn_args:
                     entry["arg_parts"].append(fn_args)
 
+        if fr == "tool_calls":
+            for idx in sorted(tool_entries):
+                if idx not in emitted_indices:
+                    emitted_indices.add(idx)
+                    block = _finalize_streamed_tool_entry(tool_entries[idx])
+                    ordered_tool_blocks.append(block)
+                    if on_tool_call is not None:
+                        on_tool_call({**block, "index": idx})
+
     for idx in sorted(tool_entries):
         if idx not in emitted_indices:
             emitted_indices.add(idx)
             block = _finalize_streamed_tool_entry(tool_entries[idx])
             ordered_tool_blocks.append(block)
             if on_tool_call is not None:
-                on_tool_call(block)
+                on_tool_call({**block, "index": idx})
 
     blocks: list[dict[str, Any]] = []
     full_text = "".join(text_parts)
@@ -1519,7 +1531,10 @@ class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
         on_chunk: Callable[[str, int], None] | None = None,
         on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Stream an async OpenAI tool-calling turn, emitting text chunks and completed tool blocks live."""
+        """Stream text chunks and completed native calls asynchronously.
+
+        Callbacks include each call's index after the provider completion marker.
+        """
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -1541,9 +1556,14 @@ class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
 
         _begin_request(self, kwargs)
         stream_resp = await self._request_client().chat.completions.create(**kwargs)
-        blocks, stop_reason, last_chunk = await _consume_openai_tool_stream_async(
-            stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
-        )
+        try:
+            blocks, stop_reason, last_chunk = await _consume_openai_tool_stream_async(
+                stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
+            )
+        finally:
+            close = getattr(stream_resp, "aclose", None) or getattr(stream_resp, "close", None)
+            if close is not None:
+                await close()
         if last_chunk is not None:
             _capture_response(self, last_chunk)
         if stop_reason is not None:
@@ -1960,6 +1980,14 @@ class OpenAIResponsesBackend(_ConversationBackend):
             effort = kwargs.pop("reasoning_effort")
             kwargs["reasoning"] = {"effort": effort}
 
+    def _recover_lost_previous_response(self, kwargs: dict[str, Any], error: BaseException) -> bool:
+        """Clear expired state and replay only outside single-request admission."""
+        if "previous_response_id" not in kwargs or not _is_lost_previous_response_error(error):
+            return False
+        self._previous_response_id = None
+        self._synced_item_count = 0
+        return not single_model_request_active()
+
     def generate(
         self,
         prompt: str,
@@ -1981,9 +2009,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
         try:
             response = self._request_client().responses.create(**kwargs)
         except Exception as exc:
-            if "previous_response_id" in kwargs and _is_lost_previous_response_error(exc):
-                self._previous_response_id = None
-                self._synced_item_count = 0
+            if self._recover_lost_previous_response(kwargs, exc):
                 kwargs, total_items = self._build_responses_kwargs(
                     prompt,
                     tools=None,
@@ -2027,9 +2053,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
         try:
             response = self._request_client().responses.create(**kwargs)
         except Exception as exc:
-            if "previous_response_id" in kwargs and _is_lost_previous_response_error(exc):
-                self._previous_response_id = None
-                self._synced_item_count = 0
+            if self._recover_lost_previous_response(kwargs, exc):
                 kwargs, total_items = self._build_responses_kwargs(
                     prompt,
                     tools=tools,
@@ -2109,9 +2133,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         try:
             response = await self._request_client().responses.create(**kwargs)
         except Exception as exc:
-            if "previous_response_id" in kwargs and _is_lost_previous_response_error(exc):
-                self._previous_response_id = None
-                self._synced_item_count = 0
+            if self._recover_lost_previous_response(kwargs, exc):
                 kwargs, total_items = self._build_responses_kwargs(
                     prompt,
                     tools=None,
@@ -2155,9 +2177,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         try:
             response = await self._request_client().responses.create(**kwargs)
         except Exception as exc:
-            if "previous_response_id" in kwargs and _is_lost_previous_response_error(exc):
-                self._previous_response_id = None
-                self._synced_item_count = 0
+            if self._recover_lost_previous_response(kwargs, exc):
                 kwargs, total_items = self._build_responses_kwargs(
                     prompt,
                     tools=tools,

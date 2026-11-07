@@ -25,13 +25,28 @@ __all__ = ["run_subprocess_tool", "terminate_process_tree"]
 
 
 def terminate_process_tree(proc: subprocess.Popen[Any], *, wait_timeout: float = 0.5) -> None:
-    """Terminate ``proc`` and its entire process group."""
+    """Terminate ``proc`` and remaining members of its owned process group."""
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            proc.wait(timeout=wait_timeout)
+            return
+        try:
+            proc.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=wait_timeout)
+        return
+
     if proc.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        elif os.name == "nt":
+        if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 check=False,
@@ -46,10 +61,7 @@ def terminate_process_tree(proc: subprocess.Popen[Any], *, wait_timeout: float =
         pass
 
     try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
+        proc.kill()
         proc.wait(timeout=wait_timeout)
     except (OSError, subprocess.SubprocessError):
         pass
@@ -124,11 +136,8 @@ def run_subprocess_tool(
     deadline = (time.monotonic() + timeout_s) if timeout_s > 0 else None
     timed_out = False
     try:
-        while proc.poll() is None:
+        while proc.poll() is None or out_thread.is_alive() or err_thread.is_alive():
             if token is not None and token.is_cancelled:
-                terminate_process_tree(proc, wait_timeout=0.2)
-                out_thread.join(timeout=0.2)
-                err_thread.join(timeout=0.2)
                 raise ToolCancelledError("Tool execution cancelled")
             if deadline is not None and time.monotonic() >= deadline:
                 timed_out = True
@@ -136,8 +145,9 @@ def run_subprocess_tool(
                 break
             time.sleep(0.01)
     except BaseException:
-        if proc.poll() is None:
-            terminate_process_tree(proc, wait_timeout=0.2)
+        terminate_process_tree(proc, wait_timeout=0.2)
+        out_thread.join(timeout=0.5)
+        err_thread.join(timeout=0.5)
         raise
 
     out_thread.join(timeout=0.5)

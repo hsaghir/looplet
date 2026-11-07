@@ -471,7 +471,7 @@ async def async_llm_call(
     should_continue: Callable[[], bool] | None = None,
     on_chunk: Callable[[str, int], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
-    on_stream_reset: Callable[[], None] | None = None,
+    on_stream_reset: Callable[[], bool | None] | None = None,
 ) -> LLMResult:
     """Async version of :func:`looplet.scaffolding.llm_call_with_retry`.
 
@@ -574,8 +574,8 @@ async def async_llm_call(
                 recovery.observe_usage(llm, result)
                 stop = getattr(llm, "last_stop_reason", None)
                 while stop == "max_tokens":
-                    if on_stream_reset is not None:
-                        on_stream_reset()
+                    if on_stream_reset is not None and on_stream_reset() is False:
+                        break
                     if should_continue is not None and not should_continue():
                         break
                     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -685,7 +685,11 @@ async def async_llm_call(
                     recovery.model_calls.pop()
                     return recovery.finish(LLMResult(None, e))
                 return LLMResult(None, e, calls=0)
-            if recovery is not None and (_is_terminal_llm_error(e) or attempt >= attempt_limit - 1):
+            if recovery is not None and (
+                _is_terminal_llm_error(e)
+                or attempt >= attempt_limit - 1
+                or (on_stream_reset is not None and on_stream_reset() is False)
+            ):
                 return recovery.finish(
                     LLMResult(None, e, native_requested=True, native_attempted=True)
                 )
@@ -1486,6 +1490,9 @@ async def _async_composable_loop_impl(
                 nonlocal _stream_submitted_count
                 if _stream_executor is None:
                     return
+                index = block.get("index")
+                if type(index) is not int or index != _stream_submitted_count:
+                    return
                 if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
                     return
                 name = block.get("name", "")
@@ -1518,16 +1525,8 @@ async def _async_composable_loop_impl(
                 _stream_submitted_count += 1
                 _stream_executor.submit(tc, ctx=t_ctx)
 
-            def _on_stream_reset() -> None:
-                nonlocal _stream_executor, _stream_submitted_count
-                if _stream_executor is not None:
-                    _stream_executor.discard()
-                    from looplet.streaming import AsyncStreamingToolExecutor  # noqa: PLC0415
-
-                    _stream_executor = AsyncStreamingToolExecutor(
-                        tools, max_concurrent=max(1, config.max_parallel_calls)
-                    )
-                    _stream_submitted_count = 0
+            def _on_stream_reset() -> bool:
+                return _stream_submitted_count == 0
 
             try:
                 llm_result = await async_llm_call(
@@ -1547,6 +1546,15 @@ async def _async_composable_loop_impl(
                     on_tool_call=_on_stream_tool_call if _stream_executor is not None else None,
                     on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
                 )
+            except BaseException:
+                if _stream_executor is not None:
+                    _stream_executor.discard()
+                    await _stream_executor.results()
+                raise
+            else:
+                if _stream_executor is not None and not llm_result.ok:
+                    _stream_executor.discard()
+                    await _stream_executor.results()
             finally:
                 if _llm_span is not None and config.tracer is not None:
                     config.tracer.end_span(_llm_span)

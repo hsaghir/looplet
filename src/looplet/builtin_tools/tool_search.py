@@ -100,7 +100,7 @@ class DeferredToolViewHook:
         resources["deferred_tool_view"] = self
         tools.set_resources(resources)
         if "search_tools" not in tools._tools:
-            tools.register(make_tool_search_tool(self))
+            tools.register(SPEC)
 
     @property
     def active_tool_names(self) -> list[str]:

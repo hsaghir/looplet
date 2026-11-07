@@ -1741,19 +1741,14 @@ class _RecordedToolReplayHook:
     """Intercept selected tool calls during replay and return their recorded ToolResult."""
 
     def __init__(self, recorded_steps: list[dict[str, Any]], stub_tools: set[str] | bool) -> None:
-        self._steps = list(recorded_steps)
         self._stub_tools = stub_tools
-        self._by_call_id: dict[str, dict[str, Any]] = {}
         self._by_tool_queue: dict[str, list[dict[str, Any]]] = {}
-        for step in self._steps:
+        for step in recorded_steps:
             tc = step.get("tool_call") or {}
             tr = step.get("tool_result") or {}
             tname = tc.get("tool") or tr.get("tool")
-            cid = tc.get("call_id") or tr.get("call_id")
-            if isinstance(cid, str) and cid:
-                self._by_call_id[cid] = tr
             if isinstance(tname, str) and tname:
-                self._by_tool_queue.setdefault(tname, []).append(tr)
+                self._by_tool_queue.setdefault(tname, []).append(step)
 
     def _should_stub(self, tool_name: str) -> bool:
         if self._stub_tools is True:
@@ -1774,14 +1769,21 @@ class _RecordedToolReplayHook:
         if not self._should_stub(tool_call.tool):
             return None
         tr_dict = None
-        if tool_call.call_id and tool_call.call_id in self._by_call_id:
-            tr_dict = self._by_call_id[tool_call.call_id]
-        else:
-            queue = self._by_tool_queue.get(tool_call.tool)
-            if queue:
-                tr_dict = queue.pop(0)
+        queue = self._by_tool_queue.get(tool_call.tool)
+        if queue:
+            selected_index = 0
+            if tool_call.call_id:
+                for index, recorded_step in enumerate(queue):
+                    recorded_call = recorded_step.get("tool_call") or {}
+                    recorded_result = recorded_step.get("tool_result") or {}
+                    if tool_call.call_id == (
+                        recorded_call.get("call_id") or recorded_result.get("call_id")
+                    ):
+                        selected_index = index
+                        break
+            tr_dict = queue.pop(selected_index).get("tool_result")
         if tr_dict is None:
-            return None
+            raise ValueError(f"No recorded result for stubbed tool {tool_call.tool!r}")
         return ToolResult(
             tool=tool_call.tool,
             args_summary=str(tr_dict.get("args", "")),
@@ -1837,6 +1839,9 @@ def replay_loop(
             and steps. Flush it after closing the replay.
         max_steps: Optional positive step limit. Overrides the recorded
             budget or a supplied configuration without mutating that configuration.
+        stub_tools: Tool names whose saved results replace live execution,
+            or ``True`` for all tools. A selected call with no recorded result
+            raises ``ValueError`` rather than executing live.
 
     Yields:
         :class:`Step` objects from the replay.
@@ -1848,7 +1853,8 @@ def replay_loop(
 
     Raises:
         FileNotFoundError: ``trace_dir`` has no manifest or response files.
-        ValueError: Saved replay defaults have an invalid shape.
+        ValueError: Saved replay defaults have an invalid shape or a selected
+            tool stub has no recorded result.
 
     Example::
 

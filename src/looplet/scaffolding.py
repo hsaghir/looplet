@@ -432,7 +432,7 @@ def llm_call_with_retry(
     should_continue: Callable[[], bool] | None = None,
     on_chunk: Callable[[str, int], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
-    on_stream_reset: Callable[[], None] | None = None,
+    on_stream_reset: Callable[[], bool | None] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -449,6 +449,9 @@ def llm_call_with_retry(
     When ``tools`` is provided, native tool calling is required by default.
     Set ``NativeToolPolicy(enabled=False)`` to explicitly use ``generate`` and
     JSON-text tool calls on a backend without native tool support.
+
+    Returning ``False`` from ``on_stream_reset`` vetoes native recovery, so
+    callers can prevent repeating already-started tool effects.
 
     When ``cancel_token`` is provided:
       * If already cancelled before the call, returns an error result
@@ -520,8 +523,8 @@ def llm_call_with_retry(
                 recovery.observe_usage(llm, blocks)
                 stop = getattr(llm, "last_stop_reason", None)
                 while stop == "max_tokens":
-                    if on_stream_reset is not None:
-                        on_stream_reset()
+                    if on_stream_reset is not None and on_stream_reset() is False:
+                        break
                     if should_continue is not None and not should_continue():
                         break
                     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -636,7 +639,11 @@ def llm_call_with_retry(
                     recovery.model_calls.pop()
                     return recovery.finish(LLMResult(None, e))
                 return LLMResult(None, e, calls=0)
-            if recovery is not None and (_is_terminal_llm_error(e) or attempt >= attempt_limit - 1):
+            if recovery is not None and (
+                _is_terminal_llm_error(e)
+                or attempt >= attempt_limit - 1
+                or (on_stream_reset is not None and on_stream_reset() is False)
+            ):
                 return recovery.finish(
                     LLMResult(None, e, native_requested=True, native_attempted=True)
                 )

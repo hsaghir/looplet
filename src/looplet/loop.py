@@ -713,7 +713,9 @@ class LoopConfig:
 
     streaming_tool_execution: bool = False
     """If True, start executing concurrent-safe native tool calls via
-    StreamingToolExecutor as their blocks finish streaming from the LLM."""
+    StreamingToolExecutor as their blocks finish streaming from the LLM.
+    Provider recovery stops once early tool work has been submitted.
+    Hooks and checkpointing disable early execution."""
 
     reactive_recovery: bool = True
     """If True, attempt multi-strategy recovery when a prompt exceeds
@@ -3461,6 +3463,9 @@ def _composable_loop_impl(
                 nonlocal _stream_submitted_count
                 if _stream_executor is None:
                     return
+                index = block.get("index")
+                if type(index) is not int or index != _stream_submitted_count:
+                    return
                 if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
                     return
                 name = block.get("name", "")
@@ -3492,34 +3497,36 @@ def _composable_loop_impl(
                 _stream_submitted_count += 1
                 _stream_executor.submit(tc, ctx=t_ctx)
 
-            def _on_stream_reset() -> None:
-                nonlocal _stream_executor, _stream_submitted_count
+            def _on_stream_reset() -> bool:
+                return _stream_submitted_count == 0
+
+            try:
+                llm_result = llm_call_with_retry(
+                    effective_llm,
+                    prompt,
+                    max_tokens=config.max_tokens,
+                    system_prompt=config.system_prompt,
+                    temperature=config.temperature,
+                    tools=_tool_schemas,
+                    native_policy=native_policy,
+                    cancel_token=config.cancel_token,
+                    max_continuations=config.max_turn_continuations,
+                    cache_breakpoints=_cache_bps,
+                    generate_kwargs=config.generate_kwargs or None,
+                    should_continue=lambda: not _deadline_expired(loop_ctx),
+                    on_chunk=_emit_chunk if _chunk_emitters else None,
+                    on_tool_call=_on_stream_tool_call if _stream_executor is not None else None,
+                    on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
+                )
+            except BaseException:
                 if _stream_executor is not None:
                     _stream_executor.discard()
-                    from looplet.streaming import StreamingToolExecutor  # noqa: PLC0415
-
-                    _stream_executor = StreamingToolExecutor(
-                        tools, max_workers=max(1, config.max_parallel_calls)
-                    )
-                    _stream_submitted_count = 0
-
-            llm_result = llm_call_with_retry(
-                effective_llm,
-                prompt,
-                max_tokens=config.max_tokens,
-                system_prompt=config.system_prompt,
-                temperature=config.temperature,
-                tools=_tool_schemas,
-                native_policy=native_policy,
-                cancel_token=config.cancel_token,
-                max_continuations=config.max_turn_continuations,
-                cache_breakpoints=_cache_bps,
-                generate_kwargs=config.generate_kwargs or None,
-                should_continue=lambda: not _deadline_expired(loop_ctx),
-                on_chunk=_emit_chunk if _chunk_emitters else None,
-                on_tool_call=_on_stream_tool_call if _stream_executor is not None else None,
-                on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
-            )
+                    _stream_executor.results()
+                raise
+            else:
+                if _stream_executor is not None and not llm_result.ok:
+                    _stream_executor.discard()
+                    _stream_executor.results()
             loop_ctx.native_tool_stats.record(llm_result)
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations

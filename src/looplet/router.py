@@ -18,9 +18,11 @@ Typical usage::
 
 from __future__ import annotations
 
+import contextvars
+import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, AsyncIterator, Iterator, Protocol, cast, runtime_checkable
 
 from looplet.backend_contract import (
     FORWARDED_CAPABILITIES,
@@ -143,6 +145,12 @@ class _FallbackLLM:
             )
 
     def __getattr__(self, name: str) -> Any:
+        if name == "stream":
+            if hasattr(self._primary, name) and hasattr(self._fallback, name):
+                return self._stream_impl
+            raise AttributeError(name)
+        if name == "stream_in_loop":
+            return getattr(self._primary, name, True) and getattr(self._fallback, name, True)
         backend = self._primary if name == "request_budgets" else self._active
         return backend_attribute(backend, name)
 
@@ -160,7 +168,7 @@ class _FallbackLLM:
         system_prompt: str = "",
         temperature: float | None = None,
         **options: Any,
-    ) -> str:
+    ) -> Any:
         options = {
             **options,
             "max_tokens": max_tokens,
@@ -170,7 +178,10 @@ class _FallbackLLM:
         self._check_admission()
         self._active = self._primary
         try:
-            return invoke_backend(self._primary.generate, prompt, options)
+            response = invoke_backend(self._primary.generate, prompt, options)
+            if inspect.isawaitable(response):
+                return self._await_primary(response, "generate", prompt, options)
+            return response
         except Exception as exc:
             if single_model_request_active():
                 raise
@@ -199,7 +210,10 @@ class _FallbackLLM:
         self._active = self._primary
         try:
             if hasattr(self._primary, "generate_with_tools"):
-                return invoke_backend(self._primary.generate_with_tools, prompt, options)  # pyright: ignore[reportAttributeAccessIssue]
+                response = invoke_backend(self._primary.generate_with_tools, prompt, options)  # pyright: ignore[reportAttributeAccessIssue]
+                if inspect.isawaitable(response):
+                    return self._await_primary(response, "generate_with_tools", prompt, options)
+                return response
         except Exception as exc:
             if single_model_request_active():
                 raise
@@ -210,6 +224,179 @@ class _FallbackLLM:
             self._active = self._fallback
             return invoke_backend(self._fallback.generate_with_tools, prompt, options)  # pyright: ignore[reportAttributeAccessIssue]
         raise AttributeError("Neither primary nor fallback supports generate_with_tools")
+
+    async def _await_primary(
+        self, response: Any, method_name: str, prompt: str, options: dict[str, Any]
+    ) -> Any:
+        try:
+            return await response
+        except Exception as exc:
+            if single_model_request_active():
+                raise
+            logger.warning("Primary LLM %s failed (%s); switching to fallback", method_name, exc)
+            self._active = self._fallback
+            method = getattr(self._fallback, method_name)
+            if inspect.iscoroutinefunction(method):
+                pending = invoke_backend(method, prompt, options)
+            else:
+                from looplet.checkpoint import _run_persistence
+
+                pending = await _run_persistence(invoke_backend, method, prompt, options)
+            return await pending if inspect.isawaitable(pending) else pending
+
+    def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Any:
+        self._check_admission()
+        options = {
+            **options,
+            "max_tokens": max_tokens,
+            "system_prompt": system_prompt,
+            "temperature": temperature,
+        }
+        self._active = self._primary
+        return _FallbackStream(self, prompt, options)
+
+    def _stream_primary(self, prompt: str, options: dict[str, Any]) -> Iterator[str]:
+        delivered = False
+        stream = None
+        try:
+            try:
+                stream = invoke_backend(getattr(self._primary, "stream"), prompt, options)
+                for chunk in stream:
+                    delivered = True
+                    yield chunk
+            except Exception:
+                if delivered or single_model_request_active():
+                    raise
+                primary_stream = stream
+                stream = None
+                close = getattr(primary_stream, "close", None)
+                if close is not None:
+                    close()
+                self._active = self._fallback
+                stream = invoke_backend(getattr(self._fallback, "stream"), prompt, options)
+                for chunk in stream:
+                    yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+
+    async def _async_stream_chunks(
+        self, backend: Any, prompt: str, options: dict[str, Any]
+    ) -> AsyncGenerator[str, None]:
+        from looplet.checkpoint import _run_persistence
+
+        context = contextvars.copy_context()
+        stream: Any = None
+
+        def create_stream() -> None:
+            nonlocal stream
+            stream = invoke_backend(getattr(backend, "stream"), prompt, options)
+
+        try:
+            await _run_persistence(context.run, create_stream)
+            if hasattr(stream, "__aiter__"):
+                async for chunk in stream:
+                    yield chunk
+            else:
+                iterator = iter(stream)
+                end = object()
+                while True:
+                    chunk = await _run_persistence(context.run, next, iterator, end)
+                    if chunk is end:
+                        break
+                    yield chunk
+        finally:
+            if hasattr(stream, "__aiter__"):
+                await self._close_async_stream(stream)
+            else:
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    await _run_persistence(context.run, close)
+
+    async def _close_async_stream(self, stream: Any) -> None:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
+        else:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                if inspect.iscoroutinefunction(close):
+                    await close()
+                else:
+                    from looplet.checkpoint import _run_persistence
+
+                    await _run_persistence(close)
+
+    async def _async_stream_primary(
+        self, prompt: str, options: dict[str, Any]
+    ) -> AsyncIterator[str]:
+        delivered = False
+        chunks = self._async_stream_chunks(self._primary, prompt, options)
+        try:
+            try:
+                async for chunk in chunks:
+                    delivered = True
+                    yield chunk
+            except Exception:
+                if delivered or single_model_request_active():
+                    raise
+                await chunks.aclose()
+                self._active = self._fallback
+                chunks = self._async_stream_chunks(self._fallback, prompt, options)
+                async for chunk in chunks:
+                    yield chunk
+        finally:
+            await chunks.aclose()
+
+
+class _FallbackStream:
+    def __init__(self, owner: _FallbackLLM, prompt: str, options: dict[str, Any]) -> None:
+        self._owner = owner
+        self._prompt = prompt
+        self._options = options
+        self._iterator: Iterator[str] | AsyncIterator[str] | None = None
+
+    def __iter__(self) -> Iterator[str]:
+        return self
+
+    def __next__(self) -> str:
+        if self._iterator is None:
+            self._iterator = self._owner._stream_primary(self._prompt, self._options)
+        return next(cast(Iterator[str], self._iterator))
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self
+
+    async def __anext__(self) -> str:
+        if self._iterator is None:
+            self._iterator = self._owner._async_stream_primary(self._prompt, self._options)
+        return await anext(cast(AsyncIterator[str], self._iterator))
+
+    def close(self) -> None:
+        if self._iterator is None:
+            self._iterator = self._owner._stream_primary(self._prompt, self._options)
+        target = self._iterator
+        close = getattr(target, "close", None)
+        if close is not None:
+            if inspect.iscoroutinefunction(close):
+                raise TypeError("Use aclose for an async stream")
+            close()
+        elif hasattr(target, "aclose"):
+            raise TypeError("Use aclose for an async stream")
+
+    async def aclose(self) -> None:
+        if self._iterator is None:
+            self._iterator = self._owner._async_stream_primary(self._prompt, self._options)
+        await self._owner._close_async_stream(self._iterator)
 
 
 class FallbackRouter:
@@ -427,6 +614,28 @@ class RoutingLLMBackend:
         """Change the routing purpose for subsequent generate() calls."""
         self._purpose = purpose
 
+    def _stream_impl(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        **options: Any,
+    ) -> Any:
+        backend = self._router.select(self._purpose)
+        self._active = backend
+        return invoke_backend(
+            getattr(backend, "stream"),
+            prompt,
+            {
+                **options,
+                "max_tokens": max_tokens,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+            },
+        )
+
     def generate(
         self,
         prompt: str,
@@ -480,10 +689,14 @@ class RoutingLLMBackend:
         # ``hasattr(llm, "generate_with_tools")`` get a truthful answer
         # under a dynamic routing regime. Matches the gating pattern
         # used by ``_FallbackLLM`` and ``CostTracker``.
-        if name == "generate_with_tools":
+        if name in {"generate_with_tools", "stream"}:
             backend = self._router.select(self._purpose)
-            if hasattr(backend, "generate_with_tools"):
-                return self._generate_with_tools_impl
+            if hasattr(backend, name):
+                return (
+                    self._generate_with_tools_impl
+                    if name == "generate_with_tools"
+                    else self._stream_impl
+                )
             raise AttributeError(name)
         if name not in FORWARDED_CAPABILITIES:
             raise AttributeError(name)
@@ -493,6 +706,7 @@ class RoutingLLMBackend:
             in {
                 "request_policy",
                 "request_budgets",
+                "stream_in_loop",
                 "_looplet_manages_retries",
                 "_supports_single_model_request",
             }

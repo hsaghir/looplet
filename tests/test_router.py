@@ -294,6 +294,390 @@ def test_fallback_router_switches_to_fallback_on_error():
     assert result == "fallback response"
 
 
+@pytest.mark.parametrize("primary_async", [False, True])
+@pytest.mark.parametrize("fallback_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_fallback_router_recovers_sync_async_failure(primary_async, fallback_async, native):
+    import inspect
+    import threading
+
+    observed = []
+    owner_thread = threading.get_ident()
+    expected = [{"type": "text", "text": "fallback"}] if native else "fallback"
+
+    class Backend:
+        def __init__(self, name):
+            self.name = name
+            self.last_usage = {"total_tokens": 7 if name == "primary" else 9}
+
+        def generate(self, prompt, **kwargs):
+            observed.append(self.name)
+            self.options = kwargs
+            if self.name == "primary":
+                raise RuntimeError("primary failed")
+            if primary_async and not fallback_async:
+                assert threading.get_ident() != owner_thread
+            return expected
+
+        generate_with_tools = generate
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        generate_with_tools = generate
+
+    primary = (AsyncBackend if primary_async else Backend)("primary")
+    fallback = (AsyncBackend if fallback_async else Backend)("fallback")
+    wrapped = FallbackRouter(primary=primary, fallback=fallback).select("reasoning")
+    method = wrapped.generate_with_tools if native else wrapped.generate
+    pending = method("request", reasoning_effort="high", **({"tools": []} if native else {}))
+    response = await pending if inspect.isawaitable(pending) else pending
+
+    assert response == expected
+    assert observed == ["primary", "fallback"]
+    assert fallback.options["reasoning_effort"] == "high"
+    assert wrapped.last_usage == fallback.last_usage
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_fallback_router_async_admission_and_cancellation(native, cancelled):
+    import asyncio
+    import inspect
+
+    from looplet.subagent import SharedModelBudget
+
+    observed = []
+    failure = asyncio.CancelledError("cancelled") if cancelled else RuntimeError("primary failed")
+
+    class Primary:
+        async def generate(self, prompt, **kwargs):
+            observed.append("primary")
+            raise failure
+
+        generate_with_tools = generate
+
+    class Fallback:
+        async def generate(self, prompt, **kwargs):
+            observed.append("fallback")
+            return "fallback"
+
+        generate_with_tools = generate
+
+    routed = FallbackRouter(primary=Primary(), fallback=Fallback()).select("reasoning")
+    budget = SharedModelBudget(1)
+    wrapped = routed if cancelled else budget.wrap(routed)
+    method = wrapped.generate_with_tools if native else wrapped.generate
+    with pytest.raises(type(failure)) as caught:
+        pending = method("request", **({"tools": []} if native else {}))
+        if inspect.isawaitable(pending):
+            await pending
+
+    assert caught.value is failure
+    assert observed == ["primary"]
+    if not cancelled:
+        assert budget.remaining == 0
+
+
+@pytest.mark.parametrize("primary_async", [False, True])
+@pytest.mark.parametrize("fallback_async", [False, True])
+@pytest.mark.parametrize("route_fallback", [False, True])
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("admitted", [False, True])
+async def test_fallback_stream_switches_only_before_delivered_prefix(
+    primary_async, fallback_async, route_fallback, partial, admitted
+):
+    from contextlib import nullcontext
+
+    from looplet.backend_contract import single_model_request
+
+    observed = []
+    closed = []
+    delivered = []
+    failure = ConnectionError("primary stream failed")
+
+    class Backend:
+        def __init__(self, name):
+            self.name = name
+            self.last_usage = {"total_tokens": 7 if name == "primary" else 9}
+
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            observed.append(self.name)
+            try:
+                if self.name == "primary":
+                    if partial:
+                        yield "partial"
+                    raise failure
+                yield "fallback"
+            finally:
+                closed.append(self.name)
+
+    class AsyncBackend(Backend):
+        async def stream(self, prompt, **kwargs):
+            iterator = super().stream(prompt, **kwargs)
+            try:
+                for chunk in iterator:
+                    yield chunk
+            finally:
+                iterator.close()
+
+    primary = (AsyncBackend if primary_async else Backend)("primary")
+    fallback = (AsyncBackend if fallback_async else Backend)("fallback")
+    if route_fallback:
+        fallback = RoutingLLMBackend(
+            SimpleRouter({}, default_profile=ModelProfile("fallback", fallback))
+        )
+    wrapped = FallbackRouter(primary=primary, fallback=fallback).select("reasoning")
+
+    async def consume():
+        iterator = wrapped.stream("request")
+        if hasattr(iterator, "__aiter__"):
+            async for chunk in iterator:
+                delivered.append(chunk)
+        else:
+            delivered.extend(iterator)
+
+    with single_model_request() if admitted else nullcontext():
+        if partial or admitted:
+            with pytest.raises(ConnectionError) as caught:
+                await consume()
+            assert caught.value is failure
+        else:
+            await consume()
+
+    expected_chunks = ["partial"] if partial else ([] if admitted else ["fallback"])
+    assert delivered == expected_chunks
+    assert observed == (["primary"] if partial or admitted else ["primary", "fallback"])
+    assert closed == observed
+    if not partial and not admitted:
+        assert wrapped.last_usage == {"total_tokens": 9}
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+@pytest.mark.parametrize("fallback_async", [False, True])
+async def test_async_fallback_stream_factories_preserve_protocol_and_worker(
+    primary_failure, fallback_async
+):
+    from threading import get_ident
+
+    loop_thread = get_ident()
+    factories = []
+    sync_threads = []
+    closed = []
+
+    class Stream:
+        def __init__(self, name):
+            self.name = name
+            self.iterator = iter([name])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.iterator)
+
+        def close(self):
+            closed.append(self.name)
+
+    class Primary:
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            factories.append("primary")
+            sync_threads.append(get_ident())
+            if primary_failure:
+                raise RuntimeError("primary factory failed")
+            return Stream("primary")
+
+    class Fallback(Primary):
+        def stream(self, prompt, **kwargs):
+            factories.append("fallback")
+            sync_threads.append(get_ident())
+            return Stream("fallback")
+
+    class AsyncFallback(Fallback):
+        async def stream(self, prompt, **kwargs):
+            factories.append("fallback")
+            try:
+                yield "fallback"
+            finally:
+                closed.append("fallback")
+
+    fallback = AsyncFallback() if fallback_async else Fallback()
+    wrapped = FallbackRouter(primary=Primary(), fallback=fallback).select("reasoning")
+    assert [chunk async for chunk in wrapped.stream("request")] == [
+        "fallback" if primary_failure else "primary"
+    ]
+    assert factories == (["primary", "fallback"] if primary_failure else ["primary"])
+    assert closed == (["fallback"] if primary_failure else ["primary"])
+    assert sync_threads and all(thread != loop_thread for thread in sync_threads)
+
+
+@pytest.mark.parametrize("fallback_factory_failure", [False, True])
+def test_sync_fallback_stream_has_one_cleanup_owner(fallback_factory_failure):
+    factories = []
+    closed = []
+    primary_error = RuntimeError("primary stream failed")
+    fallback_error = RuntimeError("fallback factory failed")
+
+    class Stream:
+        def __init__(self, name):
+            self.name = name
+            self.iterator = iter([name])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.name == "primary":
+                raise primary_error
+            return next(self.iterator)
+
+        def close(self):
+            closed.append(self.name)
+
+    class Backend:
+        def __init__(self, name):
+            self.name = name
+
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            factories.append(self.name)
+            if self.name == "fallback" and fallback_factory_failure:
+                raise fallback_error
+            return Stream(self.name)
+
+    wrapped = FallbackRouter(primary=Backend("primary"), fallback=Backend("fallback")).select(
+        "reasoning"
+    )
+    iterator = wrapped.stream("request")
+    if fallback_factory_failure:
+        with pytest.raises(RuntimeError) as caught:
+            next(iterator)
+        assert caught.value is fallback_error
+    else:
+        assert next(iterator) == "fallback"
+        iterator.close()
+    assert factories == ["primary", "fallback"]
+    assert closed == (["primary"] if fallback_factory_failure else ["primary", "fallback"])
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_fallback_stream_close_before_first_read(asynchronous):
+    factories = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            factories.append(prompt)
+            yield "unused"
+
+    backend = Backend()
+    wrapped = FallbackRouter(primary=backend, fallback=backend).select("reasoning")
+    iterator = wrapped.stream("request")
+    if asynchronous:
+        await iterator.aclose()
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+    else:
+        iterator.close()
+        with pytest.raises(StopIteration):
+            next(iterator)
+    assert factories == []
+
+
+async def test_fallback_stream_factory_cancellation_closes_created_source():
+    import asyncio
+    from threading import Event
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    released = Event()
+    factories = []
+    closed = []
+
+    class Stream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise AssertionError("Cancelled factory must not advance its stream")
+
+        def close(self):
+            closed.append(True)
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            factories.append(prompt)
+            stream = Stream()
+            loop.call_soon_threadsafe(started.set)
+            assert released.wait(5)
+            return stream
+
+    backend = Backend()
+    wrapped = FallbackRouter(primary=backend, fallback=backend).select("reasoning")
+    iterator = wrapped.stream("request")
+    pending = asyncio.create_task(anext(iterator))
+    try:
+        await started.wait()
+        pending.cancel("cancel factory")
+    finally:
+        released.set()
+    with pytest.raises(asyncio.CancelledError, match="cancel factory"):
+        await pending
+    assert factories == ["request"] and closed == [True]
+
+
+@pytest.mark.parametrize("termination", ["complete", "close"])
+async def test_async_fallback_reads_preserve_sync_generator_context(termination):
+    from contextvars import ContextVar
+
+    from looplet.provenance import RecordingLLMBackend
+
+    marker = ContextVar("stream_marker", default="host")
+    closed = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return "unused"
+
+        def stream(self, prompt, **kwargs):
+            token = marker.set("stream")
+            try:
+                yield "partial"
+                assert marker.get() == "stream"
+                yield "rest"
+            finally:
+                marker.reset(token)
+                closed.append(marker.get())
+
+    recorder = RecordingLLMBackend(Backend())
+    wrapped = FallbackRouter(primary=recorder, fallback=Backend()).select("reasoning")
+    iterator = wrapped.stream("request")
+    assert await anext(iterator) == "partial"
+    assert marker.get() == "host"
+    if termination == "close":
+        await iterator.aclose()
+    else:
+        assert [chunk async for chunk in iterator] == ["rest"]
+
+    assert marker.get() == "host" and closed == ["host"]
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0].response == ("partial" if termination == "close" else "partialrest")
+
+
 @pytest.mark.parametrize("native", [False, True])
 def test_fallback_router_honors_single_request_admission(native):
     from looplet.backend_contract import backend_request_policy

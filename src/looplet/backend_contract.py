@@ -172,6 +172,7 @@ FORWARDED_CAPABILITIES = frozenset(
         "request_admission",
         "supported_request_options",
         "request_configuration",
+        "stream_in_loop",
         "close",
         "_client",
         "_state_path",
@@ -199,7 +200,7 @@ class BackendWrapper:
 
     def __getattr__(self, name: str) -> Any:
         backend = object.__getattribute__(self, "backend")
-        if name in {"generate", "generate_with_tools"}:
+        if name in {"generate", "generate_with_tools", "stream"}:
             return getattr(backend, name)
         return backend_attribute(backend, name)
 

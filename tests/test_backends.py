@@ -103,6 +103,104 @@ def test_public_backend_sampling_defaults_are_unset(backend_type):
             assert inspect.signature(method).parameters["temperature"].default is None
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("termination", ["complete", "close", "error", "cancel"])
+async def test_openai_text_stream_closes_owned_sdk_response(asynchronous, termination):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    httpx = pytest.importorskip("httpx")
+    sdk = pytest.importorskip("openai")
+    requests = []
+    provider_streams = []
+    chunks = [
+        {
+            "id": "chatcmpl-offline",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "fixture",
+            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": stop}],
+        }
+        for text, stop in [("partial", None), ("rest", "stop")]
+    ]
+    payload = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+    payload += "data: [DONE]\n\n"
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=httpx.ByteStream(payload.encode()),
+        )
+
+    transport = httpx.MockTransport(handle)
+    http_client = (
+        httpx.AsyncClient(transport=transport, trust_env=False)
+        if asynchronous
+        else httpx.Client(transport=transport, trust_env=False)
+    )
+    client_type = sdk.AsyncOpenAI if asynchronous else sdk.OpenAI
+    client = client_type(api_key="offline-fixture", max_retries=0, http_client=http_client)
+    if asynchronous:
+
+        async def create(**kwargs):
+            provider_stream = await client.chat.completions.create(**kwargs)
+            provider_streams.append(provider_stream)
+            return provider_stream
+    else:
+
+        def create(**kwargs):
+            provider_stream = client.chat.completions.create(**kwargs)
+            provider_streams.append(provider_stream)
+            return provider_stream
+
+    request_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    backend_type = AsyncOpenAIBackend if asynchronous else OpenAIStreamingBackend
+    iterator = backend_type(request_client, model="fixture").stream("request")
+    failure = (
+        asyncio.CancelledError("consumer cancelled")
+        if termination == "cancel"
+        else RuntimeError("consumer failed")
+    )
+    try:
+        if asynchronous:
+            assert await anext(iterator) == "partial"
+            if termination == "complete":
+                assert [chunk async for chunk in iterator] == ["rest"]
+            elif termination == "close":
+                await iterator.aclose()
+            else:
+                with pytest.raises(type(failure)) as caught:
+                    await iterator.athrow(failure)
+                assert caught.value is failure
+        else:
+            assert next(iterator) == "partial"
+            if termination == "complete":
+                assert list(iterator) == ["rest"]
+            elif termination == "close":
+                iterator.close()
+            else:
+                with pytest.raises(type(failure)) as caught:
+                    iterator.throw(failure)
+                assert caught.value is failure
+        assert len(requests) == len(provider_streams) == 1
+        assert provider_streams[0].response.is_closed
+    finally:
+        for provider_stream in provider_streams:
+            if asynchronous:
+                await provider_stream.close()
+            else:
+                provider_stream.close()
+        if asynchronous:
+            await client.close()
+        else:
+            client.close()
+
+
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("temperature", [None, 0.3])

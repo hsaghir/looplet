@@ -41,6 +41,18 @@ def test_explicit_runtime_resource_file_wins_over_autoinject(tmp_path: Path) -> 
     assert preset.resources["runtime"] == "shadowed"
 
 
+def test_builtin_unknown_effect_policy_is_explicit_and_shared(tmp_path: Path) -> None:
+    from looplet import StopOnUnknownEffectHook
+
+    hook = build_builtin_hook("stop_on_unknown_effect", resources={})
+    assert isinstance(hook, StopOnUnknownEffectHook)
+    workspace = scaffold_cartridge(tmp_path / "agent.cartridge", name="agent", tools=["greet"])
+    config = workspace / "config.yaml"
+    config.write_text(config.read_text() + "\nbuiltin_hooks:\n  - stop_on_unknown_effect\n")
+    preset = cartridge_to_preset(workspace, strict=True)
+    assert sum(isinstance(candidate, StopOnUnknownEffectHook) for candidate in preset.hooks) == 1
+
+
 def test_builtin_hook_registry_has_skill_activation() -> None:
     assert "skill_activation" in AVAILABLE
 

@@ -319,6 +319,7 @@ from looplet import (
     MetricsHook,
     PermissionHook,
     ProvenanceSink,
+    StopOnUnknownEffectHook,
     ThresholdCompactHook,
     TracingHook,
 )
@@ -338,6 +339,15 @@ hook = ThresholdCompactHook(
     )
 )
 ```
+
+### StopOnUnknownEffectHook
+
+**Development source:** opts into stopping after a tool reports uncertain effects.
+It uses the existing `HookDecision.stop` contract and preserves the failed receipt.
+Attach it before hooks that replace tool results.
+It stops later sequential work, not workers or concurrent calls already running.
+The host owns reconciliation and any later run.
+See [uncertain-effect control](operations.md#stop-on-uncertain-effects) for Python and cartridge examples.
 
 ### StreamingHook
 

@@ -16,9 +16,13 @@ from contextlib import aclosing, closing
 from pathlib import Path
 
 import looplet
+from looplet.backend_contract import BackendRequestPolicy, BackendWrapper
 from looplet.bundles import load_skill_bundle
 from looplet.cartridge import analyse_cartridge
 from looplet.cli.factory_commands import _factory_workspace_path
+from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+from looplet.router import FallbackRouter, ModelProfile, RoutingLLMBackend, SimpleRouter
+from looplet.streaming import CallbackEmitter, LLMChunkEvent
 
 
 def _raw_result_client(factory, llm):
@@ -222,6 +226,106 @@ def _qualify_python_clients() -> None:
         "Scripted loop qualification: "
         + json.dumps({"executions": 20, "parity_pairs": len(pairs), "early_exit_checks": 4})
     )
+
+
+def _qualify_sdk_contracts() -> None:
+    async def check(asynchronous: bool, native: bool) -> None:
+        effects = []
+        requests = []
+        closed = []
+        events = []
+        response = json.dumps({"tool": "write_once", "args": {}})
+        native_response = [{"type": "tool_use", "name": "write_once", "id": "write", "input": {}}]
+
+        def write_once():
+            effects.append("committed")
+            raise TimeoutError("The host must inspect the committed effect.")
+
+        class Backend:
+            request_policy = BackendRequestPolicy(supports_single_model_request=True)
+            stream_in_loop = True
+            last_model = "scripted-sdk"
+            last_usage = {"input": 13, "output": 7}
+
+            def generate(self, prompt, **kwargs):
+                requests.append("generate")
+                return response
+
+            def generate_with_tools(self, prompt, **kwargs):
+                requests.append("native")
+                return native_response
+
+            def stream(self, prompt, **kwargs):
+                requests.append("stream")
+                try:
+                    yield response[:20]
+                    yield response[20:]
+                finally:
+                    closed.append("stream")
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+            async def stream(self, prompt, **kwargs):
+                requests.append("stream")
+                try:
+                    yield response[:20]
+                    yield response[20:]
+                finally:
+                    closed.append("stream")
+
+        leaf = AsyncBackend() if asynchronous else Backend()
+        fallback = FallbackRouter(primary=leaf, fallback=leaf).select("reasoning")
+        routed = RoutingLLMBackend(
+            SimpleRouter({}, default_profile=ModelProfile("default", fallback))
+        )
+        composed = BackendWrapper(looplet.ResilientBackend(routed, retries=3))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+            recorder = recorder_type(composed, attempt_directory=root / "attempts")
+            request = {
+                "llm": recorder,
+                "task": "Write once and preserve its receipt.",
+                "tools": [write_once],
+                "hooks": [looplet.StopOnUnknownEffectHook()],
+                "stream": CallbackEmitter(events.append),
+                "config": looplet.LoopConfig(
+                    max_steps=2,
+                    max_model_calls=1,
+                    use_native_tools=native,
+                    run_dir=str(root / "run"),
+                ),
+            }
+            result = (
+                await looplet.run_result_async(**request)
+                if asynchronous
+                else looplet.run_result(**request)
+            )
+            assert effects == ["committed"]
+            assert result.status is looplet.RunStatus.STOPPED
+            assert result.termination_reason == "effect_unknown"
+            assert result.output is None
+            assert result.steps[0].tool_result.error_detail.context["effect_unknown"] is True
+            assert Path(result.metadata["run_dir"]).is_dir()
+            assert requests == (["native"] if native else ["stream"])
+            assert closed == ([] if native else ["stream"])
+            assert [event.chunk for event in events if isinstance(event, LLMChunkEvent)] == (
+                [] if native else [response[:20], response[20:]]
+            )
+            assert recorder.last_model == "scripted-sdk"
+            assert result.metadata["usage_total"] == {"input": 13, "output": 7}
+            assert len(recorder.calls) == 1
+            assert recorder.calls[0].response == (native_response if native else response)
+
+    for asynchronous in (False, True):
+        for native in (False, True):
+            asyncio.run(check(asynchronous, native))
+    print("SDK contract qualification: 4 composed native/text sync/async executions passed")
 
 
 def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
@@ -470,6 +574,7 @@ def main() -> int:
     package_root = Path(looplet.__file__).resolve().parent
     factory = _factory_workspace_path().resolve()
     _qualify_python_clients()
+    _qualify_sdk_contracts()
     report = looplet.eval_assess(
         [lambda context: context.artifacts["observed"]],
         looplet.EvalContext(steps=[], artifacts={"observed": True}, stop_reason="hook_stop"),

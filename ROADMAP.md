@@ -1,15 +1,18 @@
-# Roadmap: test-driven harness engineering
+# Roadmap: an owned agent SDK
 
-Looplet is the small Python engine and test bench for an agent harness you
-own. The roadmap is organized around one question:
+Looplet is a small Python SDK for agent execution and retained evidence.
+The host owns the agent and its improvement decisions. The roadmap asks:
 
-> Can a team change a real tool-calling harness and know, before release, what
-> behavior improved, regressed, or remains unproven?
+> Can a team control agent execution, inspect what happened, and retain the
+> evidence needed to improve its agent?
+
+New improvement algorithms, experiment orchestration, statistical analysis,
+and promotion machinery belong in downstream packages, not this SDK.
 
 This is a direction document, not a dated promise. Shipped behavior is
 specified by the code, tests, and changelog.
 
-## Current status: 0.4.0 (Beta)
+## Current status: published 0.4.1 and Python-first source preview
 
 The foundation is in place:
 

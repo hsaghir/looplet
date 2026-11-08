@@ -219,6 +219,23 @@ def test_site_contributing_guide_matches_canonical_guide() -> None:
     assert (ROOT / "docs" / "contributing.md").read_text() == (ROOT / "CONTRIBUTING.md").read_text()
 
 
+def test_python_sdk_guides_are_in_source_distribution() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    included = set(project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"])
+    guides = {
+        "docs/python.md",
+        "docs/api.md",
+        "docs/operations.md",
+        "docs/provenance.md",
+        "docs/migrate.md",
+        "docs/hooks.md",
+        "docs/install.md",
+        "docs/assets/loop-lifecycle.svg",
+    }
+    assert guides <= included
+    assert all((ROOT / guide).is_file() for guide in guides)
+
+
 def test_portable_coder_is_in_both_distribution_formats() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     wheel_files = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]

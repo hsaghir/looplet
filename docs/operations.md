@@ -123,6 +123,44 @@ Wait for the worker or use a host-owned process boundary when execution must be 
 Inspect the external system's authoritative state before deciding whether a retry is safe.
 Do not infer retry safety from a timeout, cancellation, or failure to observe a local result.
 
+### Stop on uncertain effects
+
+**Development source:** attach `StopOnUnknownEffectHook` to stop after a tool reports `effect_unknown=True`.
+This addition is not in PyPI `0.4.1` or the fixed preview pin.
+Use a development checkout or a qualified wheel containing the hook.
+
+```python
+from looplet import LoopConfig, StopOnUnknownEffectHook, run_result
+
+result = run_result(
+        llm,
+        task=task,
+        tools=tools,
+        config=LoopConfig(concurrent_dispatch=False),
+        hooks=[StopOnUnknownEffectHook()],
+)
+if result.termination_reason == "effect_unknown":
+        receipt = result.steps[-1].tool_result
+```
+
+The hook reads the structured tool-error signal, not the model's explanation.
+It leaves ordinary errors and successful calls unchanged.
+The failed step and its original error remain available in run evidence.
+Put this hook before hooks that replace tool results.
+
+Sequential dispatch stops before the next tool, including later calls in one native response.
+Concurrent batches can finish before post-dispatch hooks observe their results.
+The hook cannot cancel already running workers or reverse committed effects.
+The host must inspect authoritative state before choosing whether to start another run.
+It does not add retries, automatic reconciliation, or a recovery workflow.
+
+Cartridges can attach the same hook explicitly:
+
+```yaml
+builtin_hooks:
+    - stop_on_unknown_effect
+```
+
 ## Standard agent harness
 
 **Unreleased:** the default harness is the set of policies added to an ordinary run.

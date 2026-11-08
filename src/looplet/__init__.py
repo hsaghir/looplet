@@ -244,6 +244,7 @@ from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
 from looplet.tools import (
     BaseToolRegistry,
+    StopOnUnknownEffectHook,
     ToolSpec,
     excerpt_around_match,
     register_done_tool,
@@ -298,6 +299,7 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "ToolSpec",
+    "StopOnUnknownEffectHook",
     "BaseToolRegistry",
     "register_done_tool",
     "Skill",

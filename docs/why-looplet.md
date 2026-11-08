@@ -1,24 +1,20 @@
 # Why looplet
 
-An agent prototype is easy to start: send a prompt, expose tools, keep
-calling the model until it stops. The hard part begins after the first
-working demo.
+Looplet is a Python SDK for owning a tool-calling agent's harness.
+You can inspect each tool call and change how the loop handles prompts, tools, context, and policies.
 
-A prompt edit fixes one case and breaks another. A tool changes its
-side effects. A permission hook blocks a path you expected to work. A
-model upgrade takes a different route. The question is no longer
-**“Can this agent run?”** It is:
+A working demo still needs maintenance after deployment.
+A prompt edit can break an existing case.
+A tool change can produce different side effects.
+A model upgrade can choose different calls.
+Saved run evidence helps you investigate these changes.
+Regression tests and outcome evals check their effects.
 
-> **What behavior changed, and what evidence makes that change safe to ship?**
-
-Looplet is a test-driven harness engineering toolkit for Python teams
-that want to answer that question while still owning the loop.
-
-Keep a failure and a case that already works. A person or external builder can
-edit a copy of the supported agent definition, and the host can compare the new
-version against those cases using captured evidence and outcome evals. The host
-must keep release checks outside the candidate's reach; Looplet does not supply
-an optimizer or a promotion service.
+Keep failed cases and cases that already work.
+Change the agent definition, then compare versions using captured responses or fresh model runs as appropriate.
+Looplet supplies the execution and evidence used by these checks.
+Keep improvement algorithms, experiment orchestration, and promotion decisions in your host or downstream packages.
+Protected release checks must stay outside the code that a candidate can change.
 
 ## What “harness” means here
 
@@ -31,9 +27,8 @@ The model is one component. The **harness** is everything around it:
 - the loop that connects model decisions to side effects;
 - traces, outcome collectors, and behavioral evals.
 
-Looplet keeps those concerns close to ordinary Python and reviewable
-files instead of hiding them behind a graph runtime or hosted control
-plane.
+Use ordinary Python functions and hooks to define these behaviors.
+Package them as reviewable files when you need to version or share an agent.
 
 ```mermaid
 flowchart LR
@@ -53,24 +48,29 @@ flowchart LR
 
 ### 1. Own the execution boundary
 
-`composable_loop()` is a generator. Every tool call becomes a `Step`
-your code can inspect, print, save, route, or stop on.
+`composable_loop()` is a generator.
+It yields a `Step` after a tool call has been handled.
+The step contains the call, its arguments, result, and timing.
+Your code can inspect it and stop before the next call.
 
 ```python
-for step in composable_loop(llm=llm, tools=tools, hooks=hooks, task=task):
-    print(step.pretty())
-    if should_pause(step):
-        break
+from contextlib import closing
+
+with closing(composable_loop(llm=llm, tools=tools, hooks=hooks, task=task)) as steps:
+    for step in steps:
+        print(step.pretty())
+        if should_pause(step):
+            break
 ```
 
-There is no graph DSL between your code and the model/tool boundary.
-Hooks are duck-typed Python objects, so behavior composes without a
-framework class hierarchy.
+Use permission or pre-dispatch hooks to check a call before execution.
+A yielded step describes a call that has already been handled.
+Hooks are ordinary Python objects with callbacks at named points in the loop.
 
 ### 2. Make the harness reviewable
 
-A [cartridge](cartridge.md) stores the supported editable agent definition as
-files, with self-tests alongside it:
+Package instructions, tools, hooks, configuration, and self-tests in an ordinary directory.
+This [cartridge](cartridge.md) is the reusable, reviewable unit of agent behavior:
 
 ```text
 agent.cartridge/
@@ -83,10 +83,9 @@ agent.cartridge/
 └── evals/{cases/, collect_*.py, eval_*.py}
 ```
 
-`looplet describe`, `looplet diff`, and `looplet hash` make structural
-changes explicit in code review. Cartridges are optional. The same
-primitives work directly in Python, but cartridges provide a useful versioned
-unit for teams and CI.
+Use `looplet describe`, `looplet diff`, and `looplet hash` to inspect the agent version and review changes.
+Load it into your application and run its self-tests after edits.
+Cartridges are optional; direct Python functions use the same loop.
 
 The model connection, credentials, and protected release checks stay with the
 host. Moving the directory between runtimes also requires
@@ -100,8 +99,11 @@ steps, stop reason, and metadata to human-readable files. A captured
 response stream can be replayed through fresh tools, hooks, state, and
 permissions without paying for another model call.
 
-That is **captured-response replay**, not deterministic simulation.
-Model responses are held constant; tool code and side effects execute again.
+Captured-response replay holds model responses constant.
+Tool code and side effects execute again.
+It checks execution changes against the recorded decisions.
+Use fresh model runs to evaluate prompt, model, or model-visible context changes.
+See [experiments](experiments.md) for what each method can establish.
 
 ### 4. Grade outcomes
 
@@ -160,11 +162,10 @@ Choose something else when:
 - you need a prebuilt assistant more than a toolkit;
 - you do not want to own the loop, tools, or test contract.
 
-That boundary is deliberate. Looplet should make one loop unusually
-easy to understand and change safely, not become a container for every
-agent feature.
+Looplet focuses on the execution of one tool-calling loop and the evidence needed to test changes.
+It does not supply a workflow scheduler, hosted dashboard, or optimizer.
 
-## See the claim run
+## Run the regression example
 
 The [failure-to-regression demo](regression-demo.md) is network-free and
 executable. It captures a failing run, changes one tool line, replays

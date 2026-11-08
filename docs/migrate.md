@@ -1,15 +1,19 @@
 # Migrate an existing tool loop
 
-You do not need to rewrite a working agent into a cartridge. The safest
-migration keeps the task, provider, tool implementations, and product tests
-fixed while replacing one control boundary at a time.
+Keep your task, provider, tool implementations, and product tests.
+Replace the control loop first and check that the behavior you need still works.
 
-The first useful milestone is small: your existing tools run through
-`composable_loop()`, and every dispatch is returned to your code as a `Step`.
-Capture, hooks, cartridges, and eval gates can follow independently.
+Your tools run through `composable_loop()`.
+The loop yields a `Step` containing each tool call, its arguments, result, and timing.
+Add hooks, saved run evidence, regression tests, and outcome evals as needed.
+Your application still owns its services and deployment.
 
-The checkpoints below are executable end to end as one network-free example;
-see [run the whole recipe](#run-the-whole-recipe).
+When you need file-based reuse, package instructions, tools, hooks, configuration, and self-tests together.
+This directory is a [cartridge](cartridge.md), a reusable, reviewable unit of agent behavior.
+Direct Python functions and cartridges use the same loop.
+
+The checkpoints below form one executable, network-free example.
+See [run the whole recipe](#run-the-whole-recipe).
 
 ## Map what you already own
 
@@ -21,7 +25,7 @@ see [run the whole recipe](#run-the-whole-recipe).
 | Cross-cutting runtime policy | A focused hook method |
 | Run logs | `ProvenanceSink` and the yielded `Step` stream |
 | Product acceptance check | Collector plus outcome grader |
-| Versioned harness directory | Optional cartridge |
+| Reusable, reviewable agent package | Optional cartridge |
 
 Keep domain services and business rules outside Looplet. A tool can continue
 calling the same function it called before the migration.

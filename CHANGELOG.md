@@ -119,6 +119,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- OpenAI text streams close owned SDK responses on completion, early close, failure, and cancellation.
+- Fallback routing catches awaited primary failures and runs synchronous fallback work off the async caller's event loop.
+- Backend wrappers preserve text streaming and recording. Resilience streams make one attempt; stream fallback happens only before delivered output and never bypasses model admission.
 - Runtime run-store checkpoints capture configured host state, retain pending tool-effect reconciliation guards, and preserve model-admission settings. Host and backend capture stays on the owning thread; async checkpoint writes are drained in workers.
 - Synchronous tools in async loops can use `ctx.llm` through the owning event loop, including shared model-call admission.
 - Async tools get a clear error instead of deadlocking when they use synchronous model access with an async backend.

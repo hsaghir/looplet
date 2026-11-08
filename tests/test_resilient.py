@@ -49,6 +49,63 @@ class ToolsCapableFlakyBackend(FlakyBackend):
 
 
 class TestRetryBehavior:
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_streams_make_one_attempt_and_preserve_prefix(self, asynchronous, partial):
+        observed = []
+        closed = []
+        chunks = []
+        failure = ConnectionError("stream failed")
+
+        class Backend(FlakyBackend):
+            def stream(self, prompt, **kwargs):
+                observed.append(prompt)
+                try:
+                    if partial:
+                        yield "partial"
+                    raise failure
+                finally:
+                    closed.append(True)
+
+        class AsyncBackend(Backend):
+            async def stream(self, prompt, **kwargs):
+                iterator = super().stream(prompt, **kwargs)
+                try:
+                    for chunk in iterator:
+                        yield chunk
+                finally:
+                    iterator.close()
+
+        def no_backoff(delay):
+            raise AssertionError("Streams must not restart or back off")
+
+        backend = AsyncBackend([]) if asynchronous else Backend([])
+        wrapped = ResilientBackend(backend, retries=3, sleep=no_backoff)
+        with pytest.raises(ConnectionError) as caught:
+            iterator = wrapped.stream("request")
+            if asynchronous:
+                async for chunk in iterator:
+                    chunks.append(chunk)
+            else:
+                chunks.extend(iterator)
+
+        assert caught.value is failure
+        assert chunks == (["partial"] if partial else [])
+        assert observed == ["request"] and closed == [True]
+
+    @pytest.mark.parametrize("timeout", [None, -1, 0, 1.0])
+    def test_wrapper_deadlines_keep_generation_policy(self, timeout):
+        class Backend(FlakyBackend):
+            def stream(self, prompt, **kwargs):
+                yield "streamed"
+
+        wrapped = ResilientBackend(Backend([]), timeout_s=timeout)
+        supports_stream = timeout is None or timeout <= 0
+        assert hasattr(wrapped, "stream") is supports_stream
+        if supports_stream:
+            assert list(wrapped.stream("request")) == ["streamed"]
+        assert wrapped.generate("request") == "ok"
+
     @pytest.mark.parametrize("timeout", [None, 1.0])
     def test_nested_resilience_uses_outer_attempt_policy(self, timeout):
         backend = FlakyBackend([ConnectionError("failure")] * 20)

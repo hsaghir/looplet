@@ -907,11 +907,16 @@ class OpenAIStreamingBackend(OpenAIBackend):
 
         _begin_request(self, kwargs)
         response = self._request_client().chat.completions.create(**kwargs)
-        for chunk in response:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            text = _openai_message_text(delta)
-            if text:
-                yield text
+        try:
+            for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                text = _openai_message_text(delta)
+                if text:
+                    yield text
+        finally:
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
 
     def stream_with_tools(
         self,
@@ -1521,11 +1526,16 @@ class AsyncOpenAIBackend(_ConversationBackend):
 
         _begin_request(self, kwargs)
         response = await self._request_client().chat.completions.create(**kwargs)
-        async for chunk in response:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            text = _openai_message_text(delta)
-            if text:
-                yield text
+        try:
+            async for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                text = _openai_message_text(delta)
+                if text:
+                    yield text
+        finally:
+            close = getattr(response, "aclose", None) or getattr(response, "close", None)
+            if close is not None:
+                await close()
 
 
 class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):

@@ -57,7 +57,7 @@ Cancellation drains an in-flight write before finalization releases the registry
 Checkpoint callbacks and session-log capture remain on the loop thread and should be brief.
 Explicit hooks and stores retain their host-defined behavior.
 
-`ResilientBackend` wraps the synchronous backend protocol. Do not use it as an
+`ResilientBackend` retries synchronous generation. Do not use it as an
 async retry layer. Configure retries and timeouts in the async provider client
 or an async adapter instead.
 
@@ -87,6 +87,22 @@ The caller-side timeout uses a daemon worker thread. It stops waiting but
 cannot force every provider SDK to cancel its underlying request. Set socket
 and request timeouts in the provider client as well. Avoid retrying validation,
 authentication, permission, and other permanent failures.
+
+### Text streams
+
+**Unreleased:** transparent and routing wrappers preserve text chunks and recording.
+OpenAI text streams close their SDK response on completion, early close, and failure.
+
+Without a positive `timeout_s`, `ResilientBackend` forwards the inner text stream
+with one attempt. It does not restart streamed output or apply generation backoff.
+With a positive wrapper timeout, loops use generation to retain that deadline policy.
+Configure streaming request deadlines in the provider client.
+
+`FallbackRouter` handles both synchronous and awaited generation failures.
+For streams, it switches only before the first delivered chunk and outside
+single-request model admission. A failure after delivered text propagates
+without restarting the response. Async callers run synchronous fallback work
+and stream reads in awaited workers.
 
 ### Tool timeouts
 

@@ -590,14 +590,24 @@ def test_read_result_and_recall_result_support_line_ranges(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_admitted_text_stream_preserves_chunks_and_accounting(tmp_path, asynchronous):
+@pytest.mark.parametrize("wrapper", ["bare", "transparent", "resilient", "routing", "fallback"])
+@pytest.mark.parametrize("recording_order", ["inside", "outside"])
+@pytest.mark.parametrize("streaming_allowed", [False, True])
+async def test_admitted_text_stream_preserves_chunks_and_accounting(
+    tmp_path, asynchronous, wrapper, recording_order, streaming_allowed
+):
     from looplet.assistant_turns import TURN_STATE_KEY
+    from looplet.backend_contract import BackendWrapper
+    from looplet.resilient import ResilientBackend
+    from looplet.router import FallbackRouter, ModelProfile, RoutingLLMBackend, SimpleRouter
 
     response = json.dumps({"tool": "done", "args": {"summary": "ok"}})
     chunks = [response[:20], response[20:]]
     calls = []
 
     class Backend:
+        stream_in_loop = streaming_allowed
+
         def generate(self, prompt, **kwargs):
             calls.append("generate")
             return response
@@ -615,15 +625,31 @@ async def test_admitted_text_stream_preserves_chunks_and_accounting(tmp_path, as
             for chunk in chunks:
                 yield chunk
 
-    recorder = (
-        AsyncRecordingLLMBackend(AsyncBackend(), attempt_directory=tmp_path)
-        if asynchronous
-        else RecordingLLMBackend(Backend(), attempt_directory=tmp_path)
-    )
+    def wrap(backend):
+        if wrapper == "bare":
+            return backend
+        if wrapper == "transparent":
+            return BackendWrapper(backend)
+        if wrapper == "resilient":
+            return ResilientBackend(backend, retries=1)
+        if wrapper == "routing":
+            return RoutingLLMBackend(
+                SimpleRouter({}, default_profile=ModelProfile("default", backend))
+            )
+        return FallbackRouter(primary=backend, fallback=backend).select("reasoning")
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    if recording_order == "inside":
+        recorder = recorder_type(backend, attempt_directory=tmp_path)
+        wrapped = wrap(recorder)
+    else:
+        recorder = recorder_type(wrap(backend), attempt_directory=tmp_path)
+        wrapped = recorder
     events = []
     state = DefaultState(max_steps=1)
     request = {
-        "llm": recorder,
+        "llm": wrapped,
         "tools": tools_from([], include_done=True),
         "state": state,
         "task": "Finish with the completion tool.",
@@ -638,8 +664,10 @@ async def test_admitted_text_stream_preserves_chunks_and_accounting(tmp_path, as
     else:
         list(composable_loop(**request))
 
-    assert calls == ["stream"]
-    assert [event.chunk for event in events if isinstance(event, LLMChunkEvent)] == chunks
+    assert calls == (["stream"] if streaming_allowed else ["generate"])
+    assert [event.chunk for event in events if isinstance(event, LLMChunkEvent)] == (
+        chunks if streaming_allowed else []
+    )
     assert state.metadata[TURN_STATE_KEY]["model_calls"] == 1
     assert len(recorder.calls) == 1
     assert recorder.calls[0].response == response

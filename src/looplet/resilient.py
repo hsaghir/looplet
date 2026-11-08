@@ -133,6 +133,9 @@ async def _async_run_with_timeout(
 class ResilientBackend:
     """Wrap an :class:`LLMBackend` with retry + timeout.
 
+    Streams make one attempt to preserve delivered output. A configured
+    wrapper deadline keeps the loop on the generation path.
+
     Args:
         inner: The backend to wrap.
         retries: Total number of attempts (``retries=1`` means no retry).
@@ -202,6 +205,10 @@ class ResilientBackend:
         return self.request_policy.supports_single_model_request
 
     def __getattr__(self, name: str) -> Any:
+        if name == "stream":
+            if self._timeout_s is not None and self._timeout_s > 0:
+                raise AttributeError(name)
+            return getattr(self._inner, name)
         return backend_attribute(self._inner, name)
 
     def __setattr__(self, name: str, value: Any) -> None:

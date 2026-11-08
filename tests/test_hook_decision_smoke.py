@@ -11,6 +11,11 @@ Validates that:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+from pathlib import Path
+
 import pytest
 
 from looplet import (
@@ -31,6 +36,200 @@ from looplet.hook_decision import normalize_hook_return
 from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
 from looplet.types import ToolResult
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_unknown_effect_policy_preserves_receipt_and_stops_sequential_work(
+    tmp_path: Path,
+    asynchronous: bool,
+    native: bool,
+    enabled: bool,
+    uncertain: bool,
+    concurrent: bool,
+):
+    from looplet import StopOnUnknownEffectHook, run_result, run_result_async, tools_from
+    from looplet.types import RunStatus
+
+    ledger = tmp_path / "effects.json"
+    ledger.write_text("[]", encoding="utf-8")
+    requests = []
+
+    def risky_write():
+        ledger.write_text(json.dumps(["first"]), encoding="utf-8")
+        failure = TimeoutError if uncertain else RuntimeError
+        raise failure("The write needs host investigation.")
+
+    def later_write():
+        effects = json.loads(ledger.read_text(encoding="utf-8"))
+        effects.append("later")
+        ledger.write_text(json.dumps(effects), encoding="utf-8")
+        return {"written": "later"}
+
+    class Backend:
+        def response_calls(self, mode):
+            requests.append(mode)
+            if mode == "text":
+                names = [["risky_write"], ["later_write"], ["done"]][len(requests) - 1]
+            else:
+                names = ["risky_write", "later_write"] if len(requests) == 1 else ["done"]
+            return [
+                {"tool": name, "args": {"summary": "ok"} if name == "done" else {}}
+                for name in names
+            ]
+
+        def generate(self, prompt, **kwargs):
+            return json.dumps(self.response_calls("text")[0])
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return [
+                {
+                    "type": "tool_use",
+                    "name": call["tool"],
+                    "id": call["tool"],
+                    "input": call["args"],
+                }
+                for call in self.response_calls("native")
+            ]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    request = {
+        "llm": AsyncBackend() if asynchronous else Backend(),
+        "tools": tools_from([risky_write, later_write], include_done=True),
+        "task": "Write once, then finish.",
+        "hooks": [StopOnUnknownEffectHook()] if enabled else [],
+        "config": LoopConfig(
+            max_steps=4,
+            max_model_calls=3,
+            use_native_tools=native,
+            concurrent_dispatch=concurrent,
+            run_dir=str(tmp_path / "run"),
+        ),
+    }
+    result = await run_result_async(**request) if asynchronous else run_result(**request)
+    receipt = result.steps[0].tool_result
+    assert receipt.error_detail is not None
+    assert receipt.error_detail.context.get("effect_unknown", False) is uncertain
+    assert Path(result.metadata["run_dir"]).is_dir()
+    should_stop = enabled and uncertain
+    later_executed = not should_stop or (native and concurrent)
+    assert json.loads(ledger.read_text(encoding="utf-8")) == (
+        ["first", "later"] if later_executed else ["first"]
+    )
+    assert any(step.tool_call.tool == "later_write" for step in result.steps) is later_executed
+    expected_requests = 1 if should_stop else 2 if native else 3
+    assert requests == ["native" if native else "text"] * expected_requests
+    if should_stop:
+        assert result.status is RunStatus.STOPPED
+        assert result.termination_reason == "effect_unknown"
+        assert result.output is None
+    else:
+        assert result.completed
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_unknown_effect_policy_does_not_claim_to_cancel_inflight_work(
+    tmp_path: Path, asynchronous: bool
+):
+    from looplet import StopOnUnknownEffectHook, run_result, run_result_async, tools_from
+
+    started = threading.Event()
+    observed = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    ledger = tmp_path / "effects.json"
+    ledger.write_text("[]", encoding="utf-8")
+    requests = []
+
+    def risky_write():
+        try:
+            ledger.write_text(json.dumps(["started"]), encoding="utf-8")
+            started.set()
+            release.wait()
+            ledger.write_text(json.dumps(["started", "committed"]), encoding="utf-8")
+        finally:
+            finished.set()
+
+    def later_write():
+        ledger.write_text(json.dumps(["later"]), encoding="utf-8")
+
+    class ObservedStop(StopOnUnknownEffectHook):
+        def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+            decision = super().post_dispatch(state, session_log, tool_call, tool_result, step_num)
+            if decision is not None:
+                observed.set()
+            return decision
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("Native calls must not fall back to text.")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            requests.append("native")
+            return [
+                {"type": "tool_use", "name": name, "id": name, "input": {}}
+                for name in ("risky_write", "later_write")
+            ]
+
+    class AsyncBackend(Backend):
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    registry = tools_from([], include_done=True)
+    registry.register(
+        ToolSpec(
+            name="risky_write",
+            description="Commit after the host releases this worker.",
+            parameters={},
+            execute=risky_write,
+            timeout_s=0.01,
+        )
+    )
+    registry.register(
+        ToolSpec(name="later_write", description="Write later.", parameters={}, execute=later_write)
+    )
+    request = {
+        "llm": AsyncBackend() if asynchronous else Backend(),
+        "tools": registry,
+        "task": "Write once, then finish.",
+        "hooks": [ObservedStop()],
+        "config": LoopConfig(harness_profile="minimal", max_model_calls=2, max_steps=4),
+    }
+    pending = asyncio.create_task(
+        run_result_async(**request) if asynchronous else asyncio.to_thread(run_result, **request)
+    )
+    observation = asyncio.create_task(asyncio.to_thread(observed.wait))
+    try:
+        completed_tasks = (
+            await asyncio.wait((pending, observation), return_when=asyncio.FIRST_COMPLETED)
+        )[0]
+        if pending in completed_tasks and not observed.is_set():
+            ended = await pending
+            pytest.fail(f"Run ended before the stop observation: {ended.diagnostics()}")
+        await observation
+        assert started.is_set()
+        assert not finished.is_set()
+        assert json.loads(ledger.read_text(encoding="utf-8")) == ["started"]
+    finally:
+        observed.set()
+        release.set()
+        if started.is_set():
+            await asyncio.to_thread(finished.wait)
+        await observation
+        result = await pending
+    assert requests == ["native"]
+    assert result.termination_reason == "effect_unknown"
+    assert result.steps[0].tool_result.error_detail.context["effect_unknown"] is True
+    assert json.loads(ledger.read_text(encoding="utf-8")) == ["started", "committed"]
 
 
 def test_event_payload_preserves_legacy_positional_arguments():

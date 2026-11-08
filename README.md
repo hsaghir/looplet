@@ -13,6 +13,9 @@ You provide a model, a task, and Python functions.
 It checks each call, runs the function, and yields a `Step` with the result.
 Your code controls iteration and can stop before the next call.
 
+The SDK owns agent execution and retained evidence.
+Keep improvement algorithms, experiment orchestration, and promotion decisions in your host or downstream packages.
+
 Use hooks for policy, saved responses for replay, and independent checks for correctness.
 These features use the same loop.
 Start with functions; package an agent as files only when you need to share it.

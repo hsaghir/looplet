@@ -589,62 +589,85 @@ def test_read_result_and_recall_result_support_line_ranges(tmp_path: Path) -> No
 # ── 6. Sync Parallel Subagents & Trajectory Provenance Linking ──
 
 
+def _wrap_test_backend(backend, wrapper):
+    from looplet.backend_contract import BackendWrapper
+    from looplet.router import FallbackRouter, ModelProfile, RoutingLLMBackend, SimpleRouter
+
+    if wrapper == "bare":
+        return backend
+    if wrapper == "transparent":
+        return BackendWrapper(backend)
+    if wrapper == "resilient":
+        return ResilientBackend(backend, retries=1)
+    if wrapper == "routing":
+        return RoutingLLMBackend(SimpleRouter({}, default_profile=ModelProfile("default", backend)))
+    return FallbackRouter(primary=backend, fallback=backend).select("reasoning")
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("wrapper", ["bare", "transparent", "resilient", "routing", "fallback"])
 @pytest.mark.parametrize("recording_order", ["inside", "outside"])
 @pytest.mark.parametrize("streaming_allowed", [False, True])
-async def test_admitted_text_stream_preserves_chunks_and_accounting(
-    tmp_path, asynchronous, wrapper, recording_order, streaming_allowed
+@pytest.mark.parametrize("native", [False, True])
+async def test_admitted_backend_preserves_mode_metadata_and_accounting(
+    tmp_path, asynchronous, wrapper, recording_order, streaming_allowed, native
 ):
     from looplet.assistant_turns import TURN_STATE_KEY
-    from looplet.backend_contract import BackendWrapper
-    from looplet.resilient import ResilientBackend
-    from looplet.router import FallbackRouter, ModelProfile, RoutingLLMBackend, SimpleRouter
 
     response = json.dumps({"tool": "done", "args": {"summary": "ok"}})
+    native_response = [
+        {"type": "tool_use", "name": "done", "id": "completion", "input": {"summary": "ok"}}
+    ]
     chunks = [response[:20], response[20:]]
     calls = []
 
     class Backend:
         stream_in_loop = streaming_allowed
+        last_model = "contract-model"
+
+        def __init__(self):
+            self.last_usage = {}
+            self.last_request = {}
+
+        def record_request(self, mode, prompt, options):
+            self.last_usage = {"input": 11, "output": 5}
+            self.last_request = {"mode": mode, "prompt": prompt, "options": dict(options)}
 
         def generate(self, prompt, **kwargs):
             calls.append("generate")
+            self.record_request("generate", prompt, kwargs)
             return response
+
+        def generate_with_tools(self, prompt, **kwargs):
+            calls.append("native")
+            self.record_request("native", prompt, kwargs)
+            return native_response
 
         def stream(self, prompt, **kwargs):
             calls.append("stream")
+            self.record_request("stream", prompt, kwargs)
             yield from chunks
 
     class AsyncBackend(Backend):
         async def generate(self, prompt, **kwargs):
             return super().generate(prompt, **kwargs)
 
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
         async def stream(self, prompt, **kwargs):
             calls.append("stream")
+            self.record_request("stream", prompt, kwargs)
             for chunk in chunks:
                 yield chunk
-
-    def wrap(backend):
-        if wrapper == "bare":
-            return backend
-        if wrapper == "transparent":
-            return BackendWrapper(backend)
-        if wrapper == "resilient":
-            return ResilientBackend(backend, retries=1)
-        if wrapper == "routing":
-            return RoutingLLMBackend(
-                SimpleRouter({}, default_profile=ModelProfile("default", backend))
-            )
-        return FallbackRouter(primary=backend, fallback=backend).select("reasoning")
 
     backend = AsyncBackend() if asynchronous else Backend()
     recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
     if recording_order == "inside":
         recorder = recorder_type(backend, attempt_directory=tmp_path)
-        wrapped = wrap(recorder)
+        wrapped = _wrap_test_backend(recorder, wrapper)
     else:
-        recorder = recorder_type(wrap(backend), attempt_directory=tmp_path)
+        recorder = recorder_type(_wrap_test_backend(backend, wrapper), attempt_directory=tmp_path)
         wrapped = recorder
     events = []
     state = DefaultState(max_steps=1)
@@ -654,7 +677,12 @@ async def test_admitted_text_stream_preserves_chunks_and_accounting(
         "state": state,
         "task": "Finish with the completion tool.",
         "config": LoopConfig(
-            harness_profile="minimal", max_steps=1, max_model_calls=1, use_native_tools=False
+            harness_profile="minimal",
+            max_steps=1,
+            max_model_calls=1,
+            max_tokens=57,
+            temperature=0.25,
+            use_native_tools=native,
         ),
         "stream": CallbackEmitter(events.append),
     }
@@ -664,18 +692,32 @@ async def test_admitted_text_stream_preserves_chunks_and_accounting(
     else:
         list(composable_loop(**request))
 
-    assert calls == (["stream"] if streaming_allowed else ["generate"])
+    assert calls == (["native"] if native else ["stream"] if streaming_allowed else ["generate"])
     assert [event.chunk for event in events if isinstance(event, LLMChunkEvent)] == (
-        chunks if streaming_allowed else []
+        chunks if streaming_allowed and not native else []
     )
     assert state.metadata[TURN_STATE_KEY]["model_calls"] == 1
     assert len(recorder.calls) == 1
-    assert recorder.calls[0].response == response
+    if native:
+        assert recorder.calls[0].response == native_response
+        assert [schema["name"] for schema in wrapped.last_request["options"]["tools"]] == ["done"]
+    else:
+        assert recorder.calls[0].response == response
+    assert wrapped.last_model == "contract-model"
+    assert wrapped.last_usage == {"input": 11, "output": 5}
+    assert wrapped.last_request == backend.last_request
+    assert wrapped.last_request["options"]["max_tokens"] == 57
+    assert wrapped.last_request["options"]["temperature"] == 0.25
+    assert state.metadata["usage_total"] == {"input": 11, "output": 5}
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("termination", ["complete", "close", "error", "cancel"])
-async def test_admitted_stream_settles_lifecycle_and_budget(tmp_path, asynchronous, termination):
+@pytest.mark.parametrize("wrapper", ["bare", "transparent", "resilient", "routing", "fallback"])
+@pytest.mark.parametrize("recording_order", ["inside", "outside"])
+async def test_admitted_stream_settles_lifecycle_and_budget(
+    tmp_path, asynchronous, termination, wrapper, recording_order
+):
     from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
     from looplet.backend_contract import TerminalLLMError
     from looplet.provenance import load_model_attempts
@@ -709,15 +751,27 @@ async def test_admitted_stream_settles_lifecycle_and_budget(tmp_path, asynchrono
             finally:
                 closed.append(True)
 
-    recorder = (
-        AsyncRecordingLLMBackend(AsyncBackend(), attempt_directory=tmp_path / "model-attempts")
-        if asynchronous
-        else RecordingLLMBackend(Backend(), attempt_directory=tmp_path / "model-attempts")
-    )
+    backend = AsyncBackend() if asynchronous else Backend()
+    recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    if recording_order == "inside":
+        recorder = recorder_type(backend, attempt_directory=tmp_path / "model-attempts")
+        wrapped = _wrap_test_backend(recorder, wrapper)
+    else:
+        recorder = recorder_type(
+            _wrap_test_backend(backend, wrapper), attempt_directory=tmp_path / "model-attempts"
+        )
+        wrapped = recorder
     state = DefaultState(max_steps=2)
     turns = _AssistantTurns(state, LoopConfig(harness_profile="minimal", max_model_calls=1))
+    checkpoints = []
+    if asynchronous:
+
+        async def checkpoint():
+            checkpoints.append("admit")
+
+        turns.async_checkpoint = checkpoint
     turns.begin_turn()
-    admitted = turns.wrap(recorder)
+    admitted = turns.wrap(wrapped)
     iterator = admitted.stream("first")
     if asynchronous:
         assert await anext(iterator) == "partial"
@@ -742,6 +796,7 @@ async def test_admitted_stream_settles_lifecycle_and_budget(tmp_path, asynchrono
 
     response = "partialrest" if termination == "complete" else "partial"
     assert calls == ["first"] and closed == [True]
+    assert checkpoints == (["admit"] if asynchronous else [])
     assert not turns._active_calls and not turns._pending_calls
     assert state.metadata[TURN_STATE_KEY]["model_calls"] == 1
     assert state.metadata[TURN_STATE_KEY]["requests"][0]["response_chars"] == len(response)

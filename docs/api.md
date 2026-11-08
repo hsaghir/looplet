@@ -540,9 +540,16 @@ Existing simple backends remain valid. Capabilities do not require inheritance.
 
 `BackendWrapper` forwards supported capabilities without copying live attributes.
 It preserves generation signatures and sync or async methods.
+It also preserves supported text streaming and the backend's explicit stream opt-out.
+Wrappers expose metadata from the request they actually executed, not a configured alternative.
 Use callable attribute discovery for dynamic wrappers.
 Python 3.12 and later use static inspection for runtime protocol checks.
 An isolated factory returns a fresh backend. The host chooses that child's wrappers.
+
+Composition must preserve request options, native content blocks, usage, and stream cleanup.
+Transparent observers must not add provider requests or replace cancellation errors.
+Policy wrappers can change execution only through their declared retry, routing, or deadline policy.
+See [text stream policy](operations.md#text-streams) for resilience and fallback limits.
 
 ```python
 from looplet.backend_contract import BackendRequestPolicy, BackendWrapper

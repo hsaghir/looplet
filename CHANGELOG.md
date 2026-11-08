@@ -83,6 +83,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `StopOnUnknownEffectHook` opts into stopping sequential dispatch after a tool reports uncertain effects. Cartridges use `stop_on_unknown_effect`. Existing workers and concurrent batches remain host-owned.
+- Backend composition checks cover native/text sync/async modes, actual request metadata, options, recorded responses, and stream cleanup across wrapper order.
+- Source distributions include Python-first SDK guides. Installed-wheel qualification checks composed backends and retained uncertain-effect receipts without adding experiment orchestration.
 - `run_result()` and `run_result_async()` consume and close the existing loops, returning accepted output, steps, and status without mandatory state construction.
 - Inspectable `resolve_harness()` and preset-level resolution compose deterministic context compaction, actual-result stagnation nudges, and a bounded dispatch budget without implicit I/O or summary-model calls.
 - `ToolCallBudgetHook` reserves before concurrent dispatch and counts successful free calls. It is a per-invocation tool guard, not a provider-request or billing limit.

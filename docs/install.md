@@ -262,6 +262,23 @@ Publication requires a matching release tag and the configured PyPI environment.
 Before tagging, update the versioned changelog and obtain release approval.
 Publish only the qualified commit after its pull request has merged.
 
+Package qualification checks Python-first sync and async clients from the installed wheel.
+It also checks composed native/text backends, stream closure, and retained uncertain-effect receipts.
+The source distribution includes the SDK quickstart, API, operations, evidence, and migration guides.
+
+To qualify a local candidate, use fresh output directories and a fresh environment:
+
+```bash
+uv build --out-dir dist/sdk-candidate
+uv venv .venv-sdk-wheel --python 3.12
+uv pip install --python .venv-sdk-wheel/bin/python dist/sdk-candidate/*.whl
+.venv-sdk-wheel/bin/python scripts/smoke_built_wheel.py
+```
+
+These commands build and check a package. They do not publish it.
+The fixed preview pin can lag development source additions.
+Keep the source revision, wheel hash, and SDK fingerprint with each qualification record.
+
 ## Next
 
 - [Python quickstart](python.md): run, inspect, and extend one loop.

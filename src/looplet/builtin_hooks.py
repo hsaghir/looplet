@@ -40,6 +40,8 @@ Currently shipped built-ins:
 * ``recovery_hint`` - :class:`looplet.cartridge.prompt_files.RecoveryHintHook`.
     Explicit replacement for magic ``prompts/recovery.md`` loading;
   same ``text:`` / ``path:`` kwargs as ``static_briefing``.
+* ``stop_on_unknown_effect`` - :class:`looplet.tools.StopOnUnknownEffectHook`.
+    Stops sequential work after an uncertain tool effect. The host owns reconciliation.
 
 Adding a new built-in: write a small builder ``def build(*,
 resources, **kwargs) -> LoopHook`` and register its name in
@@ -75,6 +77,12 @@ def _build_stagnation(*, resources: dict[str, Any], **kwargs: Any) -> Any:  # no
     kwargs.setdefault("threshold", 3)
     kwargs.setdefault("ignore_tools", ["think", "done"])
     return StagnationHook(**kwargs)
+
+
+def _build_stop_on_unknown_effect(*, resources: dict[str, Any], **kwargs: Any) -> Any:
+    from looplet.tools import StopOnUnknownEffectHook
+
+    return StopOnUnknownEffectHook(**kwargs)
 
 
 def _build_per_tool_limit(*, resources: dict[str, Any], **kwargs: Any) -> Any:  # noqa: ARG001
@@ -172,6 +180,7 @@ def _build_recovery_hint(*, resources: dict[str, Any], **kwargs: Any) -> Any:
 AVAILABLE: dict[str, Callable[..., Any]] = {
     "skill_activation": _build_skill_activation,
     "stagnation": _build_stagnation,
+    "stop_on_unknown_effect": _build_stop_on_unknown_effect,
     "per_tool_limit": _build_per_tool_limit,
     "threshold_compact": _build_threshold_compact,
     "static_briefing": _build_static_briefing,

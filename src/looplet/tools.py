@@ -31,6 +31,7 @@ from typing import (
 )
 
 from looplet.backend_contract import json_snapshot
+from looplet.hook_decision import HookDecision, Stop
 from looplet.types import (
     CancelToken,
     ErrorKind,
@@ -45,6 +46,7 @@ from looplet.types import (
 __all__ = [
     "ToolSpec",
     "ToolView",
+    "StopOnUnknownEffectHook",
     "BaseToolRegistry",
     "register_think_tool",
     "register_done_tool",
@@ -53,6 +55,30 @@ __all__ = [
     "suggest_similar",
     "excerpt_around_match",
 ]
+
+
+class StopOnUnknownEffectHook:
+    """Stop after a tool reports effects that need reconciliation.
+
+    Attach explicitly before hooks that rewrite tool results.
+    This policy stops new dispatch, not workers already running.
+    Use sequential dispatch to stop the next tool in a model batch.
+    Concurrent batches may finish before this hook observes their results.
+    The host owns reconciliation and any later run.
+    """
+
+    def post_dispatch(
+        self,
+        state: Any,
+        session_log: Any,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+        step_num: int,
+    ) -> HookDecision | None:
+        error = tool_result.error_detail
+        if error is not None and error.context.get("effect_unknown") is True:
+            return Stop("effect_unknown")
+        return None
 
 
 def suggest_similar(

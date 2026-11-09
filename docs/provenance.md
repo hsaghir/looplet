@@ -1,17 +1,15 @@
-# Capture and replay: evidence for every harness change
+# Capture and replay
 
-`looplet.provenance` captures exactly what your agent saw and did: every
-prompt, response, and step. It writes them to a
-diff-friendly directory for private inspection with tools such as `cat` and `grep`.
+`looplet.provenance` saves prompts, responses, and steps in a private run directory.
+Use these files to investigate failures and maintain an agent after deployment.
+Turn a failure into a case with an [outcome eval](evals.md), then test changes against it.
 Keep raw captures out of version control; share only reviewed exports.
 
-**The loop:** capture → inspect → turn the failure into a contract → replay
-captured responses against a changed harness.
-
-Replay here always means **captured-response replay**. The model is not called
-again, but tools, hooks, state, permissions, clocks, networks, randomness, and
-other side effects are fresh. This isolates model-output variation; it is not
-bit-for-bit deterministic simulation.
+Captured-response replay reuses saved model responses without calling the model again.
+Tools and hooks execute with fresh state and side effects.
+Clocks, networks, and random values can change unless your host controls them.
+Use fresh model runs to evaluate prompt, model, or model-visible context changes.
+See [experiments](experiments.md) for what replay and fresh runs can establish.
 
 ```python
 # 1. Capture

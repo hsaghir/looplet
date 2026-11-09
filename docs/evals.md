@@ -1,7 +1,9 @@
 # Behavioral evals
 
-An eval is a host-owned behavioral contract checked against an observed run outcome.
+An eval checks an observed run outcome against expected behavior.
+Use it to test an agent version and catch regressions after changes.
 Define it as an ordinary Python function.
+Use a collector to read files or records when you need evidence independent of the agent's claims.
 Your host owns execution and supplies the observed result.
 
 ## Start with one function

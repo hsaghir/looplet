@@ -1,5 +1,5 @@
 site_name: Looplet
-site_description: A Python loop for agents that call tools. Run, inspect, and stop from your code.
+site_description: "Own your agent harness: an inspectable Python loop, run evidence, tests and evals, and reusable, reviewable agent packages."
 site_url: https://hsaghir.com/looplet/
 repo_url: https://github.com/hsaghir/looplet
 repo_name: hsaghir/looplet

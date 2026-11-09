@@ -1,7 +1,9 @@
-# Cartridges: the harness as reviewable files
+# Cartridges: reusable, reviewable agent behavior
 
-A cartridge is a directory containing an agent's prompts, tools, hooks, and configuration.
-Use one when you need to review, version, or share an agent as files.
+An agent's prompts, tools, hooks, configuration, and self-tests can be stored as ordinary files.
+Looplet calls this directory a cartridge: the reusable, reviewable unit of agent behavior.
+Review it in Git, load it into applications, and run its self-tests after changes.
+The code, configuration, and tests travel together as one agent version.
 Start with [Python functions](python.md) when packaging is not needed.
 
 Loading a cartridge creates an `AgentPreset` for the same loop.

@@ -1,7 +1,11 @@
 # Choose the right experiment
 
-Agent changes are easy to compare and hard to interpret. Before running an
-eval, name the variable you want to study and decide what must remain fixed.
+Choose an experiment for the agent change under test.
+Name the variable you want to study and decide what must remain fixed.
+Use replay for execution changes and fresh model runs for changes that can affect model decisions.
+
+Looplet supplies loop execution, run evidence, replay, and outcome grading.
+Your host or downstream packages own experiment orchestration, statistical comparisons, improvement algorithms, and promotion decisions.
 
 ## Decision table
 

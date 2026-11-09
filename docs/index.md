@@ -1,6 +1,6 @@
 ---
-title: A Python loop for agents that call tools
-description: Run a tool-calling agent from Python functions. Inspect each step, add policy hooks, and check results with saved responses.
+title: Own your agent harness
+description: Own a tool-calling agent's harness from Python. Inspect steps, test changes with run evidence, and package reusable behavior as reviewable cartridges.
 hide:
   - navigation
   - toc
@@ -14,12 +14,11 @@ hide:
 
 # Looplet
 
-<p class="hero-kicker">A Python loop for agents that call tools.</p>
+<p class="hero-kicker">Own your agent harness.</p>
 
 <p class="hero-sub" markdown>
-Give Looplet a model, a task, and Python functions.
-It checks tool calls, runs the functions, and yields each result.
-Your code controls the loop.
+Looplet is a Python SDK for owning the loop, prompts, tools, context, and policies around a tool-calling model.
+Inspect steps and test changes after deployment.
 </p>
 
 <div class="hero-cta">
@@ -63,10 +62,12 @@ Your function stays callable as ordinary Python.
 Use `run_result()` when you need the final result instead of an iterator.
 The [quickstart](python.md) checks the result, adds a permission hook, and replays this same agent.
 
-## Add control as the agent grows
+## Own the harness
 
-Looplet handles model retries, context limits, and private run evidence.
-You can replace these defaults and keep the same tools and loop.
+The harness controls how model decisions become tool calls and results.
+Each `Step` contains a tool call, its arguments, result, and timing.
+Hooks control permissions, context, dispatch, and completion.
+Your application supplies model access, service connections, and authority.
 
 <div class="workflow" markdown>
 
@@ -90,16 +91,16 @@ Shorten old context and retrieve original tool results when needed.
 
 **Check outputs**
 
-Save model responses and rerun tools after a change.
-[Grade the actual result](evals.md).
+Collect files or records after a run.
+[Use eval graders](evals.md) to check them against expected outcomes.
 </div>
 
 <div class="workflow-step" markdown>
 
-**Share an agent**
+**Package behavior**
 
-Keep dependency construction in a Python factory.
-Use a [cartridge](cartridge.md) when you need file-based packaging.
+Package instructions, tools, hooks, configuration, and self-tests as files.
+This [cartridge](cartridge.md) is a reusable, reviewable unit of agent behavior.
 </div>
 
 </div>
@@ -109,7 +110,12 @@ Compaction can discard details.
 You control evidence access and retention.
 See [default policies and opt-outs](operations.md#standard-agent-harness).
 
-## Check a tool change
+## Test changes after deployment
+
+Save failed runs so you can inspect calls and results.
+Turn observed failures into regression tests and outcome evals.
+Replay captured model responses to test changed tools or hooks.
+Use fresh model runs to evaluate changes to prompts, models, or model-visible context.
 
 Run `looplet-proof` after installation to check the complete regression example.
 
@@ -169,11 +175,12 @@ Choose fixed responses or new model runs for the change that you need to check.
 
 <div class="home-path" markdown>
 
-### Find an interface
+### Package an agent
 
-Find commands, Python functions, saved files, and runtime controls.
+Review agent code, configuration, and self-tests together in Git.
+Load the same version into your application and test changes to it.
 
-[CLI](cli.md) | [Python API](api.md) | [Saved artifacts](artifacts.md)
+[Cartridge format](cartridge.md) | [Python presets](api.md#optional-preset-conveniences)
 
 </div>
 
@@ -210,7 +217,7 @@ A Git worktree only separates edits.
 - One model calls tools until the task ends.
 - Your team uses Python, Git, and pytest.
 - Your code must control when tools run.
-- You need saved runs and tests for agent changes.
+- You need to test and review agent changes after deployment.
 
 </div>
 
@@ -229,6 +236,7 @@ A Git worktree only separates edits.
 
 Looplet can run inside a workflow engine and export evidence to other systems.
 It does not replace those systems.
+Keep improvement algorithms, experiment orchestration, and promotion decisions in your host or downstream packages.
 The core package has no third-party runtime dependencies.
 Provider adapters are optional extras.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
@@ -47,6 +48,22 @@ def _component_name(value: Any) -> str:
     return f"{module}.{name}"
 
 
+def _configuration_reference(value: Any) -> dict[str, str]:
+    if callable(value):
+        return {"callable": _component_name(value)}
+    raise TypeError("Provenance configuration requires JSON values or callable references")
+
+
+def _component_configuration(value: Any) -> dict[str, Any] | None:
+    describe = getattr(value, "provenance_config", None)
+    if not callable(describe):
+        return None
+    configuration = describe()
+    if not isinstance(configuration, dict):
+        raise TypeError("provenance_config() must return a dictionary")
+    return json.loads(json.dumps(configuration, default=_configuration_reference, allow_nan=False))
+
+
 def serialize_harness(
     *,
     config: "LoopConfig | None" = None,
@@ -56,7 +73,12 @@ def serialize_harness(
     llm: Any | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a stable, JSON-friendly snapshot of the agent harness."""
+    """Return a stable, JSON-friendly snapshot of the agent harness.
+
+    Components may expose ``provenance_config()`` to declare safe settings.
+    Descriptions contain finite JSON values or callable references, not closures.
+    Names alone do not identify code revisions or establish behavioral equivalence.
+    """
     snapshot: dict[str, Any] = {
         "schema_version": 2,
         "extra": dict(extra) if extra is not None else {},
@@ -98,6 +120,7 @@ def serialize_harness(
             if value is not _MISSING:
                 snapshot[key] = deepcopy(value)
         components = {}
+        component_configurations = {}
         for key in (
             "compact_service",
             "assistant_turn_policy",
@@ -117,8 +140,13 @@ def serialize_harness(
             value = _getattr_present(config, key)
             if value is not _MISSING:
                 components[key] = _component_name(value)
+                description = _component_configuration(value)
+                if description is not None:
+                    component_configurations[key] = description
         if components:
             snapshot["components"] = components
+        if component_configurations:
+            snapshot["component_configurations"] = component_configurations
 
     if tools is not None:
         snapshot["tools"] = []
@@ -140,11 +168,20 @@ def serialize_harness(
     if hooks is not None:
         snapshot["hooks"] = [type(h).__name__ for h in hooks]
         snapshot["hook_types"] = [_component_name(hook) for hook in hooks]
+        configurations = [_component_configuration(hook) for hook in hooks]
+        if any(value is not None for value in configurations):
+            snapshot["hook_configurations"] = configurations
     if memory_sources is not None:
         snapshot["memory_sources"] = [type(s).__name__ for s in memory_sources]
         snapshot["memory_source_types"] = [_component_name(source) for source in memory_sources]
+        configurations = [_component_configuration(source) for source in memory_sources]
+        if any(value is not None for value in configurations):
+            snapshot["memory_source_configurations"] = configurations
     if llm is not None:
         snapshot["llm_backend"] = type(llm).__name__
         snapshot["llm_backend_type"] = _component_name(llm)
+        description = _component_configuration(llm)
+        if description is not None:
+            snapshot["llm_configuration"] = description
 
     return snapshot

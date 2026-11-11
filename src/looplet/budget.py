@@ -256,6 +256,10 @@ class ThresholdCompactHook:
             "fire_tier": self.fire_tier,
         }
 
+    def provenance_config(self) -> dict[str, Any]:
+        """Describe compaction settings without runtime firing history."""
+        return self.to_config()
+
     def should_compact(
         self,
         state: AgentState,

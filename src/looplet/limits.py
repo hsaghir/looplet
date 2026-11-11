@@ -56,6 +56,10 @@ class ToolCallBudgetHook:
     def to_config(self) -> dict[str, Any]:
         return {"max_calls": self.max_calls}
 
+    def provenance_config(self) -> dict[str, Any]:
+        """Describe the dispatch ceiling without its consumed count."""
+        return self.to_config()
+
     def pre_dispatch(
         self, state: Any, session_log: Any, tool_call: ToolCall, step_num: int
     ) -> ToolResult | None:
@@ -152,6 +156,10 @@ class PerToolLimitHook:
             "default_limit": self._default_limit,
             "message": self._message,
         }
+
+    def provenance_config(self) -> dict[str, Any]:
+        """Describe per-tool limits without runtime call counts."""
+        return self.to_config()
 
     # ── LoopHook slot ─────────────────────────────────────────
 
@@ -251,6 +259,10 @@ class BudgetWarningHook:
         """Clear fired-threshold memory - useful between runs."""
         self._fired.clear()
         self._total = None
+
+    def provenance_config(self) -> dict[str, Any]:
+        """Describe actual thresholds and message policy without firing state."""
+        return {"thresholds": list(self._thresholds), "message": self._message}
 
     def to_config(self) -> dict[str, Any]:
         """Round-trip kwargs for ``preset_to_cartridge``.

@@ -1054,9 +1054,10 @@ async def test_rejected_text_completion_retains_logical_host_feedback(asynchrono
         conversation_mode = "stateful"
 
         def set_conversation_input(self, snapshot):
-            snapshots.append(deepcopy(snapshot))
+            self.snapshot = deepcopy(snapshot)
 
         def generate(self, prompt, **kwargs):
+            snapshots.append(deepcopy(self.snapshot))
             return "Candidate answer"
 
     class AsyncBackend(Backend):
@@ -1087,6 +1088,7 @@ async def test_rejected_text_completion_retains_logical_host_feedback(asynchrono
         else list(composable_loop(**arguments))
     )
     assert len(steps) == 2
+    assert len(snapshots) == 2
     assert RunResult.from_state(state).completed
     feedback = [
         message

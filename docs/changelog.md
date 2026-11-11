@@ -35,6 +35,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Automatic traces isolate recording state per run while preserving shared host recorder history and redaction. Recorders restore call-owned conversation input before delegation after persistence yields.
+- Async startup initializes owned evidence storage in drained workers. Host configuration and resource binding remain on the caller thread.
+- Harness snapshots capture explicit `provenance_config()` descriptions, preserving policy settings and callable identities without inspecting arbitrary object state.
 - Runtime admission rejects existing run IDs and creation failures before model calls or tool effects, preserving prior evidence.
 - Configured intent checkpoint failures stop external work without model retries. Terminal and event reporting failures remain warnings.
 - Async runtime store writes run off the event loop and drain before cancellation propagates. Successfully admitted cancellations retain terminal records.

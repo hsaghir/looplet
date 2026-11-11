@@ -50,10 +50,12 @@ Hook methods may be synchronous or `async def`; Looplet awaits them in order.
 The existing compaction service, terminal output schemas, routing, context
 budgets, and cancellation/deadline semantics apply to async runs as well.
 
-Automatic checkpoint writes and final evidence flushing run in awaited workers.
+Automatic storage initialization, checkpoint loading, writes, and final evidence flushing run in awaited workers.
 Automatic trajectory and session-tree disk callbacks use the same ordered worker path.
 Each run waits for its current write before submitting another operation or dispatching a tool.
 Cancellation drains an in-flight write before finalization releases the registry.
+Startup cancellation also drains storage initialization before releasing ownership, without starting model calls or tool dispatch.
+Config replacement, checkpoint-owner binding, registry resources, and snapshot descriptions stay on the caller thread.
 Checkpoint callbacks and session-log capture remain on the loop thread and should be brief.
 Explicit hooks and stores retain their host-defined behavior.
 

@@ -216,23 +216,11 @@ class _HarnessRun:
     registry_id: int | None = None
     registry_token: object | None = None
     run_dir: Path | None = None
+    checkpoint_factory: Any = None
+    resources: dict[str, Any] | None = None
+    resources_changed: bool = False
 
     def bind_checkpoint(self, config: LoopConfig) -> LoopConfig:
-        self.initial_checkpoint = config.initial_checkpoint
-        if config.checkpoint_dir is not None:
-            if self.checkpoint_store is None:
-                from looplet.checkpoint import FileCheckpointStore
-
-                self.checkpoint_store = FileCheckpointStore(config.checkpoint_dir)
-            if self.initial_checkpoint is None:
-                self.initial_checkpoint = self.checkpoint_store.load_latest_for_resume(
-                    run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
-                )
-                if self.initial_checkpoint is not None:
-                    logging.getLogger(__name__).info(
-                        "Resuming run from checkpoint at step %d",
-                        self.initial_checkpoint.step_number,
-                    )
         for hook in self.hooks:
             binder = getattr(hook, "bind_checkpoint_store", None)
             if getattr(hook, "checkpoint_owner", False) is True and callable(binder):
@@ -302,6 +290,44 @@ def prepare_harness_run(
     conversation: Any,
 ) -> _HarnessRun:
     """Bind missing persistence primitives without replacing explicit host choices."""
+    prepared = _claim_harness_run(config, hooks, llm, tools, state, session_log)
+    try:
+        _initialize_harness_storage(prepared)
+        return _bind_harness_run(prepared, tools)
+    except BaseException:
+        prepared.release()
+        raise
+
+
+async def prepare_harness_run_async(
+    config: LoopConfig,
+    hooks: list[Any],
+    llm: Any,
+    tools: Any,
+    state: Any,
+    session_log: Any,
+    conversation: Any,
+) -> _HarnessRun:
+    """Initialize owned storage in a drained worker and bind host objects on the caller."""
+    from looplet.checkpoint import _run_persistence
+
+    prepared = _claim_harness_run(config, hooks, llm, tools, state, session_log)
+    try:
+        await _run_persistence(_initialize_harness_storage, prepared)
+        return _bind_harness_run(prepared, tools)
+    except BaseException:
+        prepared.release()
+        raise
+
+
+def _claim_harness_run(
+    config: LoopConfig,
+    hooks: list[Any],
+    llm: Any,
+    tools: Any,
+    state: Any,
+    session_log: Any,
+) -> _HarnessRun:
     prepared = _HarnessRun(config, hooks, llm, state, session_log)
     registry_id = id(tools) if tools is not None else None
     token = object()
@@ -316,28 +342,19 @@ def prepare_harness_run(
     prepared.registry_id = registry_id
     prepared.registry_token = token
     try:
-        return _prepare_harness_run(prepared, tools, conversation)
+        return _configure_harness_run(prepared, tools)
     except BaseException:
         prepared.release()
         raise
 
 
-def _prepare_harness_run(
+def _configure_harness_run(
     prepared: _HarnessRun,
     tools: Any,
-    conversation: Any,
 ) -> _HarnessRun:
-    from looplet._storage import DiskBackedDict, DiskBackedList
-    from looplet.checkpoint import CheckpointHook, _IncrementalCheckpointStore
-    from looplet.provenance import ProvenanceSink, TrajectoryRecorder, _recording_backend
-    from looplet.session import SessionLog
-    from looplet.session_tree import SessionTree, SessionTreeRecorder, TreeNode
-    from looplet.types import DefaultState
+    from looplet.checkpoint import CheckpointHook, FileCheckpointStore, _IncrementalCheckpointStore
 
     config = prepared.config
-    llm = prepared.llm
-    state = prepared.state
-    session_log = prepared.session_log
     resolved = resolve_harness(config, prepared.hooks)
     prepared.hooks = resolved.hooks
     if config.compact_service is None:
@@ -345,45 +362,79 @@ def _prepare_harness_run(
     disabled = set(config.disabled_defaults)
     if callable(getattr(tools, "set_resources", None)):
         resources = tools.resources
+        prepared.resources = resources
         store = resources.get("tool_result_store")
         if isinstance(store, _AutomaticResultStore) and store._owner is tools:
             resources.pop("tool_result_store")
-            tools.set_resources(resources)
+            prepared.resources_changed = True
+    if config.checkpoint_dir is not None:
+        prepared.checkpoint_factory = FileCheckpointStore
     if (
-        config.harness_profile == "minimal"
-        or "persistence" in disabled
-        or not callable(getattr(tools, "set_resources", None))
+        config.harness_profile != "minimal"
+        and "persistence" not in disabled
+        and prepared.resources is not None
     ):
-        prepared.config = prepared.bind_checkpoint(config)
-        return prepared
-    root = Path(config.run_dir or Path(".looplet/runs") / uuid4().hex).resolve()
-    prepared.run_dir = root
-    try:
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        policy = root / ".gitignore"
-        if not policy.exists():
-            policy.write_text("*\n", encoding="utf-8")
-    except OSError as error:
-        raise OSError(
-            error.errno,
-            "Cannot initialize run evidence. Set LoopConfig(run_dir=...) to a writable "
-            "directory, or set LoopConfig(disabled_defaults=('persistence',)) to run "
-            "without saved evidence.",
-            error.filename,
-        ) from error
-    effective = replace(resolved.config, run_dir=str(root))
-    if (
-        "checkpointing" not in disabled
-        and effective.checkpoint_dir is None
-        and not any(
-            isinstance(hook, CheckpointHook) or getattr(hook, "checkpoint_owner", False) is True
-            for hook in prepared.hooks
-        )
-    ):
-        effective.checkpoint_dir = str(root / "checkpoints")
-        prepared.checkpoint_store = _IncrementalCheckpointStore(effective.checkpoint_dir)
-    effective = prepared.bind_checkpoint(effective)
-    prepared.state = state if state is not None else DefaultState(max_steps=effective.max_steps)
+        prepared.run_dir = Path(config.run_dir or Path(".looplet/runs") / uuid4().hex)
+        if (
+            "checkpointing" not in disabled
+            and prepared.checkpoint_factory is None
+            and not any(
+                isinstance(hook, CheckpointHook) or getattr(hook, "checkpoint_owner", False) is True
+                for hook in prepared.hooks
+            )
+        ):
+            prepared.checkpoint_factory = _IncrementalCheckpointStore
+    return prepared
+
+
+def _initialize_harness_storage(prepared: _HarnessRun) -> None:
+    from looplet._storage import DiskBackedDict, DiskBackedList
+    from looplet.checkpoint import _IncrementalCheckpointStore
+    from looplet.provenance import ProvenanceSink, TrajectoryRecorder, _recording_backend
+    from looplet.session import SessionLog
+    from looplet.session_tree import SessionTree, SessionTreeRecorder, TreeNode
+    from looplet.types import DefaultState
+
+    config = prepared.config
+    disabled = set(config.disabled_defaults)
+    root = prepared.run_dir
+    if root is not None:
+        root = root.resolve()
+        prepared.run_dir = root
+        try:
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            policy = root / ".gitignore"
+            if not policy.exists():
+                policy.write_text("*\n", encoding="utf-8")
+        except OSError as error:
+            raise OSError(
+                error.errno,
+                "Cannot initialize run evidence. Set LoopConfig(run_dir=...) to a writable "
+                "directory, or set LoopConfig(disabled_defaults=('persistence',)) to run "
+                "without saved evidence.",
+                error.filename,
+            ) from error
+    prepared.initial_checkpoint = config.initial_checkpoint
+    if prepared.checkpoint_factory is not None:
+        if prepared.checkpoint_factory is _IncrementalCheckpointStore:
+            assert root is not None
+            directory = root / "checkpoints"
+        else:
+            directory = config.checkpoint_dir
+        prepared.checkpoint_store = prepared.checkpoint_factory(directory)
+        if prepared.initial_checkpoint is None:
+            prepared.initial_checkpoint = prepared.checkpoint_store.load_latest_for_resume(
+                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
+            )
+            if prepared.initial_checkpoint is not None:
+                logging.getLogger(__name__).info(
+                    "Resuming run from checkpoint at step %d",
+                    prepared.initial_checkpoint.step_number,
+                )
+    if root is None:
+        return
+    if prepared.state is None:
+        prepared.state = DefaultState(max_steps=config.max_steps)
     if type(prepared.state) is DefaultState and "history" not in disabled:
         prepared.state.steps = DiskBackedList(
             lambda step: step.to_full_dict(),
@@ -392,29 +443,30 @@ def _prepare_harness_run(
             preserve_python=True,
             weight=DefaultState._step_charge,
         )
-    prepared.session_log = session_log if session_log is not None else SessionLog()
-    resources = tools.resources
-    result_store = None
+    if prepared.session_log is None:
+        prepared.session_log = SessionLog()
+    resources = prepared.resources
+    assert resources is not None
     if "result_retention" not in disabled and "tool_result_store" not in resources:
-        result_store = _AutomaticResultStore(str(root / "results" / uuid4().hex), owner=tools)
-    metadata = getattr(prepared.state, "metadata", None)
-    if isinstance(metadata, dict):
-        metadata["run_dir"] = str(root)
+        resources["tool_result_store"] = _AutomaticResultStore(str(root / "results" / uuid4().hex))
+        prepared.resources_changed = True
     if "provenance" not in disabled and not any(
         isinstance(hook, TrajectoryRecorder) for hook in prepared.hooks
     ):
-        prepared.sink = ProvenanceSink(dir=root / "traces" / uuid4().hex)
-        if (recording := _recording_backend(llm)) is not None:
-            recorder = TrajectoryRecorder(recording_llm=recording)
-            prepared.sink._recording_llm = recording
-            prepared.sink._hook = recorder
+        trace_directory = root / "traces" / uuid4().hex
+        if (recording := _recording_backend(prepared.llm)) is not None:
+            prepared.sink = ProvenanceSink(
+                dir=trace_directory,
+                max_chars_per_call=recording._max_chars,
+                redact=recording._redact,
+                redact_upstream=False,
+            )
         else:
-            prepared.llm = prepared.sink.wrap_llm(llm)
-            recorder = prepared.sink.trajectory_hook()
+            prepared.sink = ProvenanceSink(dir=trace_directory)
+        prepared.llm = prepared.sink.wrap_llm(prepared.llm)
+        recorder = prepared.sink.trajectory_hook()
         prepared.hooks.append(recorder)
         prepared.persistence_hooks.append(recorder)
-        if isinstance(metadata, dict):
-            metadata["trace_dir"] = str(prepared.sink._dir)
     if "branching" not in disabled and not any(
         isinstance(hook, SessionTreeRecorder) for hook in prepared.hooks
     ):
@@ -428,6 +480,35 @@ def _prepare_harness_run(
         recorder = SessionTreeRecorder(prepared.tree)
         prepared.hooks.append(recorder)
         prepared.persistence_hooks.append(recorder)
+
+
+def _bind_harness_run(prepared: _HarnessRun, tools: Any) -> _HarnessRun:
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    original_llm = (
+        prepared.sink._recording_llm._backend if prepared.sink is not None else prepared.llm
+    )
+    effective = prepared.config
+    if prepared.run_dir is not None:
+        effective = replace(
+            effective,
+            run_dir=str(prepared.run_dir),
+            compact_service=(
+                prepared.compact_service
+                if effective.compact_service is None
+                else effective.compact_service
+            ),
+        )
+        if prepared.checkpoint_factory is _IncrementalCheckpointStore:
+            effective = replace(effective, checkpoint_dir=str(prepared.run_dir / "checkpoints"))
+    effective = prepared.bind_checkpoint(effective)
+    if prepared.run_dir is None:
+        prepared.config = effective
+    metadata = getattr(prepared.state, "metadata", None)
+    if isinstance(metadata, dict) and prepared.run_dir is not None:
+        metadata["run_dir"] = str(prepared.run_dir)
+        if prepared.sink is not None:
+            metadata["trace_dir"] = str(prepared.sink._dir)
     if prepared.sink is not None:
         from looplet.harness_snapshot import serialize_harness
 
@@ -436,10 +517,13 @@ def _prepare_harness_run(
             hooks=prepared.hooks,
             tools=tools,
             memory_sources=effective.memory_sources,
-            llm=llm,
+            llm=original_llm,
             extra={"resolved_harness": ResolvedHarness(effective, prepared.hooks).describe()},
         )
-    if result_store is not None:
-        resources["tool_result_store"] = result_store
-        tools.set_resources(resources)
+    if prepared.resources_changed:
+        assert prepared.resources is not None
+        store = prepared.resources.get("tool_result_store")
+        if isinstance(store, _AutomaticResultStore):
+            store._owner = tools
+        tools.set_resources(prepared.resources)
     return prepared

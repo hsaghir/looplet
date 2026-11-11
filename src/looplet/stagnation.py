@@ -203,6 +203,17 @@ class StagnationHook:
         self._streak = 0
         self._last_progress = None
 
+    def provenance_config(self) -> dict[str, Any]:
+        """Describe declared policies without serializing runtime counters or closures."""
+        return {
+            "fingerprint": self._fingerprint_fn,
+            "threshold": self._threshold,
+            "nudge": self._nudge,
+            "progress": self._progress_fn,
+            "reset_after_nudge": self._reset_after_nudge,
+            "ignore_tools": sorted(self._ignore_tools),
+        }
+
     def to_config(self) -> dict[str, Any]:
         """Round-trip kwargs for ``preset_to_cartridge``.
 

@@ -10,19 +10,29 @@ import time
 from collections.abc import Iterator, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
 from looplet._storage import DiskBackedList
-from looplet.checkpoint import Checkpoint, _capture_checkpoint
+from looplet.artifact_compat import ARTIFACT_SCHEMA, ARTIFACT_VERSION
+from looplet.checkpoint import Checkpoint, _capture_checkpoint, _run_persistence
 from looplet.events import EventPayload
 from looplet.execution_session import ExecutionSession
 from looplet.presets import AgentPreset, ShutdownReport
-from looplet.run_records import RunEvent, event_from_payload
+from looplet.run_records import ArtifactRef, RunEvent, event_from_payload
 from looplet.run_store import RunStore
 from looplet.types import CancelToken, RunEnvelope, RunPhase, RunResult, RunStatus
 
 __all__ = ["AgentRuntime", "RunHandle"]
+
+
+def _runtime_artifacts(result: RunResult) -> tuple[ArtifactRef, ...]:
+    trace_dir = result.metadata.get("trace_dir")
+    if trace_dir is None:
+        return ()
+    path = Path(trace_dir).absolute()
+    return (ArtifactRef(path.name, "provenance", str(path), ARTIFACT_SCHEMA, ARTIFACT_VERSION),)
 
 
 def _failed_runtime_result(
@@ -55,14 +65,17 @@ class _RuntimeEventHook:
         events: MutableSequence[RunEvent],
         store: RunStore | None,
         persistence_errors: list[str],
+        *,
+        asynchronous: bool = False,
     ) -> None:
         self.envelope = envelope
         self.events = events
         self.store = store
         self.persistence_errors = persistence_errors
+        self.asynchronous = asynchronous
         self._sequence = 0
 
-    def on_event(self, payload: EventPayload) -> None:
+    def on_event(self, payload: EventPayload) -> Any:
         event = event_from_payload(
             payload,
             envelope=self.envelope,
@@ -70,6 +83,11 @@ class _RuntimeEventHook:
         )
         self._sequence += 1
         self.events.append(event)
+        if self.asynchronous:
+            return _run_persistence(self._append_event, event)
+        self._append_event(event)
+
+    def _append_event(self, event: RunEvent) -> None:
         if self.store is not None:
             try:
                 self.store.append_event(event)
@@ -171,6 +189,10 @@ class _RunStoreCheckpointHook:
             try:
                 self.store.save_checkpoint(self.run_id, checkpoint)
             except Exception as exc:
+                if not checkpoint.is_terminal and (
+                    checkpoint.metadata.get("pending_calls") or self._pending_model_call is not None
+                ):
+                    raise
                 self.persistence_errors.append(f"checkpoint: {type(exc).__name__}: {exc}")
         if self._checkpoint_mirror is not None:
             self._checkpoint_mirror.save(checkpoint, key)
@@ -282,36 +304,36 @@ class RunHandle:
         self._future = future
         self._events = events
         self._executor = executor
+        future.add_done_callback(
+            lambda completed: executor.shutdown(wait=False, cancel_futures=True)
+        )
 
     @property
     def status(self) -> RunStatus:
         if not self._future.done():
             return RunStatus.RUNNING
+        if self._future.cancelled():
+            return RunStatus.CANCELLED
+        if self._future.exception() is not None:
+            return RunStatus.FAILED
         return self.result().status
 
     @property
     def phase(self) -> RunPhase:
         if not self._future.done():
-            return RunPhase.LLM
-        return self.result().phase
+            if not self._events:
+                return RunPhase.STARTING
+            return RunPhase(self._events[-1].payload.get("run_phase") or RunPhase.STARTING)
+        return RunPhase.TERMINAL
 
     def cancel(self, reason: str = "cancelled") -> None:
-        del reason
-        self._cancel_token.cancel()
+        self._cancel_token.cancel(reason)
 
     def result(self, timeout: float | None = None) -> RunResult:
-        try:
-            return self._future.result(timeout=timeout)
-        finally:
-            if self._future.done():
-                self._executor.shutdown(wait=False, cancel_futures=True)
+        return self._future.result(timeout=timeout)
 
     async def wait(self) -> RunResult:
-        try:
-            return await asyncio.wrap_future(self._future)
-        finally:
-            if self._future.done():
-                self._executor.shutdown(wait=False, cancel_futures=True)
+        return await asyncio.wrap_future(self._future)
 
     def events(self) -> tuple[RunEvent, ...]:
         return tuple(self._events)
@@ -320,8 +342,25 @@ class RunHandle:
 @dataclass
 class _RuntimeExecution:
     hooks: list[Any]
+    persistence_errors: list[str]
+    started: float
     result: RunResult | None = None
     checkpoint_hook: _RunStoreCheckpointHook | None = None
+    store_created: bool = False
+
+    def create_record(self, store: RunStore, envelope: RunEnvelope) -> None:
+        store.create(envelope, metadata={"runtime": "AgentRuntime"})
+        self.store_created = True
+
+    def finalize_metadata(self, token: CancelToken) -> None:
+        if self.result is not None:
+            self.result.metadata.setdefault(
+                "runtime_duration_ms", (time.perf_counter() - self.started) * 1000
+            )
+            if self.result.cancelled and token.reason is not None:
+                self.result.metadata["cancel_reason"] = token.reason
+            if self.persistence_errors:
+                self.result.metadata["persistence_warnings"] = self.persistence_errors
 
 
 class AgentRuntime:
@@ -361,6 +400,7 @@ class AgentRuntime:
         *,
         events: MutableSequence[RunEvent] | None = None,
         claimed: bool = False,
+        asynchronous: bool = False,
     ) -> Iterator[_RuntimeExecution]:
         """Own setup, persistence, restoration, and release for either driver."""
         if not claimed:
@@ -376,6 +416,7 @@ class AgentRuntime:
                 else DiskBackedList(RunEvent.to_dict, RunEvent.from_dict),
                 self.store,
                 persistence_errors,
+                asynchronous=asynchronous,
             )
             checkpoint_hook = (
                 _RunStoreCheckpointHook(
@@ -391,38 +432,38 @@ class AgentRuntime:
             )
             execution = _RuntimeExecution(
                 [observer, *([checkpoint_hook] if checkpoint_hook is not None else [])],
+                persistence_errors,
+                time.perf_counter(),
                 checkpoint_hook=checkpoint_hook,
             )
             old_envelope = self.preset.config.run_envelope
             old_token = self.preset.config.cancel_token
             self.preset.config.run_envelope = envelope
             self.preset.config.cancel_token = token
-            started = time.perf_counter()
             try:
-                if self.store is not None:
-                    try:
-                        self.store.create(envelope, metadata={"runtime": "AgentRuntime"})
-                    except Exception as exc:
-                        persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
+                if self.store is not None and not asynchronous:
+                    execution.create_record(self.store, envelope)
                 yield execution
             finally:
                 try:
-                    if checkpoint_hook is not None and execution.result is not None:
+                    if (
+                        not asynchronous
+                        and checkpoint_hook is not None
+                        and execution.result is not None
+                    ):
                         checkpoint_hook.finalize(execution.result)
                 finally:
                     with self._lock:
                         self.preset.config.run_envelope = old_envelope
                         self.preset.config.cancel_token = old_token
+                execution.finalize_metadata(token)
                 if execution.result is not None:
                     result = execution.result
-                    result.metadata.setdefault(
-                        "runtime_duration_ms", (time.perf_counter() - started) * 1000
-                    )
-                    if persistence_errors:
-                        result.metadata["persistence_warnings"] = persistence_errors
-                    if self.store is not None:
+                    if self.store is not None and not asynchronous:
                         try:
-                            self.store.complete(envelope.run_id, result)
+                            self.store.complete(
+                                envelope.run_id, result, artifacts=_runtime_artifacts(result)
+                            )
                         except Exception as exc:
                             result.metadata.setdefault("persistence_warnings", []).append(
                                 f"complete: {type(exc).__name__}: {exc}"
@@ -441,9 +482,9 @@ class AgentRuntime:
         _event_buffer: MutableSequence[RunEvent] | None = None,
         _claimed: bool = False,
     ) -> RunResult:
-        """Run synchronously and always return a host-facing result."""
+        """Execute an admitted run; return results for execution errors."""
         run_envelope = envelope or self._new_envelope()
-        cancel_token = _cancel_token or self.preset.config.cancel_token or CancelToken()
+        cancel_token = _cancel_token or self._new_cancel_token()
         with self._execution(
             llm, run_envelope, cancel_token, events=_event_buffer, claimed=_claimed
         ) as execution:
@@ -467,11 +508,14 @@ class AgentRuntime:
         envelope: RunEnvelope | None = None,
         extra_hooks: Iterable[Any] = (),
     ) -> RunResult:
-        """Run with the async loop while sharing the same lifecycle contract."""
+        """Admit and run asynchronously, draining store writes before cancellation propagates."""
         run_envelope = envelope or self._new_envelope()
-        cancel_token = self.preset.config.cancel_token or CancelToken()
-        with self._execution(llm, run_envelope, cancel_token) as execution:
+        cancel_token = self._new_cancel_token()
+        with self._execution(llm, run_envelope, cancel_token, asynchronous=True) as execution:
+            cancelled: asyncio.CancelledError | None = None
             try:
+                if self.store is not None:
+                    await _run_persistence(execution.create_record, self.store, run_envelope)
                 if self.session is not None:
                     self.session.attach(run_envelope.run_id)
                 execution.result = await self.preset.run_result_async(
@@ -479,16 +523,49 @@ class AgentRuntime:
                     task=task,
                     extra_hooks=[*extra_hooks, *execution.hooks],
                 )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as error:
+                if self.store is not None and not execution.store_created:
+                    raise
+                cancel_token.cancel(str(error) or "cancelled")
                 execution.result = replace(
                     RunResult.from_state(self.preset.state), run_envelope=run_envelope
                 )
-                raise
+                if execution.result.phase is not RunPhase.TERMINAL:
+                    execution.result = replace(
+                        execution.result,
+                        status=RunStatus.CANCELLED,
+                        phase=RunPhase.TERMINAL,
+                        termination_reason="cancelled",
+                        output=None,
+                    )
+                cancelled = error
             except Exception as exc:  # noqa: BLE001
+                if self.store is not None and not execution.store_created:
+                    raise
                 execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             finally:
                 if execution.checkpoint_hook is not None and execution.result is not None:
-                    await execution.checkpoint_hook.finalize_async(execution.result)
+                    try:
+                        await execution.checkpoint_hook.finalize_async(execution.result)
+                    except asyncio.CancelledError as error:
+                        cancelled = cancelled or error
+                execution.finalize_metadata(cancel_token)
+                if self.store is not None and execution.result is not None:
+                    try:
+                        await _run_persistence(
+                            self.store.complete,
+                            run_envelope.run_id,
+                            execution.result,
+                            artifacts=_runtime_artifacts(execution.result),
+                        )
+                    except asyncio.CancelledError as error:
+                        cancelled = cancelled or error
+                    except Exception as exc:
+                        execution.persistence_errors.append(
+                            f"complete: {type(exc).__name__}: {exc}"
+                        )
+            if cancelled is not None:
+                raise cancelled
             assert execution.result is not None
             return execution.result
 
@@ -497,7 +574,7 @@ class AgentRuntime:
     ) -> RunHandle:
         """Start a background synchronous run."""
         run_envelope = envelope or self._new_envelope()
-        token = CancelToken()
+        token = self._new_cancel_token()
         self._claim(run_envelope.run_id, token)
         events: MutableSequence[RunEvent] = DiskBackedList(RunEvent.to_dict, RunEvent.from_dict)
         executor = concurrent.futures.ThreadPoolExecutor(
@@ -527,7 +604,14 @@ class AgentRuntime:
         )
         with self._lock:
             self._active_handles[run_envelope.run_id] = handle
-        future.add_done_callback(lambda _: self._active_handles.pop(run_envelope.run_id, None))
+
+        def finished(completed: concurrent.futures.Future[RunResult]) -> None:
+            with self._lock:
+                self._active_handles.pop(run_envelope.run_id, None)
+                if completed.cancelled():
+                    self._release(run_envelope.run_id)
+
+        future.add_done_callback(finished)
         return handle
 
     def close(self, *, timeout: float = 5.0) -> ShutdownReport:
@@ -561,6 +645,10 @@ class AgentRuntime:
 
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
+
+    def _new_cancel_token(self) -> CancelToken:
+        parent = self.preset.config.cancel_token
+        return parent.create_child() if parent is not None else CancelToken()
 
     def _new_envelope(self) -> RunEnvelope:
         return RunEnvelope(run_id=uuid4().hex[:12])

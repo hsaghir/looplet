@@ -348,7 +348,8 @@ See the [Python quickstart](python.md) before adding a preset or factory.
 
 Load a cartridge with `cartridge_to_preset()` or a bundle with `load_skill_bundle()`.
 File format and loop execution remain separate.
-The optional `AgentRuntime` can report host errors as failed results.
+The optional `AgentRuntime` translates admitted execution errors into failed results.
+Run-ID conflicts and initial store-creation errors propagate before work.
 
 ## Tools
 
@@ -797,6 +798,12 @@ See [Host integration](host-integration.md).
 | `RunEvent` / `ArtifactRef`        | Host event and artifact-reference records.                                         |
 | `MemoryRunStore` / `FileRunStore` | Logical run persistence over checkpoints and artifacts.                            |
 | `ContextPlan`                     | Advisory prompt selection and budget plan through `ContextProjection`.             |
+
+Terminal handles expose `status` and `phase` without result retrieval.
+`result()` and `wait()` still propagate admission errors.
+
+`RunResult.to_dict(full=True)` includes each step's full JSON-safe evidence.
+The default compact representation keeps prompt-preview limits.
 
 ## Specialized surfaces
 

@@ -213,7 +213,8 @@ logical persistence, cancellation, and preset cleanup:
 ```python
 from looplet import AgentRuntime, FileRunStore
 
-with AgentRuntime(preset, store=FileRunStore(".looplet/runs")) as runtime:
+store = FileRunStore(".looplet/runs")
+with AgentRuntime(preset, store=store) as runtime:
     result = runtime.run(llm, task=task)
 ```
 
@@ -221,6 +222,47 @@ Set `checkpoint_every_n_steps` on `AgentRuntime` when the run store should
 also retain recovery checkpoints. Checkpoints remain recovery state; traces,
 evals, and application artifacts remain separate evidence files referenced by
 the run record.
+
+Run-store creation admits the run ID before model requests or tool effects.
+Existing IDs and creation failures raise without changing previous run evidence.
+A configured checkpoint protecting pending model or tool work must succeed before external work.
+Checkpoint refusal clears pending ownership and prevents backend invocation.
+It does not refund a charged admission attempt or reuse its model-call ID.
+Restored pending work still requires reconciliation, even when checkpoint persistence previously failed.
+Final checkpoint, event, and completion reporting failures remain best effort.
+The result retains those failures in `metadata["persistence_warnings"]`.
+Async store writes run off the event loop and drain before cancellation returns.
+A successfully created run is finalized if its host task is cancelled during admission.
+
+Runs with automatic provenance publish its location in `RunRecord.artifact_refs`:
+
+```python
+from looplet.provenance import load_model_attempts
+
+assert result.run_envelope is not None
+record = store.load(result.run_envelope.run_id)
+assert record is not None
+trace = next(reference for reference in record.artifact_refs if reference.kind == "provenance")
+attempts = load_model_attempts(trace.uri)
+```
+
+References identify evidence locations, not proof of successful exports or provider delivery.
+Saved-artifact readers validate completed exports.
+`load_model_attempts()` also reads retained intent and outcome records from interrupted runs.
+Missing outcomes do not prove that a provider received no request.
+For backends with request-attempt callbacks, async recording snapshots each preparation notification.
+It persists those snapshots off-loop during call finalization, including cancellation.
+Overlapping calls keep preparation callbacks request-local and restore the host callback after the last active scope exits.
+Nested calls retain separate ownership even when their recorder omits attempt persistence.
+Process loss before finalization can leave only intent records.
+Attempt-directory symlinks and escaping record links are rejected by writers and readers.
+Native request, response, stop reason, and usage snapshots belong to the call being retained.
+Concurrent and nested calls through a recorder retain separate snapshots.
+Legacy backend `last_*` attributes describe the latest call, not concurrent per-call evidence.
+Streaming request scopes cover creation, iterator advancement, and close.
+They do not remain active while a yielded chunk is with the caller.
+Copy the referenced directory with the run record.
+Update the reference URI to its copied location before reading elsewhere.
 
 ## Memory and policy
 
@@ -564,3 +606,18 @@ persistence warnings, and claim release across sync and async drivers.
 External async task cancellation still propagates as `CancelledError` while
 restoring the runtime's temporary config. Background handles and bounded
 shutdown remain optional host capabilities, not requirements for direct loops.
+
+`FileRunStore.create()` claims a fresh run directory.
+An existing directory refuses admission even without its record file.
+Retained partial evidence stays untouched; missing-run reads do not reserve identities.
+Both run stores retain complete JSON-safe step evidence at completion.
+`RunResult.to_dict(full=True)` selects that representation; the default remains compact.
+
+`AgentRuntime` is also single-use.
+Each runtime run observes the preset cancellation token through a child token.
+Handle cancellation does not cancel that parent.
+Closing the runtime does not cancel the caller's token or sibling work.
+Completed handles close their dedicated executor without requiring result retrieval.
+Queued cancellations release runtime claims before any work starts.
+Status and phase remain inspectable after failed admission.
+`result()` and `wait()` still propagate the original error.

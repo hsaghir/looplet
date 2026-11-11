@@ -26,6 +26,382 @@ from looplet.testing import MockLLMBackend
 from looplet.types import LLMBackend, Step, ToolCall, ToolResult
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_attempt_writer_rejects_symlinked_directory(tmp_path, asynchronous):
+    from looplet.testing import AsyncMockLLMBackend
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    preserved = outside / "preserved.json"
+    preserved.write_text('{"preserved": true}')
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    attempts = trace / "model-attempts"
+    attempts.symlink_to(outside, target_is_directory=True)
+    backend = AsyncMockLLMBackend(["unused"]) if asynchronous else MockLLMBackend(["unused"])
+    factory = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    recorder = factory(backend, attempt_directory=attempts)
+    with pytest.raises(ValueError, match="attempt"):
+        if asynchronous:
+            await recorder.generate("must not escape")
+        else:
+            recorder.generate("must not escape")
+    assert backend.calls == 0
+    assert {path.name: path.read_bytes() for path in outside.iterdir()} == {
+        "preserved.json": b'{"preserved": true}'
+    }
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_attempt_reader_rejects_escaping_links(tmp_path, directory_link):
+    from looplet.provenance import load_model_attempts
+
+    outside = tmp_path / "outside"
+    RecordingLLMBackend(MockLLMBackend(["ok"]), attempt_directory=outside).generate("private")
+    before = {path.name: path.read_bytes() for path in outside.iterdir()}
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    attempts = trace / "model-attempts"
+    if directory_link:
+        attempts.symlink_to(outside, target_is_directory=True)
+    else:
+        attempts.mkdir()
+        for path in outside.glob("*.json"):
+            (attempts / path.name).symlink_to(path)
+    with pytest.raises(ValueError, match="attempt|outside"):
+        load_model_attempts(trace)
+    assert {path.name: path.read_bytes() for path in outside.iterdir()} == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_async_recording_retains_prepared_requests_off_loop(tmp_path, method, cancelled):
+    from threading import get_ident
+
+    from looplet.provenance import load_model_attempts
+
+    notifications = []
+    owner = get_ident()
+    writes = []
+    cancellation = asyncio.CancelledError("provider interrupted")
+
+    class Backend:
+        request_attempt_callback = None
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        def prepare(self, prompt):
+            self.last_request = {"model": "fake", "prompt": prompt}
+            self.request_attempt_callback()
+            if cancelled:
+                raise cancellation
+
+        async def generate(self, prompt, **kwargs):
+            self.prepare(prompt)
+            return "ok"
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            self.prepare(prompt)
+            return [{"type": "text", "text": "ok"}]
+
+        async def stream(self, prompt, **kwargs):
+            self.prepare(prompt)
+            yield "ok"
+
+    backend = Backend()
+
+    def previous():
+        notifications.append(get_ident())
+
+    backend.set_request_attempt_callback(previous)
+    recorder = AsyncRecordingLLMBackend(backend, attempt_directory=tmp_path / "model-attempts")
+    original_write = recorder._write_attempt
+
+    def write(*args, **kwargs):
+        writes.append(get_ident())
+        return original_write(*args, **kwargs)
+
+    recorder._write_attempt = write
+
+    async def invoke():
+        if method == "stream":
+            return "".join([chunk async for chunk in recorder.stream("request")])
+        options = {"tools": []} if method == "generate_with_tools" else {}
+        return await getattr(recorder, method)("request", **options)
+
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await invoke()
+        assert caught.value is cancellation
+    else:
+        result = await invoke()
+        assert result == (
+            [{"type": "text", "text": "ok"}] if method == "generate_with_tools" else "ok"
+        )
+    assert backend.request_attempt_callback is previous
+    assert notifications == [owner]
+    assert writes and owner not in writes
+    attempts = load_model_attempts(tmp_path)
+    assert len(attempts) == 1
+    assert len(attempts[0]["prepared_requests"]) == 1
+    assert attempts[0]["prepared_requests"][0]["provider_request"] == {
+        "model": "fake",
+        "prompt": "request",
+    }
+    assert attempts[0]["outcome"]["capture"]["provider_request"] == {
+        "model": "fake",
+        "prompt": "request",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
+@pytest.mark.parametrize("shared_recorder", [False, True])
+@pytest.mark.parametrize("finish_first", ["first", "second"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_overlapping_async_preparation_callbacks_keep_request_ownership(
+    tmp_path, method, shared_recorder, finish_first, cancelled
+):
+    from contextvars import ContextVar
+
+    from looplet.provenance import load_model_attempts
+
+    started = {prompt: asyncio.Event() for prompt in ("first", "second")}
+    release = {prompt: asyncio.Event() for prompt in started}
+    notifications = []
+
+    class Backend:
+        request_attempt_callback = None
+
+        def __init__(self):
+            self.request = ContextVar("request", default=None)
+            self.response = ContextVar("response", default=None)
+
+        @property
+        def last_request(self):
+            return self.request.get()
+
+        @property
+        def last_response(self):
+            return self.response.get()
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        async def generate(self, prompt, **kwargs):
+            self.request.set({"prompt": prompt})
+            self.request_attempt_callback()
+            started[prompt].set()
+            await release[prompt].wait()
+            self.response.set({"text": prompt})
+            return prompt
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "text", "text": await self.generate(prompt)}]
+
+        async def stream(self, prompt, **kwargs):
+            yield await self.generate(prompt)
+
+    backend = Backend()
+
+    def previous():
+        notifications.append(backend.last_request["prompt"])
+
+    backend.set_request_attempt_callback(previous)
+    first_trace = tmp_path / "first"
+    second_trace = first_trace if shared_recorder else tmp_path / "second"
+    first = AsyncRecordingLLMBackend(backend, attempt_directory=first_trace / "model-attempts")
+    second = (
+        first
+        if shared_recorder
+        else AsyncRecordingLLMBackend(backend, attempt_directory=second_trace / "model-attempts")
+    )
+
+    async def invoke(recorder, prompt):
+        if method == "stream":
+            return "".join([chunk async for chunk in recorder.stream(prompt)])
+        options = {"tools": []} if method == "generate_with_tools" else {}
+        return await getattr(recorder, method)(prompt, **options)
+
+    pending = {"first": asyncio.create_task(invoke(first, "first"))}
+    try:
+        await asyncio.wait_for(started["first"].wait(), timeout=5)
+        pending["second"] = asyncio.create_task(invoke(second, "second"))
+        await asyncio.wait_for(started["second"].wait(), timeout=5)
+        if cancelled:
+            pending[finish_first].cancel("host cancellation")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await pending[finish_first]
+            assert caught.value.args == ("host cancellation",)
+        else:
+            release[finish_first].set()
+            await pending[finish_first]
+        finish_last = "second" if finish_first == "first" else "first"
+        release[finish_last].set()
+        await pending[finish_last]
+    finally:
+        for event in release.values():
+            event.set()
+        await asyncio.gather(*pending.values(), return_exceptions=True)
+
+    attempts = [
+        attempt for trace in {first_trace, second_trace} for attempt in load_model_attempts(trace)
+    ]
+    assert len(attempts) == 2
+    for attempt in attempts:
+        prompt = attempt["intent"]["request"]["prompt"]
+        assert [item["provider_request"] for item in attempt["prepared_requests"]] == [
+            {"prompt": prompt}
+        ]
+        assert attempt["outcome"]["capture"]["provider_request"] == {"prompt": prompt}
+        interrupted = cancelled and prompt == finish_first
+        assert attempt["outcome"]["capture"]["provider_response"] == (
+            None if interrupted else {"text": prompt}
+        )
+        assert attempt["outcome"]["capture"]["error"] == (
+            "CancelledError: host cancellation" if interrupted else None
+        )
+    assert notifications == ["first", "second"]
+    assert backend.request_attempt_callback is previous
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retain_inner", [False, True])
+@pytest.mark.parametrize("child_task", [False, True])
+async def test_nested_preparation_callbacks_keep_optional_attempts_separate(
+    tmp_path, retain_inner, child_task
+):
+    from contextvars import ContextVar
+
+    from looplet.provenance import load_model_attempts
+
+    class Backend:
+        request_attempt_callback = None
+
+        def __init__(self):
+            self.request = ContextVar("request", default=None)
+            self.response = ContextVar("response", default=None)
+
+        @property
+        def last_request(self):
+            return self.request.get()
+
+        @property
+        def last_response(self):
+            return self.response.get()
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        async def generate(self, prompt, **kwargs):
+            self.request.set({"prompt": prompt})
+            self.request_attempt_callback()
+            if prompt == "outer":
+                pending = inner.generate("inner")
+                assert await (asyncio.create_task(pending) if child_task else pending) == "inner"
+            self.response.set({"text": prompt})
+            return prompt
+
+    backend = Backend()
+    inner = AsyncRecordingLLMBackend(
+        backend,
+        attempt_directory=tmp_path / "inner" / "model-attempts" if retain_inner else None,
+    )
+    outer = AsyncRecordingLLMBackend(backend, attempt_directory=tmp_path / "model-attempts")
+    assert await outer.generate("outer") == "outer"
+    attempt = load_model_attempts(tmp_path)[0]
+    assert [item["provider_request"] for item in attempt["prepared_requests"]] == [
+        {"prompt": "outer"}
+    ]
+    assert attempt["outcome"]["capture"]["provider_request"] == {"prompt": "outer"}
+    assert inner.calls[0].capture["provider_request"] == {"prompt": "inner"}
+    if retain_inner:
+        attempts = load_model_attempts(tmp_path / "inner")
+        assert len(attempts) == 1
+        assert [item["provider_request"] for item in attempts[0]["prepared_requests"]] == [
+            {"prompt": "inner"}
+        ]
+    else:
+        assert not (tmp_path / "inner").exists()
+    assert backend.request_attempt_callback is None
+
+
+@pytest.mark.parametrize("host_callback", [False, True])
+def test_overlapping_sync_preparation_callbacks_keep_request_ownership(tmp_path, host_callback):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, local
+
+    from looplet.provenance import load_model_attempts
+
+    started = {prompt: Event() for prompt in ("first", "second")}
+    release = {prompt: Event() for prompt in started}
+    notifications = []
+
+    class Backend:
+        request_attempt_callback = None
+
+        def __init__(self):
+            self.capture = local()
+
+        @property
+        def last_request(self):
+            return self.capture.request
+
+        @property
+        def last_response(self):
+            return self.capture.response
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        def generate(self, prompt, **kwargs):
+            self.capture.request = {"prompt": prompt}
+            self.capture.response = None
+            self.request_attempt_callback()
+            started[prompt].set()
+            assert release[prompt].wait(5)
+            self.capture.response = {"text": prompt}
+            return prompt
+
+    backend = Backend()
+
+    def previous():
+        notifications.append(backend.last_request["prompt"])
+
+    backend.set_request_attempt_callback(previous if host_callback else None)
+    recorders = {
+        prompt: RecordingLLMBackend(backend, attempt_directory=tmp_path / prompt / "model-attempts")
+        for prompt in started
+    }
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(recorders["first"].generate, "first")
+        try:
+            assert started["first"].wait(5)
+            second = executor.submit(recorders["second"].generate, "second")
+            assert started["second"].wait(5)
+            release["first"].set()
+            assert first.result(timeout=5) == "first"
+            release["second"].set()
+            assert second.result(timeout=5) == "second"
+        finally:
+            for event in release.values():
+                event.set()
+
+    for prompt in started:
+        attempts = load_model_attempts(tmp_path / prompt)
+        assert len(attempts) == 1
+        assert [item["provider_request"] for item in attempts[0]["prepared_requests"]] == [
+            {"prompt": prompt}
+        ]
+        assert attempts[0]["outcome"]["capture"]["provider_request"] == {"prompt": prompt}
+        assert attempts[0]["outcome"]["capture"]["provider_response"] == {"text": prompt}
+    assert notifications == (["first", "second"] if host_callback else [])
+    assert backend.request_attempt_callback is (previous if host_callback else None)
+
+
 @pytest.mark.parametrize("first_async", [False, True])
 @pytest.mark.parametrize("second_async", [False, True])
 @pytest.mark.parametrize("profile", ["execution-v1", "minimal"])

@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- File run stores reject unsafe run IDs and links escaping selected record, event, checkpoint, or lock files.
 - Cached tool results remain subject to later registered pre-dispatch hooks and event-style permission gates in sync and async loops.
 - Cartridge YAML loading rejects unconsumed lines instead of silently dropping later budgets or permissions. Comments before nested lists remain supported.
 - MCP structured arguments are prepared before sync/async permission hooks and sent without later type conversion. Direct registry dispatch retains JSON-string repair; raw tool executors reject structured arguments that still need repair.
@@ -34,6 +35,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Runtime admission rejects existing run IDs and creation failures before model calls or tool effects, preserving prior evidence.
+- Configured intent checkpoint failures stop external work without model retries. Terminal and event reporting failures remain warnings.
+- Async runtime store writes run off the event loop and drain before cancellation propagates. Successfully admitted cancellations retain terminal records.
+- Live run handles derive phase from retained events and preserve host cancellation explanations without changing canonical outcomes.
+- Runtime runs honor parent cancellation without cancelling caller scopes, and release cancelled queued claims. Completed futures close their executor, and status remains readable after admission errors.
+- File run-store writes no longer rescan event history. Memory stores retain detached evidence snapshots and actual completion timestamps. Existing run directories refuse admission, including partial records.
+- Run stores retain full JSON-safe step evidence at completion. `RunResult.to_dict(full=True)` preserves complete tool results without changing compact previews.
+- Late event reporting preserves terminal record status. Failed lock acquisition closes its file before errors or interruption propagate.
+- Runtime records reference automatic provenance through existing artifact references. Retained model attempts remain readable after relocating the referenced directory.
+- Responses adapters count translated conversation items for stateful cursors. Ignored provider metadata and reasoning cannot skip tool results or later user turns.
+- Native model calls retain request-owned provider envelopes and usage through concurrent, nested, and asynchronous recording.
+- Model-attempt records retain optional async preparation callbacks off-loop and confine saved paths. Overlapping calls preserve request ownership and restore host callbacks.
+- Interleaved model streams restore caller request scopes between chunks, on completion, and during interrupted cleanup.
 - Automatic checkpoint saves use owned history revisions to encode changed steps and update affected list chunks. A bounded transaction-local memo avoids repeated node checks. Mutable JSON encoding, hash verification, and durability remain unchanged.
 - Inferred typed validation follows edits to tool parameter schemas, including after cartridge export and load. Explicit argument policies remain independent.
 - Callable input inference ignores unused return and injected-context annotations. Dispatch normalizes parameter schemas once per call without caching editable schemas.

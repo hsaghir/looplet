@@ -656,7 +656,7 @@ cancel = CancelToken()
 config = LoopConfig(cancel_token=cancel)
 
 # Another host-controlled path may call:
-cancel.cancel()
+cancel.cancel("operator requested stop")
 ```
 
 The loop checks between turns and passes the token through `ToolContext`.
@@ -664,9 +664,19 @@ Long-running tools must poll `ctx.cancel_token.is_cancelled` or call
 `raise_if_cancelled()` at safe points. Cancellation does not terminate an
 arbitrary blocking system call.
 
+`CancelToken.reason` exposes the first local reason, or a cancelled parent's reason.
+Later local cancellation does not replace an already active parent reason.
+`RunHandle.cancel(reason)` preserves it in cancelled result metadata as `cancel_reason`.
+The lifecycle status and termination reason remain `cancelled`.
+An unfinished handle reports the latest retained event phase, or `starting` before any event.
+Terminal handles expose status and phase without retrieving their result.
+Result retrieval still propagates the original admission error.
+
 External `asyncio.Task.cancel()` still raises `CancelledError` to the host.
 An unfinished async run becomes cancelled rather than failed.
 `AgentRuntime.run_async()` attempts to save that terminal result and any configured runtime checkpoint before propagation.
+Successfully created records are finalized even when cancellation interrupts admission.
+An already accepted terminal outcome is not replaced by cancellation during cleanup.
 Evidence-flush failures do not replace an external cancellation.
 They emit a warning with the exception type.
 Cancellation does not prove that an interrupted tool had no effects.

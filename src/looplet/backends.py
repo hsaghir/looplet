@@ -59,6 +59,8 @@ from typing import Any, AsyncGenerator, Callable, Generator
 from looplet.backend_contract import (
     BackendRequestPolicy,
     TerminalLLMError,
+    _record_request_capture,
+    _record_response_capture,
     json_snapshot,
     single_model_request_active,
 )
@@ -207,11 +209,13 @@ def _begin_request(backend: Any, request: dict[str, Any]) -> None:
     if request.get("temperature") is None:
         request.pop("temperature", None)
     backend._applied_request_options = options
-    backend.last_request = json_snapshot(request)
+    request_snapshot = json_snapshot(request)
+    backend.last_request = request_snapshot
     backend.last_response = None
     backend.last_model = None
     backend.last_stop_reason = None
     backend.last_usage = {}
+    _record_request_capture(request_snapshot)
     admission = getattr(backend, "request_admission", None)
     if admission is not None:
         from inspect import isawaitable
@@ -227,7 +231,8 @@ def _begin_request(backend: Any, request: dict[str, Any]) -> None:
 
 
 def _capture_response(backend: Any, response: Any) -> None:
-    backend.last_response = json_snapshot(response)
+    response_snapshot = json_snapshot(response)
+    backend.last_response = response_snapshot
     model_id = (
         response.get("model") if isinstance(response, dict) else getattr(response, "model", None)
     )
@@ -264,7 +269,7 @@ def _capture_response(backend: Any, response: Any) -> None:
                 for item in output_items
             )
             reason = "tool_use" if has_fn else "stop"
-    backend.last_stop_reason = (
+    stop_reason = (
         {
             "length": "max_tokens",
             "end_turn": "stop",
@@ -274,12 +279,15 @@ def _capture_response(backend: Any, response: Any) -> None:
         if isinstance(reason, str)
         else None
     )
+    backend.last_stop_reason = stop_reason
     try:
         from looplet.cost import extract_usage
 
-        backend.last_usage = extract_usage(response)
+        usage = extract_usage(response)
     except Exception:
-        backend.last_usage = {}
+        usage = {}
+    backend.last_usage = usage
+    _record_response_capture(response_snapshot, stop_reason, usage)
 
 
 # ── Prompt-cache translation ─────────────────────────────────────
@@ -2048,12 +2056,12 @@ class OpenAIResponsesBackend(_ConversationBackend):
             else:
                 raise
         _capture_response(self, response)
+        text = _responses_output_text(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
             self._previous_response_id = resp_id
-            out_items = getattr(response, "output", None) or []
-            self._synced_item_count = total_items + len(out_items)
-        return _responses_output_text(response)
+            self._synced_item_count = total_items + int(bool(text))
+        return text
 
     def generate_with_tools(
         self,
@@ -2092,12 +2100,14 @@ class OpenAIResponsesBackend(_ConversationBackend):
             else:
                 raise
         _capture_response(self, response)
+        blocks = _responses_output_to_blocks(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
             self._previous_response_id = resp_id
-            out_items = getattr(response, "output", None) or []
-            self._synced_item_count = total_items + len(out_items)
-        return _responses_output_to_blocks(response)
+            self._synced_item_count = total_items + sum(
+                block["type"] in {"text", "tool_use"} for block in blocks
+            )
+        return blocks
 
 
 class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
@@ -2172,12 +2182,12 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
             else:
                 raise
         _capture_response(self, response)
+        text = _responses_output_text(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
             self._previous_response_id = resp_id
-            out_items = getattr(response, "output", None) or []
-            self._synced_item_count = total_items + len(out_items)
-        return _responses_output_text(response)
+            self._synced_item_count = total_items + int(bool(text))
+        return text
 
     async def generate_with_tools(  # type: ignore[override]
         self,
@@ -2216,12 +2226,14 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
             else:
                 raise
         _capture_response(self, response)
+        blocks = _responses_output_to_blocks(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
             self._previous_response_id = resp_id
-            out_items = getattr(response, "output", None) or []
-            self._synced_item_count = total_items + len(out_items)
-        return _responses_output_to_blocks(response)
+            self._synced_item_count = total_items + sum(
+                block["type"] in {"text", "tool_use"} for block in blocks
+            )
+        return blocks
 
 
 # ── Async Anthropic Backend ──────────────────────────────────────

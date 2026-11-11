@@ -177,8 +177,8 @@ class RunResult:
 
         return run_diagnostics(self)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly host summary."""
+    def to_dict(self, *, full: bool = False) -> dict[str, Any]:
+        """Return a JSON-friendly summary, optionally preserving complete step evidence."""
         envelope = self.run_envelope.to_dict() if self.run_envelope is not None else None
         return _json_safe(
             {
@@ -186,7 +186,7 @@ class RunResult:
                 "phase": self.phase.value,
                 "termination_reason": self.termination_reason,
                 "output": self.output,
-                "steps": [step.to_dict() for step in self.steps],
+                "steps": [step.to_full_dict() if full else step.to_dict() for step in self.steps],
                 "run_envelope": envelope,
                 "metadata": dict(self.metadata),
             }
@@ -508,15 +508,28 @@ class CancelToken:
 
     _cancelled: bool = False
     _parents: tuple["CancelToken", ...] = field(default=(), repr=False, compare=False)
+    _reason: str = field(default="cancelled", repr=False, compare=False)
 
-    def cancel(self) -> None:
-        """Mark this token as cancelled. Idempotent."""
-        self._cancelled = True
+    def cancel(self, reason: str = "cancelled") -> None:
+        """Mark this token as cancelled, retaining its original reason."""
+        if not self.is_cancelled:
+            self._reason = reason
+            self._cancelled = True
 
     @property
     def is_cancelled(self) -> bool:
         """True once ``cancel()`` has been called on this token or any parent."""
         return self._cancelled or any(parent.is_cancelled for parent in self._parents)
+
+    @property
+    def reason(self) -> str | None:
+        """Return the local reason, or the first cancelled parent's reason."""
+        if self._cancelled:
+            return self._reason
+        for parent in self._parents:
+            if parent.is_cancelled:
+                return parent.reason
+        return None
 
     def create_child(self, *extra_parents: "CancelToken") -> "CancelToken":
         """Create a child token that observes this token and any extra parents."""

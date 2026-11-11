@@ -1114,17 +1114,21 @@ async def test_concurrent_admission_acknowledges_only_its_call_and_blocks_resume
 
 @pytest.mark.parametrize("interruption", ["error", "cancelled"])
 @pytest.mark.parametrize("checkpoint_mode", ["sync", "async"])
-async def test_failed_admission_checkpoint_keeps_reconciliation_guard(
+async def test_failed_admission_checkpoint_separates_live_refusal_from_recovery(
     interruption, checkpoint_mode
 ):
-    from looplet.assistant_turns import _AssistantTurns
+    import copy
+
+    from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
     from looplet.backend_contract import TerminalLLMError
 
     turns = _AssistantTurns(DefaultState(max_steps=1), LoopConfig(max_model_calls=3))
     backend = AsyncMockLLMBackend(["unused"])
     bounded = turns.wrap(backend)
+    persisted = []
 
     def fail_checkpoint():
+        persisted.append(copy.deepcopy(turns.data))
         if interruption == "cancelled":
             raise asyncio.CancelledError("checkpoint interrupted")
         raise OSError("checkpoint unavailable")
@@ -1136,16 +1140,34 @@ async def test_failed_admission_checkpoint_keeps_reconciliation_guard(
         turns.async_checkpoint = fail_checkpoint_async
     else:
         turns.checkpoint = fail_checkpoint
-    expected = asyncio.CancelledError if interruption == "cancelled" else OSError
-    with pytest.raises(expected):
+    expected = asyncio.CancelledError if interruption == "cancelled" else TerminalLLMError
+    message = "checkpoint interrupted" if interruption == "cancelled" else "checkpoint unavailable"
+    with pytest.raises(expected, match=message) as caught:
         await bounded.generate("first request")
-    turns.async_checkpoint = None
-    turns.checkpoint = None
-    with pytest.raises(TerminalLLMError, match=r"unsupported_context"):
-        await bounded.generate("second request")
+    if interruption == "error":
+        assert caught.value.request_started is False
+        assert isinstance(caught.value.__cause__, OSError)
     assert backend.calls == 0
     assert turns.data["model_calls"] == 1
-    assert turns.data["pending_model_call"]["model_call_number"] == 1
+    assert "pending_model_call" not in turns.data
+    assert not turns._pending_calls and not turns._active_calls
+
+    restored_state = DefaultState(max_steps=1)
+    restored_state.metadata[TURN_STATE_KEY] = persisted[0]
+    restored = _AssistantTurns(restored_state, LoopConfig(max_model_calls=3))
+    with pytest.raises(TerminalLLMError, match=r"unsupported_context"):
+        await restored.wrap(backend).generate("restored request")
+    assert backend.calls == 0
+    assert restored.data["model_calls"] == 1
+    assert restored.data["pending_model_call"]["model_call_number"] == 1
+
+    turns.async_checkpoint = None
+    turns.checkpoint = None
+    assert await bounded.generate("second request") == "unused"
+    assert backend.calls == 1
+    assert turns.data["model_calls"] == 2
+    assert "pending_model_call" not in turns.data
+    assert turns.data["requests"][-1]["model_call_id"].endswith(":call-2")
 
 
 @pytest.mark.parametrize("native", [False, True])

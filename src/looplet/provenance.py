@@ -72,6 +72,7 @@ from looplet.artifact_compat import (
     read_artifact_descriptor,
     write_artifact_descriptor,
 )
+from looplet.backend_contract import _capture_model_request, _ModelRequestCapture
 from looplet.telemetry import Span, Tracer
 
 if TYPE_CHECKING:
@@ -91,6 +92,12 @@ def _clear_call_artifacts(root: Path) -> None:
     (root / "manifest.jsonl").unlink(missing_ok=True)
 
 
+def _model_attempt_root(directory: Path) -> Path:
+    if directory.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {directory}")
+    return directory
+
+
 def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
     """Read durable attempts independently of trajectory or manifest export.
 
@@ -98,13 +105,13 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
     not attest that a provider received a request. Records are sorted by ID.
     """
     grouped: dict[str, dict[str, Any]] = {}
-    root = Path(directory) / "model-attempts"
+    root = _model_attempt_root(Path(directory) / "model-attempts")
     for path in sorted(root.glob("*.json")):
         match = re.fullmatch(r"([0-9a-f]{32})\.(intent|outcome|dispatch-\d{4})\.json", path.name)
         if match is None:
             raise ValueError(f"Invalid model attempt filename: {path.name}")
         attempt_id, kind = match.groups()
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_artifact_path(root, path.name).read_text(encoding="utf-8"))
         if not isinstance(payload, dict) or (
             payload.get("schema"),
             payload.get("attempt_id"),
@@ -384,8 +391,10 @@ class _RecordingBase:
 
     def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> None:
         assert self._attempt_directory is not None
-        self._attempt_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        policy = self._attempt_directory / ".gitignore"
+        root = _model_attempt_root(self._attempt_directory)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        policy = _artifact_path(root, ".gitignore")
+        record = _artifact_path(root, f"{attempt_id}.{kind}.json")
         if not policy.exists():
             _atomic_write(policy, "*\n")
         payload = _redact_value(
@@ -400,8 +409,18 @@ class _RecordingBase:
             self._redact,
         )
         _atomic_write(
-            self._attempt_directory / f"{attempt_id}.{kind}.json",
+            record,
             json.dumps(payload, ensure_ascii=True, allow_nan=False),
+        )
+
+    def _write_dispatch(self, attempt_id: str, number: int, request: Any) -> None:
+        self._write_attempt(
+            attempt_id,
+            f"dispatch-{number:04d}",
+            {
+                "provider_request": request,
+                "scope": "backend_pre_dispatch_callback_not_provider_delivery_attestation",
+            },
         )
 
     def _begin_attempt(
@@ -444,32 +463,30 @@ class _RecordingBase:
         self,
         attempt_id: str | None,
         prepared_requests: list[Any],
-    ) -> Iterator[None]:
-        setter = getattr(self._backend, "set_request_attempt_callback", None)
-        if attempt_id is None or not callable(setter):
-            yield
-            return
-        previous = getattr(self._backend, "request_attempt_callback", None)
+        native_capture: _ModelRequestCapture | None = None,
+        *,
+        persist_prepared: bool = True,
+    ) -> Iterator[_ModelRequestCapture]:
+        with _capture_model_request(native_capture) as captured:
+            setter = getattr(self._backend, "set_request_attempt_callback", None)
+            if attempt_id is None or not callable(setter):
+                yield captured
+                return
+            previous = getattr(self._backend, "request_attempt_callback", None)
 
-        def prepared() -> None:
-            if callable(previous):
-                previous()
-            request = json_snapshot(getattr(self._backend, "last_request", None))
-            prepared_requests.append(request)
-            self._write_attempt(
-                attempt_id,
-                f"dispatch-{len(prepared_requests):04d}",
-                {
-                    "provider_request": request,
-                    "scope": "backend_pre_dispatch_callback_not_provider_delivery_attestation",
-                },
-            )
+            def prepared() -> None:
+                if callable(previous):
+                    previous()
+                request = json_snapshot(getattr(self._backend, "last_request", None))
+                prepared_requests.append(request)
+                if persist_prepared:
+                    self._write_dispatch(attempt_id, len(prepared_requests), request)
 
-        setter(prepared)
-        try:
-            yield
-        finally:
-            setter(previous)
+            setter(prepared)
+            try:
+                yield captured
+            finally:
+                setter(previous)
 
     async def _capture_io(self, operation: Callable[[], Any]) -> Any:
         import asyncio
@@ -514,6 +531,7 @@ class _RecordingBase:
         attempt_id: str | None = None,
         failure: BaseException | None = None,
         prepared_requests: list[Any] | None = None,
+        native_capture: _ModelRequestCapture | None = None,
         persist: bool = True,
     ) -> LLMCall:
         duration_ms = (time.time() - started_at) * 1000.0
@@ -527,6 +545,22 @@ class _RecordingBase:
             stored_response = self._redact_native_response(response)
         else:
             stored_response = response
+        if native_capture is not None and native_capture.provider_request is not None:
+            provider_request = native_capture.provider_request
+            provider_response = native_capture.provider_response
+            stop_reason = native_capture.stop_reason
+            usage = native_capture.usage or {}
+        else:
+            provider_request = prepared_requests[-1] if prepared_requests else None
+            if not prepared_requests and (error is None or attempt_id is None):
+                provider_request = getattr(self._backend, "last_request", None)
+            provider_response = (
+                getattr(self._backend, "last_response", None) if error is None else None
+            )
+            stop_reason = (
+                getattr(self._backend, "last_stop_reason", None) if error is None else None
+            )
+            usage = getattr(self._backend, "last_usage", {}) if error is None else {}
         call = LLMCall(
             index=len(self.calls),
             timestamp=started_at,
@@ -557,18 +591,10 @@ class _RecordingBase:
                             "conversation_input": self._conversation_input.get(),
                         },
                         "response": response,
-                        "provider_request": (prepared_requests[-1] if prepared_requests else None)
-                        if error is not None and attempt_id is not None
-                        else getattr(self._backend, "last_request", None),
-                        "provider_response": (
-                            getattr(self._backend, "last_response", None) if error is None else None
-                        ),
-                        "stop_reason": (
-                            getattr(self._backend, "last_stop_reason", None)
-                            if error is None
-                            else None
-                        ),
-                        "usage": getattr(self._backend, "last_usage", {}) if error is None else {},
+                        "provider_request": provider_request,
+                        "provider_response": provider_response if error is None else None,
+                        "stop_reason": stop_reason if error is None else None,
+                        "usage": usage if error is None else {},
                         "error": error,
                         **(
                             {
@@ -597,9 +623,12 @@ class _RecordingBase:
         call: LLMCall,
         attempt_id: str | None,
         failure: BaseException | None,
+        prepared_requests: list[Any] | None = None,
     ) -> None:
         if attempt_id is not None:
             try:
+                for number, request in enumerate(prepared_requests or (), 1):
+                    self._write_dispatch(attempt_id, number, request)
                 self._write_attempt(
                     attempt_id,
                     "outcome",
@@ -758,8 +787,9 @@ class RecordingLLMBackend(_RecordingBase):
             options=options,
         )
         prepared_requests: list[Any] = []
+        native_capture = None
         try:
-            with self._capture_dispatch(attempt_id, prepared_requests):
+            with self._capture_dispatch(attempt_id, prepared_requests) as native_capture:
                 response = invoke_backend(
                     self._backend.generate,
                     upstream_prompt,
@@ -793,6 +823,7 @@ class RecordingLLMBackend(_RecordingBase):
                 attempt_id=attempt_id,
                 failure=failure,
                 prepared_requests=prepared_requests,
+                native_capture=native_capture,
             )
 
     def _generate_with_tools_impl(
@@ -822,8 +853,9 @@ class RecordingLLMBackend(_RecordingBase):
             options=options,
         )
         prepared_requests: list[Any] = []
+        native_capture = None
         try:
-            with self._capture_dispatch(attempt_id, prepared_requests):
+            with self._capture_dispatch(attempt_id, prepared_requests) as native_capture:
                 response = invoke_backend(
                     self._backend.generate_with_tools,
                     upstream_prompt,
@@ -858,6 +890,7 @@ class RecordingLLMBackend(_RecordingBase):
                 attempt_id=attempt_id,
                 failure=failure,
                 prepared_requests=prepared_requests,
+                native_capture=native_capture,
             )
 
     def _stream_impl(
@@ -886,8 +919,9 @@ class RecordingLLMBackend(_RecordingBase):
             options=options,
         )
         prepared_requests: list[Any] = []
+        native_capture = _ModelRequestCapture()
         try:
-            with self._capture_dispatch(attempt_id, prepared_requests):
+            with self._capture_dispatch(attempt_id, prepared_requests, native_capture):
                 stream_iter = invoke_backend(
                     self._backend.stream,
                     upstream_prompt,
@@ -898,11 +932,18 @@ class RecordingLLMBackend(_RecordingBase):
                         "temperature": temperature,
                     },
                 )
-                try:
-                    for chunk in stream_iter:
-                        chunks.append(chunk)
-                        yield chunk
-                finally:
+                iterator = iter(stream_iter)
+            try:
+                while True:
+                    with self._capture_dispatch(attempt_id, prepared_requests, native_capture):
+                        try:
+                            chunk = next(iterator)
+                        except StopIteration:
+                            break
+                    chunks.append(chunk)
+                    yield chunk
+            finally:
+                with self._capture_dispatch(attempt_id, prepared_requests, native_capture):
                     close = getattr(stream_iter, "close", None)
                     if close is not None:
                         close()
@@ -928,6 +969,7 @@ class RecordingLLMBackend(_RecordingBase):
                 attempt_id=attempt_id,
                 failure=failure,
                 prepared_requests=prepared_requests,
+                native_capture=native_capture,
             )
 
 
@@ -985,18 +1027,23 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 options=options,
             )
         )
+        prepared_requests: list[Any] = []
+        native_capture = None
         try:
-            pending = invoke_backend(
-                self._backend.generate,
-                upstream_prompt,
-                {
-                    **options,
-                    "max_tokens": max_tokens,
-                    "system_prompt": upstream_system,
-                    "temperature": temperature,
-                },
-            )
-            response = await pending if inspect.isawaitable(pending) else pending
+            with self._capture_dispatch(
+                attempt_id, prepared_requests, persist_prepared=False
+            ) as native_capture:
+                pending = invoke_backend(
+                    self._backend.generate,
+                    upstream_prompt,
+                    {
+                        **options,
+                        "max_tokens": max_tokens,
+                        "system_prompt": upstream_system,
+                        "temperature": temperature,
+                    },
+                )
+                response = await pending if inspect.isawaitable(pending) else pending
             return response
         except BaseException as exc:
             failure = exc
@@ -1020,9 +1067,13 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     options=options,
                     attempt_id=attempt_id,
                     failure=failure,
+                    prepared_requests=prepared_requests,
+                    native_capture=native_capture,
                     persist=False,
                 )
-                await self._capture_io(lambda: self._commit_call(call, attempt_id, failure))
+                await self._capture_io(
+                    lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
+                )
             finally:
                 self._model_call_context.set(None)
 
@@ -1056,19 +1107,24 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 options=options,
             )
         )
+        prepared_requests: list[Any] = []
+        native_capture = None
         try:
-            pending = invoke_backend(
-                self._backend.generate_with_tools,
-                upstream_prompt,
-                {
-                    **options,
-                    "tools": tools,
-                    "max_tokens": max_tokens,
-                    "system_prompt": upstream_system,
-                    "temperature": temperature,
-                },
-            )
-            response = await pending if inspect.isawaitable(pending) else pending
+            with self._capture_dispatch(
+                attempt_id, prepared_requests, persist_prepared=False
+            ) as native_capture:
+                pending = invoke_backend(
+                    self._backend.generate_with_tools,
+                    upstream_prompt,
+                    {
+                        **options,
+                        "tools": tools,
+                        "max_tokens": max_tokens,
+                        "system_prompt": upstream_system,
+                        "temperature": temperature,
+                    },
+                )
+                response = await pending if inspect.isawaitable(pending) else pending
             return response
         except BaseException as exc:
             failure = exc
@@ -1092,9 +1148,13 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     options=options,
                     attempt_id=attempt_id,
                     failure=failure,
+                    prepared_requests=prepared_requests,
+                    native_capture=native_capture,
                     persist=False,
                 )
-                await self._capture_io(lambda: self._commit_call(call, attempt_id, failure))
+                await self._capture_io(
+                    lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
+                )
             finally:
                 self._model_call_context.set(None)
 
@@ -1127,34 +1187,48 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 options=options,
             )
         )
+        prepared_requests: list[Any] = []
+        native_capture = _ModelRequestCapture()
         try:
-            stream_out = invoke_backend(
-                self._backend.stream,
-                upstream_prompt,
-                {
-                    **options,
-                    "max_tokens": max_tokens,
-                    "system_prompt": upstream_system,
-                    "temperature": temperature,
-                },
-            )
-            if inspect.isawaitable(stream_out):
-                stream_out = await stream_out
+            with self._capture_dispatch(
+                attempt_id, prepared_requests, native_capture, persist_prepared=False
+            ):
+                stream_out = invoke_backend(
+                    self._backend.stream,
+                    upstream_prompt,
+                    {
+                        **options,
+                        "max_tokens": max_tokens,
+                        "system_prompt": upstream_system,
+                        "temperature": temperature,
+                    },
+                )
+                if inspect.isawaitable(stream_out):
+                    stream_out = await stream_out
+                asynchronous = hasattr(stream_out, "__aiter__")
+                iterator = aiter(stream_out) if asynchronous else iter(stream_out)
             try:
-                if hasattr(stream_out, "__aiter__"):
-                    async for chunk in stream_out:
-                        chunks.append(chunk)
-                        yield chunk
-                else:
-                    for chunk in stream_out:
-                        chunks.append(chunk)
-                        yield chunk
+                while True:
+                    with self._capture_dispatch(
+                        attempt_id, prepared_requests, native_capture, persist_prepared=False
+                    ):
+                        try:
+                            chunk = await anext(iterator) if asynchronous else next(iterator)
+                        except (StopAsyncIteration, StopIteration):
+                            break
+                    chunks.append(chunk)
+                    yield chunk
             finally:
-                close = getattr(stream_out, "aclose", None) or getattr(stream_out, "close", None)
-                if close is not None:
-                    pending = close()
-                    if inspect.isawaitable(pending):
-                        await pending
+                with self._capture_dispatch(
+                    attempt_id, prepared_requests, native_capture, persist_prepared=False
+                ):
+                    close = getattr(stream_out, "aclose", None) or getattr(
+                        stream_out, "close", None
+                    )
+                    if close is not None:
+                        pending = close()
+                        if inspect.isawaitable(pending):
+                            await pending
         except BaseException as exc:
             failure = exc
             error = f"{type(exc).__name__}: {exc}"
@@ -1177,9 +1251,13 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     options=options,
                     attempt_id=attempt_id,
                     failure=failure,
+                    prepared_requests=prepared_requests,
+                    native_capture=native_capture,
                     persist=False,
                 )
-                await self._capture_io(lambda: self._commit_call(call, attempt_id, failure))
+                await self._capture_io(
+                    lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
+                )
             finally:
                 self._model_call_context.set(None)
 

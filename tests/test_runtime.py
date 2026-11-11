@@ -293,6 +293,186 @@ async def test_diagnostics_share_observed_counters_across_entrypoints(
 
 
 @pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+async def test_runtime_rejects_existing_run_before_model_or_effect(tmp_path, async_run, store_kind):
+    from looplet import CancelToken, FileRunStore, RunEnvelope, tools_from
+
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    envelope = RunEnvelope(run_id="existing-run")
+    original = _preset(use_native_tools=False)
+    original.config.harness_profile = "minimal"
+    with AgentRuntime(original, store=store) as runtime:
+        result = runtime.run(
+            MockLLMBackend(['{"tool":"done","args":{"summary":"original"}}']),
+            envelope=envelope,
+        )
+    assert result.completed
+    existing = store.load(envelope.run_id)
+    assert existing is not None
+    before = existing.to_dict(include_events=True)
+    effect_path = tmp_path / "effect.txt"
+
+    def effect():
+        effect_path.write_text("committed", encoding="utf-8")
+        return {"committed": True}
+
+    preset = AgentPreset(
+        config=LoopConfig(max_steps=2, use_native_tools=False, harness_profile="minimal"),
+        hooks=[],
+        tools=tools_from([effect], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=DefaultState(max_steps=2),
+    )
+    old_envelope = RunEnvelope(run_id="unmodified-preset")
+    old_token = CancelToken()
+    preset.config.run_envelope = old_envelope
+    preset.config.cancel_token = old_token
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        ['{"tool":"effect","args":{}}', '{"tool":"done","args":{"summary":"replacement"}}']
+    )
+    with AgentRuntime(preset, store=store) as runtime:
+        with pytest.raises(FileExistsError, match="run already exists"):
+            if async_run:
+                await runtime.run_async(backend, envelope=envelope)
+            else:
+                runtime.run(backend, envelope=envelope)
+        assert not runtime._active_tokens
+        assert preset.config.run_envelope is old_envelope
+        assert preset.config.cancel_token is old_token
+
+    assert backend.calls == 0
+    assert not effect_path.exists()
+    preserved = store.load(envelope.run_id)
+    assert preserved is not None
+    assert preserved.to_dict(include_events=True) == before
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("method", ["generate", "stream"])
+async def test_refused_checkpoint_does_not_leave_unknown_request(async_run, method) -> None:
+    from looplet.assistant_turns import _AdmissionDenied, _AssistantTurns
+
+    calls = []
+    saves = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "retained"
+
+        def stream(self, prompt, **kwargs):
+            yield self.generate(prompt, **kwargs)
+
+    class AsyncBackend:
+        async def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "retained"
+
+        async def stream(self, prompt, **kwargs):
+            yield await self.generate(prompt, **kwargs)
+
+    turns = _AssistantTurns(DefaultState(max_steps=2), LoopConfig(max_model_calls=2))
+
+    def checkpoint():
+        saves.append(True)
+        if len(saves) == 1:
+            raise OSError("checkpoint refused before request")
+
+    async def checkpoint_async():
+        checkpoint()
+
+    if async_run:
+        turns.async_checkpoint = checkpoint_async
+    else:
+        turns.checkpoint = checkpoint
+    wrapped = turns.wrap(AsyncBackend() if async_run else Backend())
+
+    async def invoke():
+        if method == "stream":
+            return (
+                "".join([chunk async for chunk in wrapped.stream("request")])
+                if async_run
+                else "".join(wrapped.stream("request"))
+            )
+        return await wrapped.generate("request") if async_run else wrapped.generate("request")
+
+    with pytest.raises(_AdmissionDenied, match="checkpoint refused before request") as caught:
+        await invoke()
+    assert caught.value.request_started is False
+    assert not calls
+    assert all(request["response_chars"] == 0 for request in turns.data["requests"])
+    preparatory_receipts = len(turns.data["requests"])
+    assert "pending_model_call" not in turns.data
+    assert not turns._pending_calls and not turns._active_calls
+    assert await invoke() == "retained"
+    assert calls == ["request"]
+    assert turns.data["model_calls"] == 2
+    assert len(turns.data["requests"]) == preparatory_receipts + 1
+    assert turns.data["requests"][-1]["model_call_id"].endswith(":call-2")
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("pending_kind", ["model", "tool"])
+async def test_runtime_required_intent_write_precedes_external_work(
+    tmp_path, async_run, pending_kind
+):
+    from looplet import RunEnvelope, tools_from
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    class BrokenIntentStore(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            pending = (
+                checkpoint.metadata.get(TURN_STATE_KEY, {}).get("pending_model_call")
+                if pending_kind == "model"
+                else checkpoint.metadata.get("pending_calls")
+            )
+            if pending:
+                raise OSError("required intent write failed")
+            return super().save_checkpoint(run_id, checkpoint)
+
+    effect_path = tmp_path / "effect.txt"
+
+    def effect():
+        effect_path.write_text("committed", encoding="utf-8")
+        return {"committed": True}
+
+    preset = AgentPreset(
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=2,
+            use_native_tools=False,
+            harness_profile="minimal",
+        ),
+        hooks=[],
+        tools=tools_from([effect], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=DefaultState(max_steps=2),
+    )
+    store = BrokenIntentStore()
+    envelope = RunEnvelope(run_id="intent-write-failure")
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        ['{"tool":"effect","args":{}}', '{"tool":"done","args":{"summary":"ok"}}']
+    )
+    with AgentRuntime(preset, store=store, checkpoint_every_n_steps=1) as runtime:
+        result = (
+            await runtime.run_async(backend, envelope=envelope)
+            if async_run
+            else runtime.run(backend, envelope=envelope)
+        )
+        assert not runtime._active_tokens
+
+    assert result.status is RunStatus.FAILED
+    if pending_kind == "model":
+        assert len(result.steps) == 1
+        assert result.steps[0].tool_call.tool == "__llm_error__"
+        assert result.steps[0].tool_result.error == "required intent write failed"
+    else:
+        assert "required intent write failed" in result.metadata["error"]
+    assert backend.calls == (0 if pending_kind == "model" else 1)
+    assert not effect_path.exists()
+    record = store.load(envelope.run_id)
+    assert record is not None and record.status == "failed"
+
+
+@pytest.mark.parametrize("async_run", [False, True])
 @pytest.mark.parametrize(
     "fault", ["create", "append_event", "save_checkpoint", "complete", "session"]
 )
@@ -341,19 +521,85 @@ async def test_runtime_faults_share_restoration_and_persistence_contract(async_r
         session=BrokenSession() if fault == "session" else None,
         checkpoint_every_n_steps=1,
     ) as runtime:
-        result = await runtime.run_async(backend) if async_run else runtime.run(backend)
+        if fault == "create":
+            with pytest.raises(OSError, match="injected create"):
+                if async_run:
+                    await runtime.run_async(backend)
+                else:
+                    runtime.run(backend)
+        else:
+            result = await runtime.run_async(backend) if async_run else runtime.run(backend)
         assert not runtime._active_tokens
 
     assert preset.config.run_envelope is original_envelope
     assert preset.config.cancel_token is original_token
-    assert result.status is (RunStatus.FAILED if fault == "session" else RunStatus.COMPLETED)
+    if fault == "create":
+        assert backend.calls == 0
+        return
+    assert result.status is (
+        RunStatus.FAILED if fault in {"session", "save_checkpoint"} else RunStatus.COMPLETED
+    )
     assert result.metadata["runtime_duration_ms"] >= 0
-    if fault == "session":
-        assert "injected session" in result.metadata["error"]
+    if fault in {"session", "save_checkpoint"}:
+        assert f"injected {fault}" in result.metadata["error"]
     else:
         assert any(
             f"injected {fault}" in warning for warning in result.metadata["persistence_warnings"]
         )
+
+
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+async def test_async_cancellation_after_store_admission_is_terminal(
+    tmp_path, monkeypatch, store_kind
+):
+    from threading import Event
+
+    from looplet import FileRunStore, RunEnvelope
+
+    entered = asyncio.Event()
+    release = Event()
+    owner = asyncio.get_running_loop()
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path / "runs")
+    create = store.create
+
+    def admit(envelope, *, metadata=None):
+        record = create(envelope, metadata=metadata)
+        owner.call_soon_threadsafe(entered.set)
+        assert release.wait(5)
+        return record
+
+    monkeypatch.setattr(store, "create", admit)
+    preset = _preset(use_native_tools=False)
+    original_envelope = preset.config.run_envelope
+    original_token = preset.config.cancel_token
+    backend = AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"unused"}}'])
+    runtime = AgentRuntime(preset, store=store)
+    envelope = RunEnvelope(run_id="cancelled-admission")
+    pending = asyncio.create_task(runtime.run_async(backend, envelope=envelope))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel("host cancelled admission")
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("host cancelled admission",)
+        assert not backend.calls
+        assert not runtime._active_tokens
+        assert preset.config.run_envelope is original_envelope
+        assert preset.config.cancel_token is original_token
+        record = store.load(envelope.run_id)
+        assert record is not None and record.status == "cancelled"
+        assert record.result is not None
+        assert record.result["phase"] == "terminal"
+        assert record.result["termination_reason"] == "cancelled"
+        assert record.result["metadata"]["cancel_reason"] == "host cancelled admission"
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        assert not runtime.close().errors
 
 
 @pytest.mark.parametrize("store_kind", ["none", "memory", "file"])
@@ -556,15 +802,539 @@ def test_runtime_close_cancels_active_handle() -> None:
 
 
 def test_runtime_start_returns_handle() -> None:
+    from threading import Event
+
     runtime = AgentRuntime(_preset())
     handle = runtime.start(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']))
     try:
+        terminal = Event()
+        handle._future.add_done_callback(lambda completed: terminal.set())
+        assert terminal.wait(timeout=5)
+        assert handle._executor._shutdown is True
         result = handle.result(timeout=5)
         assert result.status is RunStatus.COMPLETED
         assert handle.run_id == result.run_envelope.run_id
         assert handle.events()
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+async def test_runtime_close_preserves_caller_cancel_token(async_run) -> None:
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from looplet import CancelToken, tools_from
+
+    entered = Event()
+    release = Event()
+    observed = []
+    parent = CancelToken()
+    sibling = parent.create_child()
+
+    def held_tool():
+        token = preset.config.cancel_token
+        assert token is not None
+        observed.append(token)
+        entered.set()
+        assert release.wait(timeout=5)
+        token.raise_if_cancelled()
+
+    preset = AgentPreset(
+        config=LoopConfig(
+            max_steps=2, use_native_tools=False, harness_profile="minimal", cancel_token=parent
+        ),
+        hooks=[],
+        tools=tools_from([held_tool], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=DefaultState(max_steps=2),
+    )
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        ['{"tool":"held_tool","args":{}}', '{"tool":"done","args":{"summary":"unused"}}']
+    )
+    runtime = AgentRuntime(preset)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = (
+            asyncio.create_task(runtime.run_async(backend))
+            if async_run
+            else executor.submit(runtime.run, backend)
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            early = runtime.close(timeout=0)
+            assert early.errors == ("active runs did not stop before runtime close",)
+        finally:
+            release.set()
+            result = await pending if async_run else pending.result(timeout=5)
+            report = runtime.close()
+    assert result.status is RunStatus.CANCELLED
+    assert not parent.is_cancelled and not sibling.is_cancelled
+    assert len(observed) == 1 and observed[0].is_cancelled
+    assert observed[0] is not parent
+    assert preset.config.cancel_token is parent
+    assert not report.errors
+
+
+@pytest.mark.parametrize("recording", [False, True])
+@pytest.mark.parametrize("finish_first", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("termination", ["exhaust", "close", "cancel"])
+async def test_interleaved_native_streams_restore_caller_request_scope(
+    recording, finish_first, asynchronous, termination
+):
+    from contextvars import copy_context
+    from types import SimpleNamespace
+
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.backend_contract import single_model_request_active
+    from looplet.backends import AsyncOpenAIStreamingBackend, OpenAIStreamingBackend
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+
+    def create(**request):
+        assert single_model_request_active()
+        text = request["messages"][-1]["content"]
+        return iter(
+            [
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]),
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=" tail"))]),
+            ]
+        )
+
+    async def create_async(**request):
+        assert single_model_request_active()
+
+        async def chunks():
+            for chunk in create(**request):
+                yield chunk
+
+        return chunks()
+
+    backend_type = AsyncOpenAIStreamingBackend if asynchronous else OpenAIStreamingBackend
+    backend = backend_type(
+        SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create_async if asynchronous else create)
+            )
+        )
+    )
+    recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    recorded = recorder_type(backend)
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=2))
+    bounded = turns.wrap(recorded if recording else backend)
+    streams = [bounded.stream("first"), bounded.stream("second")]
+
+    def check():
+        assert not single_model_request_active()
+        assert not turns._pending_calls and not turns._active_calls
+        if recording:
+            calls = {call.prompt: call for call in recorded.calls}
+            assert set(calls) == {"first", "second"}
+            for prompt, call in calls.items():
+                assert call.capture["provider_request"]["messages"][-1]["content"] == prompt
+
+    def exercise():
+        assert not single_model_request_active()
+        try:
+            assert next(streams[0]) == "first"
+            assert not single_model_request_active()
+            assert next(streams[1]) == "second"
+            assert not single_model_request_active()
+            for index in [0, 1] if finish_first else [1, 0]:
+                if termination == "exhaust":
+                    assert list(streams[index]) == [" tail"]
+                elif termination == "close":
+                    streams[index].close()
+                else:
+                    cancellation = asyncio.CancelledError("caller stream cancellation")
+                    with pytest.raises(asyncio.CancelledError) as caught:
+                        streams[index].throw(cancellation)
+                    assert caught.value is cancellation
+                assert not single_model_request_active()
+            check()
+        finally:
+            for stream in streams:
+                stream.close()
+
+    async def exercise_async():
+        assert not single_model_request_active()
+        try:
+            assert await anext(streams[0]) == "first"
+            assert not single_model_request_active()
+            assert await anext(streams[1]) == "second"
+            assert not single_model_request_active()
+            for index in [0, 1] if finish_first else [1, 0]:
+                if termination == "exhaust":
+                    assert [chunk async for chunk in streams[index]] == [" tail"]
+                elif termination == "close":
+                    await streams[index].aclose()
+                else:
+                    cancellation = asyncio.CancelledError("caller stream cancellation")
+                    with pytest.raises(asyncio.CancelledError) as caught:
+                        await streams[index].athrow(cancellation)
+                    assert caught.value is cancellation
+                assert not single_model_request_active()
+            check()
+        finally:
+            for stream in streams:
+                await stream.aclose()
+
+    if asynchronous:
+        await asyncio.create_task(exercise_async(), context=copy_context())
+    else:
+        copy_context().run(exercise)
+
+
+@pytest.mark.parametrize("recording", [False, True])
+async def test_async_admission_retains_native_capture_through_publication(
+    tmp_path, monkeypatch, recording
+) -> None:
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.backends import AsyncOpenAIBackend
+    from looplet.provenance import AsyncRecordingLLMBackend
+
+    first_entered = asyncio.Event()
+    first_release = asyncio.Event()
+    second_publishing = asyncio.Event()
+    second_release = Event()
+    loop = asyncio.get_running_loop()
+
+    async def create(**kwargs):
+        text = kwargs["messages"][-1]["content"]
+        if text == "first":
+            first_entered.set()
+            await first_release.wait()
+        tokens = 1 if text == "first" else 2
+        return SimpleNamespace(
+            model="owned-model",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=tokens, completion_tokens=3, total_tokens=tokens + 3
+            ),
+            model_dump=lambda **options: {
+                "model": "owned-model",
+                "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": tokens,
+                    "completion_tokens": 3,
+                    "total_tokens": tokens + 3,
+                },
+            },
+        )
+
+    client = SimpleNamespace(
+        max_retries=0, chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    backend = AsyncOpenAIBackend(client, model="owned-model")
+    recorded = AsyncRecordingLLMBackend(backend, attempt_directory=tmp_path / "attempts")
+    write_attempt = recorded._write_attempt
+
+    def held_publication(attempt_id, kind, value):
+        if kind == "outcome" and value["capture"]["response"] == "second":
+            loop.call_soon_threadsafe(second_publishing.set)
+            assert second_release.wait(timeout=5)
+        write_attempt(attempt_id, kind, value)
+
+    monkeypatch.setattr(recorded, "_write_attempt", held_publication)
+    state = DefaultState(max_steps=2)
+    turns = _AssistantTurns(state, LoopConfig(max_model_calls=2))
+    admitted = turns.wrap(recorded if recording else backend)
+    first = asyncio.create_task(admitted.generate("first"))
+    second = None
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=5)
+        second = asyncio.create_task(admitted.generate("second"))
+        if recording:
+            await asyncio.wait_for(second_publishing.wait(), timeout=5)
+        else:
+            assert await second == "second"
+        first_release.set()
+        assert await first == "first"
+        second_release.set()
+        assert await second == "second"
+    finally:
+        first_release.set()
+        second_release.set()
+        await asyncio.gather(
+            first, *([second] if second is not None else []), return_exceptions=True
+        )
+    assert [record["usage"]["input"] for record in turns.data["requests"]] == [1, 2]
+    assert state.metadata["usage_total"]["input"] == 3
+    if recording:
+        calls = {call.response: call.capture for call in recorded.calls}
+        for text, tokens in (("first", 1), ("second", 2)):
+            capture = calls[text]
+            assert capture["provider_request"]["messages"][-1]["content"] == text
+            assert capture["provider_response"]["choices"][0]["message"]["content"] == text
+            assert capture["usage"]["input"] == tokens
+
+
+@pytest.mark.parametrize("recording", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("admission", [False, True])
+def test_admission_retains_each_overlapping_native_request_usage(
+    tmp_path, recording, nested, admission
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.backends import OpenAIBackend
+    from looplet.provenance import RecordingLLMBackend
+
+    entered = Event()
+    release = Event()
+    observed = []
+
+    class Message:
+        def __init__(self, text):
+            self.text = text
+
+        @property
+        def content(self):
+            if self.text == "first":
+                observed.append(dict(backend.last_usage))
+                if nested:
+                    assert admitted.generate("second") == "second"
+                else:
+                    entered.set()
+                    assert release.wait(timeout=5)
+            return self.text
+
+    def create(**kwargs):
+        text = kwargs["messages"][-1]["content"]
+        tokens = 1 if text == "first" else 2
+        return SimpleNamespace(
+            model="owned-model",
+            choices=[SimpleNamespace(message=Message(text), finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=tokens, completion_tokens=3, total_tokens=tokens + 3
+            ),
+            model_dump=lambda **options: {
+                "model": "owned-model",
+                "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": tokens,
+                    "completion_tokens": 3,
+                    "total_tokens": tokens + 3,
+                },
+            },
+        )
+
+    client = SimpleNamespace(
+        max_retries=0, chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    backend = OpenAIBackend(client, model="owned-model")
+    recorded = RecordingLLMBackend(backend, attempt_directory=tmp_path / "attempts")
+    state = DefaultState(max_steps=2)
+    turns = _AssistantTurns(state, LoopConfig(max_model_calls=2))
+    selected = recorded if recording else backend
+    admitted = turns.wrap(selected) if admission else selected
+    if nested:
+        assert admitted.generate("first") == "first"
+    else:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(admitted.generate, "first")
+            try:
+                assert entered.wait(timeout=5)
+                second = executor.submit(admitted.generate, "second")
+                assert second.result(timeout=5) == "second"
+            finally:
+                release.set()
+                assert first.result(timeout=5) == "first"
+    assert observed[0]["input"] == 1
+    if admission:
+        assert [record["usage"]["input"] for record in turns.data["requests"]] == [1, 2]
+        assert state.metadata["usage_total"]["input"] == 3
+    if recording:
+        calls = {call.response: call.capture for call in recorded.calls}
+        for text, tokens in (("first", 1), ("second", 2)):
+            capture = calls[text]
+            assert capture["provider_request"]["messages"][-1]["content"] == text
+            assert capture["provider_response"]["choices"][0]["message"]["content"] == text
+            assert capture["usage"]["input"] == tokens
+
+
+@pytest.mark.parametrize("driver", ["sync", "async", "background"])
+async def test_runtime_honors_configured_parent_cancellation(driver) -> None:
+    from looplet import CancelToken
+
+    parent = CancelToken()
+    parent.cancel("parent scope stopped")
+    preset = _preset()
+    preset.config.cancel_token = parent
+    store = MemoryRunStore()
+    backend = (AsyncMockLLMBackend if driver == "async" else MockLLMBackend)(
+        ['{"tool":"done","args":{"summary":"unused"}}']
+    )
+    with AgentRuntime(preset, store=store) as runtime:
+        if driver == "background":
+            result = runtime.start(backend).result(timeout=5)
+        elif driver == "async":
+            result = await runtime.run_async(backend)
+        else:
+            result = runtime.run(backend)
+        assert result.status is RunStatus.CANCELLED
+        assert not backend.calls
+        assert result.metadata["cancel_reason"] == "parent scope stopped"
+        assert preset.config.cancel_token is parent
+        assert not runtime._active_tokens
+
+
+def test_runtime_cancelled_queued_handle_releases_admission(monkeypatch) -> None:
+    from concurrent.futures import CancelledError, ThreadPoolExecutor
+    from threading import Event
+
+    from looplet import RunEnvelope, RunPhase
+
+    submit = ThreadPoolExecutor.submit
+    started = Event()
+    release = Event()
+    blockers = []
+
+    def hold_worker():
+        started.set()
+        assert release.wait(timeout=5)
+
+    def queue_cancelled(executor, function, *args, **kwargs):
+        blockers.append(submit(executor, hold_worker))
+        assert started.wait(timeout=5)
+        future = submit(executor, function, *args, **kwargs)
+        assert future.cancel()
+        return future
+
+    monkeypatch.setattr(ThreadPoolExecutor, "submit", queue_cancelled)
+    store = MemoryRunStore()
+    envelope = RunEnvelope(run_id="queued-cancellation")
+    backend = MockLLMBackend(['{"tool":"done","args":{"summary":"unused"}}'])
+    runtime = AgentRuntime(_preset(), store=store)
+    try:
+        handle = runtime.start(backend, envelope=envelope)
+        assert handle.status is RunStatus.CANCELLED
+        assert handle.phase is RunPhase.TERMINAL
+        with pytest.raises(CancelledError):
+            handle.result(timeout=1)
+        assert store.load(envelope.run_id) is None and not backend.calls
+        assert not runtime._active_tokens and not runtime._active_handles
+    finally:
+        release.set()
+        for blocker in blockers:
+            blocker.result(timeout=1)
+        report = runtime.close(timeout=1)
+    assert report.errors == ()
+
+
+def test_runtime_handle_failed_admission_has_terminal_phase() -> None:
+    from looplet import RunEnvelope, RunPhase
+
+    store = MemoryRunStore()
+    envelope = RunEnvelope(run_id="occupied")
+    store.create(envelope)
+    backend = MockLLMBackend(['{"tool":"done","args":{"summary":"unused"}}'])
+    with AgentRuntime(_preset(), store=store) as runtime:
+        handle = runtime.start(backend, envelope=envelope)
+        with pytest.raises(FileExistsError):
+            handle.result(timeout=5)
+        assert not backend.calls
+        assert handle.phase is RunPhase.TERMINAL
+        assert handle.status is RunStatus.FAILED
+
+
+@pytest.mark.parametrize("observation", ["phase", "reason", "parent"])
+def test_runtime_handle_preserves_live_phase_and_cancel_reason(tmp_path, observation) -> None:
+    from threading import Event
+
+    from looplet import CancelToken, RunPhase, tools_from
+
+    entered = Event()
+    release = Event()
+
+    def held_tool():
+        entered.set()
+        assert release.wait(5)
+        return {"observed": True}
+
+    preset = AgentPreset(
+        config=LoopConfig(max_steps=2, use_native_tools=False, harness_profile="minimal"),
+        hooks=[],
+        tools=tools_from([held_tool], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=DefaultState(max_steps=2),
+    )
+    parent = CancelToken()
+    preset.config.cancel_token = parent
+    store = MemoryRunStore()
+    runtime = AgentRuntime(preset, store=store)
+    handle = runtime.start(
+        MockLLMBackend(
+            ['{"tool":"held_tool","args":{}}', '{"tool":"done","args":{"summary":"ok"}}']
+        )
+    )
+    try:
+        assert entered.wait(5)
+        if observation == "phase":
+            assert handle.phase is RunPhase.DISPATCHING
+        else:
+            if observation == "parent":
+                parent.cancel("parent requested stop")
+                expected_reason = "parent requested stop"
+            else:
+                handle.cancel("operator requested stop")
+                expected_reason = "operator requested stop"
+            handle.cancel("later cancellation")
+            release.set()
+            result = handle.result(timeout=5)
+            assert result.status is RunStatus.CANCELLED
+            assert result.termination_reason == "cancelled"
+            assert result.metadata["cancel_reason"] == expected_reason
+            assert parent.is_cancelled is (observation == "parent")
+            stored = store.load(handle.run_id)
+            assert stored is not None and stored.result is not None
+            assert stored.result["metadata"]["cancel_reason"] == expected_reason
+    finally:
+        release.set()
+        handle.result(timeout=5)
+        assert not runtime.close().errors
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+async def test_runtime_records_generated_artifact_references(tmp_path, async_run) -> None:
+    import shutil
+    from pathlib import Path
+
+    from looplet.artifact_compat import read_artifact_descriptor
+    from looplet.provenance import load_model_attempts
+
+    preset = _preset(use_native_tools=False)
+    preset.config.harness_profile = "execution-v1"
+    preset.config.run_dir = str(tmp_path / "evidence")
+    store = MemoryRunStore()
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        ['{"tool":"done","args":{"summary":"retained"}}']
+    )
+    with AgentRuntime(preset, store=store) as runtime:
+        result = await runtime.run_async(backend) if async_run else runtime.run(backend)
+        assert result.completed and result.run_envelope is not None
+        record = store.load(result.run_envelope.run_id)
+        assert record is not None and record.artifact_refs
+        reference = record.artifact_refs[0]
+        assert Path(reference.uri).exists()
+        assert reference.kind == "provenance"
+        descriptor = read_artifact_descriptor(reference.uri, expected_kinds=(reference.kind,))
+        assert descriptor is not None
+        assert (descriptor["schema"], descriptor["version"]) == (
+            reference.schema,
+            reference.version,
+        )
+        attempts = load_model_attempts(reference.uri)
+        assert len(attempts) == 1 and attempts[0]["outcome"] is not None
+        moved = tmp_path / "moved-evidence"
+        shutil.copytree(reference.uri, moved)
+        assert read_artifact_descriptor(moved) == descriptor
+        assert load_model_attempts(moved) == attempts
 
 
 def test_runtime_store_can_checkpoint_each_step() -> None:
@@ -600,6 +1370,7 @@ async def test_runtime_checkpoint_capture_is_detached_and_io_respects_owner(
     retained_capture = {"host_ledger": ledger}
     capture_threads = []
     write_threads = []
+    store_write_threads = []
     backend_threads = []
 
     def spend():
@@ -636,6 +1407,17 @@ async def test_runtime_checkpoint_capture_is_detached_and_io_respects_owner(
         return original_save(run_id, checkpoint)
 
     monkeypatch.setattr(store, "save_checkpoint", save)
+
+    def observe_write(method):
+        def write(*args, **kwargs):
+            store_write_threads.append(get_ident())
+            return method(*args, **kwargs)
+
+        return write
+
+    for operation in ("create", "append_event", "complete"):
+        monkeypatch.setattr(store, operation, observe_write(getattr(store, operation)))
+
     backend = Backend(['{"tool":"spend","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'])
     with AgentRuntime(preset, store=store, checkpoint_every_n_steps=9) as runtime:
         result = await runtime.run_async(backend) if async_run else runtime.run(backend)
@@ -653,6 +1435,8 @@ async def test_runtime_checkpoint_capture_is_detached_and_io_respects_owner(
     assert backend_threads and all(thread == owner for thread in backend_threads)
     assert write_threads
     assert all((thread != owner) is async_run for thread in write_threads)
+    assert store_write_threads
+    assert all((thread != owner) is async_run for thread in store_write_threads)
 
 
 @pytest.mark.parametrize("native", [False, True])
@@ -880,13 +1664,17 @@ def test_runtime_checkpoint_failure_is_reported_without_masking_result() -> None
             raise OSError("checkpoint disk full")
 
     store = BrokenStore()
-    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
-        result = runtime.run(
-            MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
-            task={},
-        )
+    preset = _preset()
+    preset.config.max_model_calls = 2
+    backend = MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}'])
+    with AgentRuntime(preset, store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(backend, task={})
 
-    assert result.status is RunStatus.COMPLETED
+    assert result.status is RunStatus.FAILED
+    assert backend.calls == 0
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_call.tool == "__llm_error__"
+    assert result.steps[0].tool_result.error == "checkpoint disk full"
     assert any("checkpoint" in warning for warning in result.metadata["persistence_warnings"])
 
 
@@ -933,11 +1721,13 @@ def test_runtime_store_create_failure_returns_failed_result_and_restores_config(
     preset = _preset()
     old_envelope = preset.config.run_envelope
     old_token = preset.config.cancel_token
+    backend = MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}'])
     with AgentRuntime(preset, store=BrokenStore()) as runtime:
-        result = runtime.run(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']), task={})
+        with pytest.raises(OSError, match="store unavailable"):
+            runtime.run(backend, task={})
+        assert not runtime._active_tokens
 
-    assert result.status is RunStatus.COMPLETED
-    assert any("create" in warning for warning in result.metadata["persistence_warnings"])
+    assert backend.calls == 0
     assert preset.config.run_envelope is old_envelope
     assert preset.config.cancel_token is old_token
 
@@ -966,13 +1756,17 @@ async def test_async_runtime_checkpoint_failure_is_reported_without_masking_resu
         def save_checkpoint(self, run_id, checkpoint):
             raise OSError("async checkpoint unavailable")
 
-    with AgentRuntime(_preset(), store=BrokenStore(), checkpoint_every_n_steps=1) as runtime:
-        result = await runtime.run_async(
-            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
-            task={},
-        )
+    preset = _preset()
+    preset.config.max_model_calls = 2
+    backend = AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}'])
+    with AgentRuntime(preset, store=BrokenStore(), checkpoint_every_n_steps=1) as runtime:
+        result = await runtime.run_async(backend, task={})
 
-    assert result.status is RunStatus.COMPLETED
+    assert result.status is RunStatus.FAILED
+    assert backend.calls == 0
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_call.tool == "__llm_error__"
+    assert result.steps[0].tool_result.error == "async checkpoint unavailable"
     assert any(
         "async checkpoint unavailable" in warning
         for warning in result.metadata["persistence_warnings"]

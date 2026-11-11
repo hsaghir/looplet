@@ -125,7 +125,38 @@ class IsolatedBackend(Protocol):
     def new_run_backend(self) -> Any: ...
 
 
+@dataclass
+class _ModelRequestCapture:
+    provider_request: dict[str, Any] | None = None
+    provider_response: Any = None
+    stop_reason: str | None = None
+    usage: dict[str, int] | None = None
+
+
 _SINGLE_MODEL_REQUEST: ContextVar[bool] = ContextVar("looplet_single_model_request", default=False)
+_MODEL_REQUEST_CAPTURE: ContextVar[_ModelRequestCapture | None] = ContextVar(
+    "looplet_model_request_capture", default=None
+)
+
+
+@contextmanager
+def _capture_model_request(
+    capture: _ModelRequestCapture | None = None,
+) -> Iterator[_ModelRequestCapture]:
+    parent = _MODEL_REQUEST_CAPTURE.get()
+    captured = capture or _ModelRequestCapture()
+    token = _MODEL_REQUEST_CAPTURE.set(captured)
+    try:
+        yield captured
+    finally:
+        _MODEL_REQUEST_CAPTURE.reset(token)
+        if parent is not None and (
+            parent.provider_request is None or parent.provider_request is captured.provider_request
+        ):
+            parent.provider_request = captured.provider_request
+            parent.provider_response = captured.provider_response
+            parent.stop_reason = captured.stop_reason
+            parent.usage = captured.usage
 
 
 @contextmanager
@@ -136,6 +167,23 @@ def single_model_request() -> Iterator[None]:
         yield
     finally:
         _SINGLE_MODEL_REQUEST.reset(token)
+
+
+def _record_request_capture(request: dict[str, Any]) -> None:
+    captured = _MODEL_REQUEST_CAPTURE.get()
+    if captured is not None:
+        captured.provider_request = request
+        captured.provider_response = None
+        captured.stop_reason = None
+        captured.usage = {}
+
+
+def _record_response_capture(response: Any, stop_reason: str | None, usage: dict[str, int]) -> None:
+    captured = _MODEL_REQUEST_CAPTURE.get()
+    if captured is not None:
+        captured.provider_response = response
+        captured.stop_reason = stop_reason
+        captured.usage = dict(usage)
 
 
 def single_model_request_active() -> bool:

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from looplet.backend_contract import (
     BackendRequestPolicy,
     TerminalLLMError,
+    _capture_model_request,
+    _ModelRequestCapture,
     backend_attribute,
     backend_request_policy,
     json_snapshot,
@@ -357,15 +359,12 @@ class _AssistantTurns:
         if self.checkpoint is not None and self.async_checkpoint is None:
             try:
                 self.checkpoint()
-            except BaseException:
-                self.abandon(call_number)
+            except BaseException as error:
+                self.acknowledge(call_number)
+                if isinstance(error, Exception):
+                    raise _AdmissionDenied("llm_error", message=str(error)) from error
                 raise
         return call_number
-
-    def abandon(self, call_number: int) -> None:
-        with self.admission_lock:
-            self._active_calls.discard(call_number)
-            self._overlap_safe_calls.discard(call_number)
 
     def acknowledge(self, call_number: int) -> None:
         with self.admission_lock:
@@ -479,8 +478,11 @@ def restore_assistant_checkpoint(
 class _AdmissionDenied(TerminalLLMError):
     request_started = False
 
-    def __init__(self, reason: str) -> None:
-        super().__init__(f"Model request not admitted: {reason}", termination_reason=reason)
+    def __init__(self, reason: str, *, message: str | None = None) -> None:
+        super().__init__(
+            message if message is not None else f"Model request not admitted: {reason}",
+            termination_reason=reason,
+        )
 
 
 class _AdmissionBackend:
@@ -621,18 +623,23 @@ class _AdmissionBackend:
         self.turns.data["requests"].append(record)
         return record, call_number
 
-    def _finish(self, record: dict[str, Any], response: Any) -> None:
+    def _finish(self, record: dict[str, Any], response: Any, usage: dict[str, int] | None) -> None:
         self._finish_record(
             record,
             len(response) if isinstance(response, str) else len(json.dumps(response, default=str)),
+            usage,
         )
 
-    def _finish_record(self, record: dict[str, Any], response_chars: int) -> None:
-        record["response_chars"] = response_chars
-        usage = getattr(self.backend, "last_usage", None)
-        if isinstance(usage, dict):
-            record["usage"] = copy.deepcopy(usage)
-        self.turns.surface_usage()
+    def _finish_record(
+        self, record: dict[str, Any], response_chars: int, usage: dict[str, int] | None
+    ) -> None:
+        reported = usage if usage is not None else getattr(self.backend, "last_usage", None)
+        snapshot = copy.deepcopy(reported) if isinstance(reported, dict) else None
+        with self.turns.admission_lock:
+            record["response_chars"] = response_chars
+            if snapshot is not None:
+                record["usage"] = snapshot
+            self.turns.surface_usage()
 
     def __getattr__(self, name: str) -> Any:
         if name == "stream_in_loop":
@@ -647,37 +654,50 @@ class _AdmissionBackend:
                     if self.turns.async_checkpoint is not None:
                         try:
                             await self.turns.async_checkpoint()
-                        except BaseException:
-                            self.turns.abandon(call_number)
+                        except BaseException as error:
+                            self.turns.acknowledge(call_number)
+                            if isinstance(error, Exception):
+                                raise _AdmissionDenied("llm_error", message=str(error)) from error
                             raise
                     response_chars = 0
+                    request_capture = _ModelRequestCapture()
                     try:
-                        with single_model_request():
-                            iterator = method(*args, **kwargs)
-                            if inspect.isawaitable(iterator):
-                                iterator = await iterator
-                            try:
-                                if hasattr(iterator, "__aiter__"):
-                                    async for chunk in iterator:
-                                        response_chars += len(chunk)
-                                        yield chunk
-                                else:
-                                    for chunk in iterator:
-                                        response_chars += len(chunk)
-                                        yield chunk
-                            finally:
+                        with _capture_model_request(request_capture), single_model_request():
+                            stream = method(*args, **kwargs)
+                            if inspect.isawaitable(stream):
+                                stream = await stream
+                            asynchronous = hasattr(stream, "__aiter__")
+                            iterator = aiter(stream) if asynchronous else iter(stream)
+                        try:
+                            while True:
+                                with (
+                                    _capture_model_request(request_capture),
+                                    single_model_request(),
+                                ):
+                                    try:
+                                        chunk = (
+                                            await anext(iterator)
+                                            if asynchronous
+                                            else next(iterator)
+                                        )
+                                    except (StopAsyncIteration, StopIteration):
+                                        break
+                                response_chars += len(chunk)
+                                yield chunk
+                        finally:
+                            with _capture_model_request(request_capture), single_model_request():
                                 close_async: Callable[[], Any] | None = getattr(
-                                    iterator, "aclose", None
+                                    stream, "aclose", None
                                 )
                                 if callable(close_async):
                                     await close_async()
                                 else:
-                                    close = getattr(iterator, "close", None)
+                                    close = getattr(stream, "close", None)
                                     if callable(close):
                                         close()
                     finally:
                         try:
-                            self._finish_record(record, response_chars)
+                            self._finish_record(record, response_chars, request_capture.usage)
                         finally:
                             self.turns.acknowledge(call_number)
 
@@ -687,20 +707,28 @@ class _AdmissionBackend:
             def stream_sync(*args: Any, **kwargs: Any) -> Any:
                 record, call_number = self._begin(args, kwargs)
                 response_chars = 0
+                request_capture = _ModelRequestCapture()
                 try:
-                    with single_model_request():
-                        iterator = method(*args, **kwargs)
-                        try:
-                            for chunk in iterator:
-                                response_chars += len(chunk)
-                                yield chunk
-                        finally:
-                            close = getattr(iterator, "close", None)
+                    with _capture_model_request(request_capture), single_model_request():
+                        stream = method(*args, **kwargs)
+                        iterator = iter(stream)
+                    try:
+                        while True:
+                            with _capture_model_request(request_capture), single_model_request():
+                                try:
+                                    chunk = next(iterator)
+                                except StopIteration:
+                                    break
+                            response_chars += len(chunk)
+                            yield chunk
+                    finally:
+                        with _capture_model_request(request_capture), single_model_request():
+                            close = getattr(stream, "close", None)
                             if callable(close):
                                 close()
                 finally:
                     try:
-                        self._finish_record(record, response_chars)
+                        self._finish_record(record, response_chars, request_capture.usage)
                     finally:
                         self.turns.acknowledge(call_number)
 
@@ -729,15 +757,18 @@ class _AdmissionBackend:
                 if self.turns.async_checkpoint is not None:
                     try:
                         await self.turns.async_checkpoint()
-                    except BaseException:
-                        self.turns.abandon(call_number)
+                    except BaseException as error:
+                        self.turns.acknowledge(call_number)
+                        if isinstance(error, Exception):
+                            raise _AdmissionDenied("llm_error", message=str(error)) from error
                         raise
+                request_capture = _ModelRequestCapture()
                 try:
-                    with single_model_request():
+                    with _capture_model_request(request_capture), single_model_request():
                         response = method(*args, **kwargs)
                         if inspect.isawaitable(response):
                             response = await response
-                    self._finish(record, response)
+                    self._finish(record, response, request_capture.usage)
                     return response
                 finally:
                     self.turns.acknowledge(call_number)
@@ -750,22 +781,24 @@ class _AdmissionBackend:
                 args, kwargs, native_tools=name == "generate_with_tools"
             )
             response: Any = None
+            request_capture = _ModelRequestCapture()
             try:
-                with single_model_request():
+                with _capture_model_request(request_capture), single_model_request():
                     response = method(*args, **kwargs)
                 if inspect.isawaitable(response):
 
                     async def finish_response() -> Any:
+                        request_capture = _ModelRequestCapture()
                         try:
-                            with single_model_request():
+                            with _capture_model_request(request_capture), single_model_request():
                                 resolved = await response
-                            self._finish(record, resolved)
+                            self._finish(record, resolved, request_capture.usage)
                             return resolved
                         finally:
                             self.turns.acknowledge(call_number)
 
                     return finish_response()
-                self._finish(record, response)
+                self._finish(record, response, request_capture.usage)
                 return response
             finally:
                 if not inspect.isawaitable(response):

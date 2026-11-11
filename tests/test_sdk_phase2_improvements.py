@@ -71,9 +71,11 @@ from looplet.streaming import CallbackEmitter, LLMChunkEvent
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("max_model_calls", [None, 2, 3])
+@pytest.mark.parametrize("provider_metadata", [False, True])
 async def test_openai_responses_backend_stateful_chaining_and_404_fallback(
     asynchronous: bool,
     max_model_calls: int | None,
+    provider_metadata: bool,
 ) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -96,7 +98,22 @@ async def test_openai_responses_backend_stateful_chaining_and_404_fallback(
                         call_id="call_lookup_1",
                         name="lookup",
                         arguments='{"key": "alpha"}',
-                    )
+                    ),
+                    *(
+                        [
+                            SimpleNamespace(
+                                type="message",
+                                content=[
+                                    SimpleNamespace(
+                                        type="output_data", mime_type=kind, data="opaque"
+                                    )
+                                ],
+                            )
+                            for kind in ("stateful_marker", "usage")
+                        ]
+                        if provider_metadata
+                        else []
+                    ),
                 ],
             )
         if call_num == 2:
@@ -164,6 +181,10 @@ async def test_openai_responses_backend_stateful_chaining_and_404_fallback(
             config=cfg,
         )
 
+    assert calls[1].get("previous_response_id") == "resp_turn_1"
+    assert [
+        item["call_id"] for item in calls[1]["input"] if item["type"] == "function_call_output"
+    ] == ["call_lookup_1"]
     if max_model_calls == 2:
         assert len(calls) == max_model_calls, "fallback must not bypass model-request admission"
         assert not res.completed
@@ -174,6 +195,67 @@ async def test_openai_responses_backend_stateful_chaining_and_404_fallback(
     assert len(calls) == 3
     assert llm.previous_response_id == "resp_turn_2"
     assert llm.last_usage == {"input": 50, "output": 20, "cache_read": 100, "cache_write": 0}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("text_parts", [["first"], ["first", "second"]])
+async def test_openai_responses_text_cursor_uses_translated_conversation(
+    asynchronous: bool, text_parts: list[str]
+) -> None:
+    calls: list[dict[str, Any]] = []
+    response = SimpleNamespace(
+        id="resp_text",
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=text) for text in text_parts],
+            ),
+            SimpleNamespace(type="reasoning", summary=[]),
+            *[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_data", mime_type=kind, data="opaque")],
+                )
+                for kind in ("stateful_marker", "usage")
+            ],
+        ],
+    )
+
+    def create_sync(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return response
+
+    async def create_async(**kwargs: Any) -> Any:
+        return create_sync(**kwargs)
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=create_async if asynchronous else create_sync)
+    )
+    backend_cls = AsyncOpenAIResponsesBackend if asynchronous else OpenAIResponsesBackend
+    backend = backend_cls(client, model="gpt-6-luna")
+    if asynchronous:
+        text = await backend.generate("Begin")
+    else:
+        text = backend.generate("Begin")
+    assert text == "".join(text_parts)
+    backend.set_conversation_input(
+        {
+            "prompt": "Begin",
+            "conversation": {
+                "messages": [
+                    {"role": "assistant", "content": text, "metadata": {"origin": "model"}},
+                    {"role": "user", "content": "Next"},
+                ]
+            },
+        }
+    )
+    if asynchronous:
+        await backend.generate("Begin")
+    else:
+        backend.generate("Begin")
+    assert calls[1]["previous_response_id"] == "resp_text"
+    assert calls[1]["input"] == [{"type": "message", "role": "user", "content": "Next"}]
 
 
 def test_extract_usage_supports_responses_input_tokens_details() -> None:

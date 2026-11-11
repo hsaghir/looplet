@@ -26,6 +26,137 @@ from looplet.testing import MockLLMBackend
 from looplet.types import LLMBackend, Step, ToolCall, ToolResult
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_attempt_writer_rejects_symlinked_directory(tmp_path, asynchronous):
+    from looplet.testing import AsyncMockLLMBackend
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    preserved = outside / "preserved.json"
+    preserved.write_text('{"preserved": true}')
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    attempts = trace / "model-attempts"
+    attempts.symlink_to(outside, target_is_directory=True)
+    backend = AsyncMockLLMBackend(["unused"]) if asynchronous else MockLLMBackend(["unused"])
+    factory = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    recorder = factory(backend, attempt_directory=attempts)
+    with pytest.raises(ValueError, match="attempt"):
+        if asynchronous:
+            await recorder.generate("must not escape")
+        else:
+            recorder.generate("must not escape")
+    assert backend.calls == 0
+    assert {path.name: path.read_bytes() for path in outside.iterdir()} == {
+        "preserved.json": b'{"preserved": true}'
+    }
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_attempt_reader_rejects_escaping_links(tmp_path, directory_link):
+    from looplet.provenance import load_model_attempts
+
+    outside = tmp_path / "outside"
+    RecordingLLMBackend(MockLLMBackend(["ok"]), attempt_directory=outside).generate("private")
+    before = {path.name: path.read_bytes() for path in outside.iterdir()}
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    attempts = trace / "model-attempts"
+    if directory_link:
+        attempts.symlink_to(outside, target_is_directory=True)
+    else:
+        attempts.mkdir()
+        for path in outside.glob("*.json"):
+            (attempts / path.name).symlink_to(path)
+    with pytest.raises(ValueError, match="attempt|outside"):
+        load_model_attempts(trace)
+    assert {path.name: path.read_bytes() for path in outside.iterdir()} == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_async_recording_retains_prepared_requests_off_loop(tmp_path, method, cancelled):
+    from threading import get_ident
+
+    from looplet.provenance import load_model_attempts
+
+    notifications = []
+    owner = get_ident()
+    writes = []
+    cancellation = asyncio.CancelledError("provider interrupted")
+
+    class Backend:
+        request_attempt_callback = None
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        def prepare(self, prompt):
+            self.last_request = {"model": "fake", "prompt": prompt}
+            self.request_attempt_callback()
+            if cancelled:
+                raise cancellation
+
+        async def generate(self, prompt, **kwargs):
+            self.prepare(prompt)
+            return "ok"
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            self.prepare(prompt)
+            return [{"type": "text", "text": "ok"}]
+
+        async def stream(self, prompt, **kwargs):
+            self.prepare(prompt)
+            yield "ok"
+
+    backend = Backend()
+
+    def previous():
+        notifications.append(get_ident())
+
+    backend.set_request_attempt_callback(previous)
+    recorder = AsyncRecordingLLMBackend(backend, attempt_directory=tmp_path / "model-attempts")
+    original_write = recorder._write_attempt
+
+    def write(*args, **kwargs):
+        writes.append(get_ident())
+        return original_write(*args, **kwargs)
+
+    recorder._write_attempt = write
+
+    async def invoke():
+        if method == "stream":
+            return "".join([chunk async for chunk in recorder.stream("request")])
+        options = {"tools": []} if method == "generate_with_tools" else {}
+        return await getattr(recorder, method)("request", **options)
+
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await invoke()
+        assert caught.value is cancellation
+    else:
+        result = await invoke()
+        assert result == (
+            [{"type": "text", "text": "ok"}] if method == "generate_with_tools" else "ok"
+        )
+    assert backend.request_attempt_callback is previous
+    assert notifications == [owner]
+    assert writes and owner not in writes
+    attempts = load_model_attempts(tmp_path)
+    assert len(attempts) == 1
+    assert len(attempts[0]["prepared_requests"]) == 1
+    assert attempts[0]["prepared_requests"][0]["provider_request"] == {
+        "model": "fake",
+        "prompt": "request",
+    }
+    assert attempts[0]["outcome"]["capture"]["provider_request"] == {
+        "model": "fake",
+        "prompt": "request",
+    }
+
+
 @pytest.mark.parametrize("first_async", [False, True])
 @pytest.mark.parametrize("second_async", [False, True])
 @pytest.mark.parametrize("profile", ["execution-v1", "minimal"])

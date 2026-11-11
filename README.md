@@ -6,19 +6,27 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
 
-**A Python loop for agents that call tools.**
+**Own your agent harness.**
 
-Looplet runs a tool-calling agent in your Python program.
-You provide a model, a task, and Python functions.
-It checks each call, runs the function, and yields a `Step` with the result.
-Your code controls iteration and can stop before the next call.
+Looplet is a Python SDK for owning a tool-calling agent's harness.
+The harness includes the loop, prompts, tools, context, and policies around the model.
+The loop yields a `Step` with each tool call, its arguments, result, and timing.
+Hooks control permissions, context, dispatch, and completion.
 
-The SDK owns agent execution and retained evidence.
+After deployment, use saved run evidence to investigate failures and maintain the agent's behavior.
+Turn failures into regression tests.
+Write eval graders that check files, records, and other outcomes independently of the agent's completion claim.
+Replay captured model responses to test execution changes.
+Use fresh model runs to evaluate changes to prompts, models, or model-visible context.
+
+Package instructions, tools, hooks, configuration, and self-tests as ordinary files.
+This directory is a **cartridge**, the reusable, reviewable unit of agent behavior.
+Review it in Git, load it into your application, and test changes to that version.
+Start with Python functions or load a cartridge; both use the same loop.
+Your application supplies model access, service connections, and authority.
+
+Looplet supplies execution and run evidence for these checks.
 Keep improvement algorithms, experiment orchestration, and promotion decisions in your host or downstream packages.
-
-Use hooks for policy, saved responses for replay, and independent checks for correctness.
-These features use the same loop.
-Start with functions; package an agent as files only when you need to share it.
 
 Python 3.11 or newer is required.
 The core has no third-party runtime dependencies.
@@ -118,7 +126,10 @@ The [quickstart](https://hsaghir.com/looplet/python/) adds a permission hook, ca
 Use [async APIs](https://hsaghir.com/looplet/operations/#asynchronous-loops) with an asynchronous backend.
 Use `closing` or `aclosing` when stopping iteration early.
 
-## Check results
+## Test changes after deployment
+
+Keep saved runs for failures and cases that already work.
+Use those cases as regression tests when changing tools, prompts, or policies.
 
 A `done` step means that the loop accepted completion.
 It does not prove that the answer is correct.
@@ -155,7 +166,8 @@ Then add capture, hooks, or result checks as needed.
 See the [Migration guide](https://hsaghir.com/looplet/migrate/) for the full procedure.
 
 Use a [Python factory](https://hsaghir.com/looplet/api/#optional-preset-conveniences) to build fresh dependencies for each task.
-Use a [cartridge](https://hsaghir.com/looplet/cartridge/) when you need an agent stored and shared as files.
+Use a [cartridge](https://hsaghir.com/looplet/cartridge/) to review and reuse agent behavior across applications.
+Its self-tests travel with the agent version.
 The optional [`looplet new` generator](https://hsaghir.com/looplet/agent-factory/) drafts cartridges with a model.
 It is separate from a Python factory.
 
@@ -166,7 +178,7 @@ Use Looplet when:
 - One model calls tools until the task ends.
 - Your team uses Python, Git, and pytest.
 - Your code must control when tools run.
-- You need saved runs and tests for agent changes.
+- You need to test and review agent changes after deployment.
 
 Use something else when:
 
@@ -210,6 +222,8 @@ See the [changelog](https://hsaghir.com/looplet/changelog/) and [release plan](h
 - [Install and configure](https://hsaghir.com/looplet/install/): choose a build and connect a provider.
 - [Python API](https://hsaghir.com/looplet/api/): find functions, hooks, and configuration fields.
 - [Operations](https://hsaghir.com/looplet/operations/): use retries, context limits, cancellation, and checkpoints.
+- [Experiments](https://hsaghir.com/looplet/experiments/): choose replay or fresh runs for the change under test.
+- [Cartridges](https://hsaghir.com/looplet/cartridge/): package agent behavior and self-tests for review and reuse.
 - [Examples](https://github.com/hsaghir/looplet/tree/master/examples): run complete examples.
 
 ## Contributing

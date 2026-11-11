@@ -270,6 +270,24 @@ def _recording_backend(backend: Any) -> _RecordingBase | None:
     return None
 
 
+class _PreparedRequestCallbacks:
+    _lock = Lock()
+
+    def __init__(self, previous: Callable[[], None] | None) -> None:
+        self.previous = previous
+        self.active_scopes = 0
+        self.observer: ContextVar[Callable[[], None] | None] = ContextVar(
+            "looplet_prepared_request_observer", default=None
+        )
+
+    def __call__(self) -> None:
+        if self.previous is not None:
+            self.previous()
+        observer = self.observer.get()
+        if observer is not None:
+            observer()
+
+
 class _RecordingBase:
     """Shared state for sync/async recording backends."""
 
@@ -472,21 +490,32 @@ class _RecordingBase:
             if attempt_id is None or not callable(setter):
                 yield captured
                 return
-            previous = getattr(self._backend, "request_attempt_callback", None)
 
             def prepared() -> None:
-                if callable(previous):
-                    previous()
                 request = json_snapshot(getattr(self._backend, "last_request", None))
                 prepared_requests.append(request)
                 if persist_prepared:
                     self._write_dispatch(attempt_id, len(prepared_requests), request)
 
-            setter(prepared)
+            with _PreparedRequestCallbacks._lock:
+                previous = getattr(self._backend, "request_attempt_callback", None)
+                callbacks = (
+                    previous
+                    if isinstance(previous, _PreparedRequestCallbacks)
+                    else _PreparedRequestCallbacks(previous)
+                )
+                if callbacks is not previous:
+                    setter(callbacks)
+                callbacks.active_scopes += 1
+            token = callbacks.observer.set(prepared)
             try:
                 yield captured
             finally:
-                setter(previous)
+                callbacks.observer.reset(token)
+                with _PreparedRequestCallbacks._lock:
+                    callbacks.active_scopes -= 1
+                    if not callbacks.active_scopes:
+                        setter(callbacks.previous)
 
     async def _capture_io(self, operation: Callable[[], Any]) -> Any:
         import asyncio

@@ -46,7 +46,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Runtime records reference automatic provenance through existing artifact references. Retained model attempts remain readable after relocating the referenced directory.
 - Responses adapters count translated conversation items for stateful cursors. Ignored provider metadata and reasoning cannot skip tool results or later user turns.
 - Native model calls retain request-owned provider envelopes and usage through concurrent, nested, and asynchronous recording.
-- Model-attempt records retain optional async preparation callbacks off-loop and confine saved paths.
+- Model-attempt records retain optional async preparation callbacks off-loop and confine saved paths. Overlapping calls preserve request ownership and restore host callbacks.
 - Interleaved model streams restore caller request scopes between chunks, on completion, and during interrupted cleanup.
 - Automatic checkpoint saves use owned history revisions to encode changed steps and update affected list chunks. A bounded transaction-local memo avoids repeated node checks. Mutable JSON encoding, hash verification, and durability remain unchanged.
 - Inferred typed validation follows edits to tool parameter schemas, including after cartridge export and load. Explicit argument policies remain independent.

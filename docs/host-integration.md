@@ -252,6 +252,7 @@ Saved-artifact readers validate completed exports.
 Missing outcomes do not prove that a provider received no request.
 For backends with request-attempt callbacks, async recording snapshots each preparation notification.
 It persists those snapshots off-loop during call finalization, including cancellation.
+Overlapping calls keep preparation callbacks request-local and restore the host callback after the last active scope exits.
 Process loss before finalization can leave only intent records.
 Attempt-directory symlinks and escaping record links are rejected by writers and readers.
 Native request, response, stop reason, and usage snapshots belong to the call being retained.

@@ -1170,6 +1170,154 @@ async def test_failed_admission_checkpoint_separates_live_refusal_from_recovery(
     assert turns.data["requests"][-1]["model_call_id"].endswith(":call-2")
 
 
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_async_startup_keeps_storage_off_loop_and_binding_on_it(
+    tmp_path, monkeypatch, automatic
+):
+    from threading import get_ident
+
+    from looplet import tools_from
+    from looplet.checkpoint import FileCheckpointStore
+    from looplet.provenance import ProvenanceSink
+    from looplet.result_store import FileToolResultStore
+
+    owner = get_ident()
+    operations = []
+    bindings = []
+    original_checkpoint = FileCheckpointStore.__init__
+    original_load = FileCheckpointStore.load_latest_for_resume
+    original_results = FileToolResultStore.__post_init__
+    original_trace = ProvenanceSink.__init__
+
+    def observe(name):
+        operations.append(name)
+        assert get_ident() != owner
+
+    def checkpoint(store, directory):
+        observe("checkpoint")
+        original_checkpoint(store, directory)
+
+    def load(store, **kwargs):
+        observe("checkpoint_load")
+        return original_load(store, **kwargs)
+
+    def results(store):
+        observe("results")
+        original_results(store)
+
+    def trace(sink, *args, **kwargs):
+        observe("trace")
+        original_trace(sink, *args, **kwargs)
+
+    class ThreadBoundConfig(LoopConfig):
+        def __setattr__(self, name, value):
+            assert get_ident() == owner
+            super().__setattr__(name, value)
+
+    tools = tools_from([], include_done=True, done_parameters={"summary": "Outcome"})
+    original_bind = tools.set_resources
+
+    def bind(resources):
+        assert get_ident() == owner
+        bindings.append(resources)
+        original_bind(resources)
+
+    monkeypatch.setattr(FileCheckpointStore, "__init__", checkpoint)
+    monkeypatch.setattr(FileCheckpointStore, "load_latest_for_resume", load)
+    monkeypatch.setattr(FileToolResultStore, "__post_init__", results)
+    monkeypatch.setattr(ProvenanceSink, "__init__", trace)
+    monkeypatch.setattr(tools, "set_resources", bind)
+    result = await run_result_async(
+        AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+        tools=tools,
+        config=ThreadBoundConfig(
+            max_steps=1,
+            use_native_tools=False,
+            harness_profile="execution-v1" if automatic else "minimal",
+            run_dir=str(tmp_path / "evidence"),
+            checkpoint_dir=None if automatic else str(tmp_path / "checkpoints"),
+        ),
+    )
+    assert result.completed
+    assert set(operations) == (
+        {"checkpoint", "checkpoint_load", "results", "trace"}
+        if automatic
+        else {"checkpoint", "checkpoint_load"}
+    )
+    assert bool(bindings) is automatic
+
+
+@pytest.mark.parametrize("storage_fails", [False, True])
+async def test_async_startup_drains_storage_before_releasing_registry(
+    tmp_path, monkeypatch, storage_fails
+):
+    from threading import get_ident
+
+    from looplet import tools_from
+    from looplet.result_store import FileToolResultStore
+
+    owner = get_ident()
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = Event()
+    initialized = []
+    original = FileToolResultStore.__post_init__
+
+    def initialize(store):
+        assert get_ident() != owner
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(5)
+        initialized.append(True)
+        if storage_fails:
+            raise OSError("startup storage unavailable")
+        original(store)
+
+    monkeypatch.setattr(FileToolResultStore, "__post_init__", initialize)
+    tools = tools_from([], include_done=True, done_parameters={"summary": "Outcome"})
+    resources = tools.resources
+    backend = AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}'])
+    pending = asyncio.create_task(
+        run_result_async(
+            backend,
+            tools=tools,
+            config=LoopConfig(
+                max_steps=1, use_native_tools=False, run_dir=str(tmp_path / "evidence")
+            ),
+        )
+    )
+    try:
+        await entered.wait()
+        pending.cancel("first startup cancellation")
+        advanced = loop.create_future()
+        loop.call_soon(advanced.set_result, None)
+        await advanced
+        pending.cancel("repeated startup cancellation")
+        assert not pending.done()
+        with pytest.raises(RuntimeError, match="registry already has an active loop"):
+            await run_result_async(
+                backend,
+                tools=tools,
+                config=LoopConfig(harness_profile="minimal", use_native_tools=False),
+            )
+        assert backend.calls == 0
+        assert tools.resources == resources
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await pending
+    assert caught.value.args == ("first startup cancellation",)
+    assert initialized == [True]
+    assert tools.resources == resources
+    assert backend.calls == 0
+    result = await run_result_async(
+        backend,
+        tools=tools,
+        config=LoopConfig(harness_profile="minimal", max_steps=1, use_native_tools=False),
+    )
+    assert result.completed
+    assert backend.calls == 1
+
+
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("model_limit", [None, 6])
 async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(

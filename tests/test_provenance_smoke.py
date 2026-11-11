@@ -792,6 +792,164 @@ def test_finished_trajectory_survives_recording_backend_reset():
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("routed", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_default_harness_isolates_shared_recording_backend(
+    tmp_path, asynchronous, routed, native
+):
+    from types import SimpleNamespace
+
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        LoopConfig,
+        RunResult,
+        async_replay_loop,
+        replay_loop,
+        run_result,
+        run_result_async,
+        tools_from,
+    )
+
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    responses = [
+        json.dumps({"tool": "done", "args": {"summary": label}}) for label in ("first", "second")
+    ]
+    backend = recorder_type(backend_type(responses))
+    for label in ("first", "second"):
+        tools = tools_from([], include_done=True, done_parameters={"summary": "Outcome"})
+        config = LoopConfig(
+            run_dir=str(tmp_path / label),
+            max_steps=1,
+            use_native_tools=native,
+            router=SimpleNamespace(select=lambda **kwargs: backend) if routed else None,
+        )
+        if asynchronous:
+            result = await run_result_async(backend, task=label, tools=tools, config=config)
+        else:
+            result = run_result(backend, task=label, tools=tools, config=config)
+        assert result.completed
+        assert result.output["summary"] == label
+        trace = Path(result.metadata["trace_dir"])
+        trajectory = json.loads((trace / "trajectory.json").read_text())
+        assert len(trajectory["llm_calls"]) == 1
+        assert trajectory["llm_calls"][0]["index"] == 0
+        response = trajectory["llm_calls"][0]["capture"]["response"]
+        summary = (
+            response[0]["input"]["summary"] if native else json.loads(response)["args"]["summary"]
+        )
+        assert summary == label
+        assert trajectory["steps"][0]["llm_call_indices"] == [0]
+        state = DefaultState(max_steps=1)
+        arguments = dict(
+            tools=tools_from([], include_done=True, done_parameters={"summary": "Outcome"}),
+            state=state,
+            config=LoopConfig(harness_profile="minimal", max_steps=1, use_native_tools=native),
+        )
+        if asynchronous:
+            async for _step in async_replay_loop(trace, **arguments):
+                pass
+        else:
+            for _step in replay_loop(trace, **arguments):
+                pass
+        assert RunResult.from_state(state).output == result.output
+    assert len(backend.calls) == 2
+    assert [
+        call.response[0]["input"]["summary"]
+        if native
+        else json.loads(call.response)["args"]["summary"]
+        for call in backend.calls
+    ] == [
+        "first",
+        "second",
+    ]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("redact_upstream", [False, True])
+async def test_default_harness_preserves_host_recorder_redaction(
+    tmp_path, asynchronous, redact_upstream
+):
+    from looplet import AsyncMockLLMBackend, LoopConfig, run_result, run_result_async
+
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    raw = backend_type(['{"tool":"done","args":{"summary":"ok"}}'])
+    backend = recorder_type(
+        raw,
+        redact=lambda text: text.replace("sensitive-marker", "[redacted]"),
+        redact_upstream=redact_upstream,
+    )
+    config = LoopConfig(run_dir=str(tmp_path), use_native_tools=False, max_steps=1)
+    if asynchronous:
+        result = await run_result_async(backend, task="sensitive-marker", tools=[], config=config)
+    else:
+        result = run_result(backend, task="sensitive-marker", tools=[], config=config)
+    assert result.completed
+    assert ("sensitive-marker" in raw.last_prompt) is not redact_upstream
+    trace = Path(result.metadata["trace_dir"])
+    saved = [
+        path.read_text() for path in trace.rglob("*") if path.suffix in {".json", ".jsonl", ".txt"}
+    ]
+    assert saved
+    assert any("[redacted]" in text for text in saved)
+    assert all("sensitive-marker" not in text for text in saved)
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize("finish_first", ["first", "second"])
+async def test_default_harness_isolates_overlapping_recorders(tmp_path, finish_first):
+    from looplet import LoopConfig, run_result_async
+
+    entered = {label: asyncio.Event() for label in ("first", "second")}
+    released = {label: asyncio.Event() for label in entered}
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            label = "first" if "description: first" in prompt else "second"
+            entered[label].set()
+            await released[label].wait()
+            return json.dumps({"tool": "done", "args": {"summary": label}})
+
+    backend = AsyncRecordingLLMBackend(Backend())
+    tasks = {
+        label: asyncio.create_task(
+            run_result_async(
+                backend,
+                task=label,
+                tools=[],
+                config=LoopConfig(
+                    run_dir=str(tmp_path / label), use_native_tools=False, max_steps=1
+                ),
+            )
+        )
+        for label in entered
+    }
+    try:
+        await asyncio.gather(*(event.wait() for event in entered.values()))
+        order = [finish_first, "second" if finish_first == "first" else "first"]
+        for label in order:
+            released[label].set()
+            result = await tasks[label]
+            assert result.completed
+            assert result.output["summary"] == label
+            trace = Path(result.metadata["trace_dir"])
+            trajectory = json.loads((trace / "trajectory.json").read_text())
+            assert len(trajectory["llm_calls"]) == 1
+            call = trajectory["llm_calls"][0]
+            assert call["index"] == 0
+            assert json.loads(call["capture"]["response"])["args"]["summary"] == label
+            assert trajectory["steps"][0]["llm_call_indices"] == [0]
+        assert len(backend.calls) == 2
+    finally:
+        for task in tasks.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("routed", [False, True])
 async def test_default_harness_composes_persistent_recovery(tmp_path, asynchronous, routed):
     from types import SimpleNamespace
 
@@ -1070,6 +1228,79 @@ def test_upstream_redaction_rejects_altered_opaque_blocks(operation, kind):
     assert payload == original
     assert inputs == []
     assert recorder.calls == []
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
+@pytest.mark.parametrize("nested", [False, True])
+async def test_async_recording_restores_call_owned_conversation_after_intent(
+    tmp_path, monkeypatch, method, nested
+):
+    from threading import Barrier
+
+    from looplet.provenance import load_model_attempts
+
+    class Backend:
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        async def generate(self, prompt, **kwargs):
+            return self.snapshot["prompt"]
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "text", "text": self.snapshot["prompt"]}]
+
+        async def stream(self, prompt, **kwargs):
+            yield self.snapshot["prompt"]
+
+    backend = Backend()
+    inner = AsyncRecordingLLMBackend(backend) if nested else backend
+    recorder = AsyncRecordingLLMBackend(inner, attempt_directory=tmp_path / "model-attempts")
+    barrier = Barrier(2)
+    original_begin = recorder._begin_attempt
+
+    def begin(**kwargs):
+        attempt = original_begin(**kwargs)
+        barrier.wait(timeout=5)
+        return attempt
+
+    monkeypatch.setattr(recorder, "_begin_attempt", begin)
+
+    async def invoke(label):
+        recorder.set_conversation_input({"prompt": label, "conversation": {"messages": []}})
+        if method == "stream":
+            return "".join([chunk async for chunk in recorder.stream(label)])
+        options = {"tools": []} if method == "generate_with_tools" else {}
+        response = await getattr(recorder, method)(label, **options)
+        return response[0]["text"] if method == "generate_with_tools" else response
+
+    assert await asyncio.gather(invoke("first"), invoke("second")) == ["first", "second"]
+    attempts = load_model_attempts(tmp_path)
+    assert len(attempts) == 2
+    for attempt in attempts:
+        request = attempt["intent"]["request"]
+        response = attempt["outcome"]["capture"]["response"]
+        assert (response[0]["text"] if method == "generate_with_tools" else response) == request[
+            "conversation_input"
+        ]["prompt"]
+
+
+@pytest.mark.parametrize("clear", [False, True])
+async def test_recording_distinguishes_unbound_conversation_from_explicit_clear(clear):
+    class Backend:
+        snapshot = {"prompt": "host-selected"}
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        async def generate(self, prompt, **kwargs):
+            return self.snapshot["prompt"] if self.snapshot is not None else prompt
+
+    backend = Backend()
+    recorder = AsyncRecordingLLMBackend(backend)
+    if clear:
+        recorder.set_conversation_input(None)
+        backend.set_conversation_input({"prompt": "other-call"})
+    assert await recorder.generate("current-call") == ("current-call" if clear else "host-selected")
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

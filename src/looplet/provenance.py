@@ -291,6 +291,8 @@ class _PreparedRequestCallbacks:
 class _RecordingBase:
     """Shared state for sync/async recording backends."""
 
+    _unbound_conversation = object()
+
     def __init__(
         self,
         backend: Any,
@@ -316,7 +318,7 @@ class _RecordingBase:
             "looplet_model_call_context", default=None
         )
         self._conversation_input: ContextVar[dict[str, Any] | None] = ContextVar(
-            "looplet_recorded_conversation_input", default=None
+            "looplet_recorded_conversation_input"
         )
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
@@ -359,7 +361,12 @@ class _RecordingBase:
     def _scope_calls(self, scope: str) -> Iterator[None]:
         token = self._call_scope.set(self._call_scope.get() or scope)
         try:
-            yield
+            recording = _recording_backend(self._backend)
+            if recording is None:
+                yield
+            else:
+                with recording._scope_calls(scope):
+                    yield
         finally:
             self._call_scope.reset(token)
 
@@ -470,7 +477,7 @@ class _RecordingBase:
                     "temperature": temperature,
                     "tools": tools,
                     "options": options,
-                    "conversation_input": self._conversation_input.get(),
+                    "conversation_input": self._conversation_input.get(None),
                 },
             },
         )
@@ -485,6 +492,10 @@ class _RecordingBase:
         *,
         persist_prepared: bool = True,
     ) -> Iterator[_ModelRequestCapture]:
+        conversation_input = self._conversation_input.get(self._unbound_conversation)
+        bind_conversation = getattr(self._backend, "set_conversation_input", None)
+        if conversation_input is not self._unbound_conversation and callable(bind_conversation):
+            bind_conversation(conversation_input)
         with _capture_model_request(native_capture) as captured:
             setter = getattr(self._backend, "set_request_attempt_callback", None)
             if not callable(setter):
@@ -617,7 +628,7 @@ class _RecordingBase:
                             "max_tokens": max_tokens,
                             "tools": tools,
                             "options": options or {},
-                            "conversation_input": self._conversation_input.get(),
+                            "conversation_input": self._conversation_input.get(None),
                         },
                         "response": response,
                         "provider_request": provider_request,

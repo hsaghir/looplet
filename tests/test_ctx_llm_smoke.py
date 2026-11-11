@@ -100,8 +100,10 @@ class TestCtxLlmAvailable:
 
 
 class TestNestedProvenance:
-    def test_tool_internal_calls_tagged_with_scope(self):
+    def test_tool_internal_calls_tagged_with_scope(self, tmp_path):
         """When a RecordingLLMBackend is used, tool-internal calls get scope='tool:<name>'."""
+
+        import json
 
         def classify_tool(*, text: str, ctx: ToolContext) -> dict:
             if ctx.llm is not None:
@@ -134,7 +136,7 @@ class TestNestedProvenance:
                 llm=recording,
                 tools=tools,
                 state=DefaultState(max_steps=5),
-                config=LoopConfig(max_steps=5),
+                config=LoopConfig(max_steps=5, run_dir=str(tmp_path)),
                 task={},
             )
         )
@@ -150,6 +152,14 @@ class TestNestedProvenance:
         # Loop-level calls should have no scope
         unscoped = [c for c in recording.calls if c.scope is None]
         assert len(unscoped) == 2
+
+        trajectory_path = next(tmp_path.glob("traces/*/trajectory.json"))
+        trajectory = json.loads(trajectory_path.read_text())
+        assert [call["scope"] for call in trajectory["llm_calls"]] == [
+            None,
+            "tool:classify",
+            None,
+        ]
 
     def test_scope_in_to_dict(self):
         """LLMCall.scope appears in to_dict() output."""

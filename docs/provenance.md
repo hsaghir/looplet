@@ -109,6 +109,14 @@ the recording wrapper before executing the run. Replacing it during a run
 does not merge separate call streams. Prefer a fresh sink for each run, or
 call `reset()` before reusing the sink and obtain its new trajectory hook.
 
+**Unreleased:** automatic harness captures use a separate recorder for each run.
+Sharing a recording backend does not copy its earlier calls into a new automatic trace.
+The host recorder keeps its history. Automatic traces preserve its redaction settings without applying upstream redaction twice.
+Recorders restore each call's typed conversation input before delegation after awaited persistence.
+Fresh registries, config objects, state, and mutable hooks are still required for overlapping runs.
+Keep mutable provider session state run-owned. Sharing a client does not make a stateful backend concurrently reusable.
+Explicit sinks and trajectory hooks remain run-owned; reset them or create fresh instances between runs.
+
 After `flush()`, the directory contains:
 
 ```
@@ -708,21 +716,51 @@ hook.save("traces/run_1/")     # writes trajectory.json + steps/*.json
 
 ### Recording the harness snapshot
 
-Use `serialize_harness()` to record the harness genome that produced a
+Use `serialize_harness()` to record the harness configuration that produced a
 trajectory without changing the trajectory schema:
 
 ```python
 from looplet import serialize_harness
 from looplet.provenance import TrajectoryRecorder
 
-snapshot = serialize_harness(config=config, tools=tools, hooks=hooks, llm=llm)
+snapshot = serialize_harness(
+  config=config,
+  tools=tools,
+  hooks=hooks,
+  llm=llm,
+  extra={"agent_revision": "reviewed-source-revision"},
+)
 hook = TrajectoryRecorder(harness_snapshot=snapshot)
 
 for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
     ...
 
-assert hook.trajectory.metadata["harness_snapshot"]["schema_version"] == 1
+assert hook.trajectory.metadata["harness_snapshot"]["schema_version"] == 2
 ```
+
+**Unreleased:** components can declare capture-safe settings through an optional `provenance_config()` method.
+It returns a dictionary containing finite JSON values or callable references.
+For example, a policy can return its limit and decision function:
+
+```python
+def provenance_config(self):
+  return {"limit": self.limit, "decision": self.decision}
+```
+
+Capture invokes this method on the caller thread. Keep it brief and free of side effects.
+Only return settings approved for retained evidence. Undeclared attributes and ordinary `to_config()` exports are not inspected.
+Callable values become `{"callable": "module.qualified_name"}` records; capture does not execute them or read their closures.
+Invalid declared values raise normal JSON serialization errors before model execution.
+
+Built-in compaction triggers, tool limits, budget warnings, and stagnation hooks describe settings without counters or firing history.
+`hook_configurations` follows hook order and includes `null` for hooks without a description.
+Named config components use `component_configurations`; memory sources and backends can opt in through the same method.
+These additive fields preserve snapshot schema version 2 and its existing type fields.
+
+A snapshot is a configuration description, not a complete behavioral fingerprint or a reconstruction recipe.
+Callable names do not identify source bytes or closure values.
+Supply reviewed revision identifiers through `extra`, explicit sink metadata, or the envelope's `cartridge_version` and `policy_version` fields.
+Keep comparison, experiment scheduling, and promotion decisions in downstream systems.
 
 ### Linking steps to LLM calls
 

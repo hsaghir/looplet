@@ -820,13 +820,13 @@ async def async_composable_loop(
     or use ``contextlib.aclosing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
-    from looplet.harness import prepare_harness_run
+    from looplet.harness import prepare_harness_run_async
 
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
     task, tools = _normalize_loop_inputs(task, tools, effective_config)
-    prepared = prepare_harness_run(
+    prepared = await prepare_harness_run_async(
         effective_config, hooks or [], llm, tools, state, session_log, conversation
     )
     tokens: list[tuple[Any, Any]] = []

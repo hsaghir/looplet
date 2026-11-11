@@ -150,3 +150,94 @@ def test_snapshot_detaches_tool_schemas_and_identifies_components():
     assert snapshot["tools"][0]["implementation"].endswith(".<locals>.source")
     config.disabled_defaults.append("checkpointing")
     assert snapshot["disabled_defaults"] == ["branching"]
+
+
+def test_snapshot_distinguishes_declared_hook_configuration():
+    from looplet import LoopConfig, StagnationHook, resolve_harness
+
+    snapshots = []
+    for threshold in (3, 12):
+        resolved = resolve_harness(LoopConfig(), [StagnationHook(threshold=threshold)])
+        snapshots.append(
+            serialize_harness(
+                config=resolved.config,
+                hooks=resolved.hooks,
+                extra={"resolved_harness": resolved.describe()},
+            )
+        )
+    assert snapshots[0] != snapshots[1]
+    assert snapshots[0]["hook_configurations"][0]["threshold"] == 3
+    assert snapshots[1]["hook_configurations"][0]["threshold"] == 12
+
+
+def test_snapshot_describes_callable_policies_without_executing_them():
+    from looplet import BudgetWarningHook, StagnationHook
+
+    def policy(*args):
+        raise AssertionError("snapshot must not execute a policy")
+
+    hooks = [
+        StagnationHook(fingerprint=policy, progress=policy, nudge=policy),
+        BudgetWarningHook(message=policy),
+    ]
+    snapshot = serialize_harness(hooks=hooks)
+    reference = {"callable": f"{policy.__module__}.{policy.__qualname__}"}
+    assert snapshot["hook_configurations"][0]["fingerprint"] == reference
+    assert snapshot["hook_configurations"][0]["progress"] == reference
+    assert snapshot["hook_configurations"][0]["nudge"] == reference
+    assert snapshot["hook_configurations"][1]["message"] == reference
+    json.dumps(snapshot)
+
+
+def test_snapshot_captures_only_explicit_provenance_configuration():
+    from types import SimpleNamespace
+
+    from looplet import LoopConfig
+
+    class Component:
+        def __init__(self):
+            self.api_key = "private-test-key"
+            self.limit = [3, 5]
+            self.calls = 99
+
+        def to_config(self):
+            raise AssertionError("cartridge export is not provenance")
+
+        def provenance_config(self):
+            return {"limits": self.limit}
+
+    component = Component()
+    opaque = SimpleNamespace(api_key="private-other-key")
+    snapshot = serialize_harness(
+        config=LoopConfig(compact_service=component),
+        hooks=[component, opaque],
+        extra={"agent_revision": "host-revision-42"},
+    )
+    assert snapshot["component_configurations"]["compact_service"] == {"limits": [3, 5]}
+    assert snapshot["hook_configurations"] == [{"limits": [3, 5]}, None]
+    assert snapshot["extra"]["agent_revision"] == "host-revision-42"
+    component.limit.append(8)
+    assert snapshot["hook_configurations"][0] == {"limits": [3, 5]}
+    serialized = json.dumps(snapshot)
+    assert "private-test-key" not in serialized
+    assert "private-other-key" not in serialized
+    assert "calls" not in snapshot["component_configurations"]["compact_service"]
+
+
+def test_snapshot_budget_configuration_excludes_consumed_state():
+    from looplet import BudgetWarningHook, PerToolLimitHook, ToolCall, ToolCallBudgetHook
+
+    budget = ToolCallBudgetHook(max_calls=7)
+    per_tool = PerToolLimitHook(limits={"lookup": 2})
+    warnings = BudgetWarningHook(thresholds=(0.8, 0.4))
+    hooks = [budget, per_tool, warnings]
+    before = serialize_harness(hooks=hooks)
+    call = ToolCall(tool="lookup", args={})
+    assert budget.pre_dispatch(None, None, call, 1) is None
+    assert per_tool.pre_dispatch(None, None, call, 1) is None
+    assert budget.calls == 1
+    assert per_tool.counts == {"lookup": 1}
+    assert serialize_harness(hooks=hooks) == before
+    assert before["hook_configurations"][0] == {"max_calls": 7}
+    assert before["hook_configurations"][1]["limits"] == {"lookup": 2}
+    assert before["hook_configurations"][2]["thresholds"] == [0.8, 0.4]

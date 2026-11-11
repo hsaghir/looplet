@@ -487,14 +487,14 @@ class _RecordingBase:
     ) -> Iterator[_ModelRequestCapture]:
         with _capture_model_request(native_capture) as captured:
             setter = getattr(self._backend, "set_request_attempt_callback", None)
-            if attempt_id is None or not callable(setter):
+            if not callable(setter):
                 yield captured
                 return
 
             def prepared() -> None:
                 request = json_snapshot(getattr(self._backend, "last_request", None))
                 prepared_requests.append(request)
-                if persist_prepared:
+                if persist_prepared and attempt_id is not None:
                     self._write_dispatch(attempt_id, len(prepared_requests), request)
 
             with _PreparedRequestCallbacks._lock:

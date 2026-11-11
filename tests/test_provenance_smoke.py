@@ -268,6 +268,67 @@ async def test_overlapping_async_preparation_callbacks_keep_request_ownership(
     assert backend.request_attempt_callback is previous
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retain_inner", [False, True])
+@pytest.mark.parametrize("child_task", [False, True])
+async def test_nested_preparation_callbacks_keep_optional_attempts_separate(
+    tmp_path, retain_inner, child_task
+):
+    from contextvars import ContextVar
+
+    from looplet.provenance import load_model_attempts
+
+    class Backend:
+        request_attempt_callback = None
+
+        def __init__(self):
+            self.request = ContextVar("request", default=None)
+            self.response = ContextVar("response", default=None)
+
+        @property
+        def last_request(self):
+            return self.request.get()
+
+        @property
+        def last_response(self):
+            return self.response.get()
+
+        def set_request_attempt_callback(self, callback):
+            self.request_attempt_callback = callback
+
+        async def generate(self, prompt, **kwargs):
+            self.request.set({"prompt": prompt})
+            self.request_attempt_callback()
+            if prompt == "outer":
+                pending = inner.generate("inner")
+                assert await (asyncio.create_task(pending) if child_task else pending) == "inner"
+            self.response.set({"text": prompt})
+            return prompt
+
+    backend = Backend()
+    inner = AsyncRecordingLLMBackend(
+        backend,
+        attempt_directory=tmp_path / "inner" / "model-attempts" if retain_inner else None,
+    )
+    outer = AsyncRecordingLLMBackend(backend, attempt_directory=tmp_path / "model-attempts")
+    assert await outer.generate("outer") == "outer"
+    attempt = load_model_attempts(tmp_path)[0]
+    assert [item["provider_request"] for item in attempt["prepared_requests"]] == [
+        {"prompt": "outer"}
+    ]
+    assert attempt["outcome"]["capture"]["provider_request"] == {"prompt": "outer"}
+    assert inner.calls[0].capture["provider_request"] == {"prompt": "inner"}
+    if retain_inner:
+        attempts = load_model_attempts(tmp_path / "inner")
+        assert len(attempts) == 1
+        assert [item["provider_request"] for item in attempts[0]["prepared_requests"]] == [
+            {"prompt": "inner"}
+        ]
+    else:
+        assert not (tmp_path / "inner").exists()
+    assert backend.request_attempt_callback is None
+
+
 @pytest.mark.parametrize("host_callback", [False, True])
 def test_overlapping_sync_preparation_callbacks_keep_request_ownership(tmp_path, host_callback):
     from concurrent.futures import ThreadPoolExecutor

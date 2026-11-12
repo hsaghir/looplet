@@ -584,6 +584,14 @@ def llm_call_with_retry(
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
                 text = call(prompt, **call_kwargs)
+            raw_usage = getattr(llm, "last_usage", None)
+            first_usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+            text_calls = [{"usage": first_usage}]
+            text_usage: dict[str, Any] = {
+                key: value
+                for key, value in first_usage.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
             stop = getattr(llm, "last_stop_reason", None)
             # Budget-aware turn continuation: if the backend reports the
             # generation was cut off at ``max_tokens`` and the caller
@@ -619,6 +627,12 @@ def llm_call_with_retry(
                 )
                 if not isinstance(more, str):
                     break
+                cont_raw = getattr(llm, "last_usage", None)
+                cont_usage = dict(cont_raw) if isinstance(cont_raw, dict) else {}
+                text_calls.append({"usage": cont_usage})
+                for key, value in cont_usage.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        text_usage[key] = text_usage.get(key, 0) + value
                 _acc_text = _acc_text + more
                 stop = getattr(llm, "last_stop_reason", None)
                 _cont += 1
@@ -630,6 +644,8 @@ def llm_call_with_retry(
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
                 native_succeeded=False,
+                usage=text_usage or None,
+                model_calls=text_calls,
             )
         except Exception as e:
             last_error = e

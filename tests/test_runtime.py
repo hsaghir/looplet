@@ -213,8 +213,169 @@ def test_failed_runtime_preserves_observed_usage_and_steps() -> None:
     diagnostic = result.diagnostics()
     assert diagnostic["usage"]["input_tokens"] == 7
     assert diagnostic["llm_calls"] == 2
+    assert diagnostic["usage_calls"] is None
+    assert diagnostic["missing_usage_calls"] is None
+    assert diagnostic["usage_complete"] is False
     assert diagnostic["run_error"] is True
     assert state.metadata == {"usage_total": {"input_tokens": 7}, "llm_calls": 2}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("profile", ["minimal", "execution-v1"])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("coverage", ["complete", "partial", "unknown"])
+async def test_diagnostics_report_usage_completeness_across_profiles(
+    tmp_path, asynchronous, profile, native, coverage
+) -> None:
+    from looplet import RunEnvelope, run_result, run_result_async, tools_from
+    from looplet.run_records import RunRecord
+
+    per_call = {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11, "cost_usd": 0.5}
+    decisions = iter(
+        [
+            [{"type": "tool_use", "id": "tick-1", "name": "tick", "input": {}}],
+            [{"type": "tool_use", "id": "done-1", "name": "done", "input": {"summary": "ok"}}],
+        ]
+    )
+    observed_calls = 0
+
+    class Backend:
+        last_usage: dict[str, int | float] = {}
+
+        def _next_step(self):
+            nonlocal observed_calls
+            observed_calls += 1
+            if coverage == "complete" or (coverage == "partial" and observed_calls == 1):
+                self.last_usage = dict(per_call)
+            else:
+                self.last_usage = {}
+            return next(decisions)
+
+        def generate(self, prompt, **kwargs):
+            import json
+
+            block = self._next_step()[0]
+            return json.dumps({"tool": block["name"], "args": block["input"]})
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return self._next_step()
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    def tick() -> dict[str, bool]:
+        return {"ok": True}
+
+    arguments = {
+        "llm": AsyncBackend() if asynchronous else Backend(),
+        "tools": tools_from([tick], include_done=True),
+        "config": LoopConfig(
+            max_steps=2,
+            use_native_tools=native,
+            harness_profile=profile,
+            run_dir=str(tmp_path / "run"),
+            run_envelope=RunEnvelope(run_id="usage-run"),
+        ),
+    }
+    result = await run_result_async(**arguments) if asynchronous else run_result(**arguments)
+    assert result.completed
+    diagnostic = result.diagnostics()
+    assert RunRecord.from_result(result).diagnostics() == diagnostic
+    assert diagnostic["llm_calls"] == 2
+    expected_usage_calls = {"complete": 2, "partial": 1, "unknown": 0}[coverage]
+    assert diagnostic["usage_calls"] == expected_usage_calls
+    assert diagnostic["missing_usage_calls"] == 2 - expected_usage_calls
+    assert diagnostic["usage_known"] is (coverage != "unknown")
+    assert diagnostic["usage_complete"] is (coverage == "complete")
+    assert diagnostic["usage_origin"] == (None if coverage == "unknown" else "backend_reported")
+    if coverage == "unknown":
+        assert diagnostic["usage"] is None and diagnostic["cost_usd"] is None
+    else:
+        scale = 2 if coverage == "complete" else 1
+        assert diagnostic["usage"] == {key: value * scale for key, value in per_call.items()}
+        assert diagnostic["cost_usd"] == 0.5 * scale
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("scenario", ["text-continuation", "parse-recovery", "injected-total"])
+async def test_diagnostics_usage_totals_and_counts_cover_continuations_and_recovery(
+    asynchronous, scenario
+) -> None:
+    from looplet import run_result, run_result_async, tools_from
+
+    class Backend:
+        def __init__(self):
+            self.calls = 0
+            self.last_usage: dict[str, int] = {}
+            self.last_stop_reason: str | None = None
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            if scenario == "text-continuation":
+                if self.calls == 1:
+                    self.last_stop_reason = "max_tokens"
+                    self.last_usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+                    return '{"tool": "done", '
+                self.last_stop_reason = "end_turn"
+                self.last_usage = {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24}
+                return '"args": {"summary": "continued"}}'
+            if scenario == "parse-recovery":
+                if self.calls == 1:
+                    self.last_usage = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+                    return "not valid json"
+                self.last_usage = {"input_tokens": 14, "output_tokens": 3, "total_tokens": 17}
+                return '{"tool": "done", "args": {"summary": "recovered"}}'
+            self.last_usage = {}
+            return (
+                '{"tool": "inject", "args": {}}'
+                if self.calls == 1
+                else '{"tool": "done", "args": {"summary": "ok"}}'
+            )
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    state = DefaultState(max_steps=2)
+
+    def inject() -> dict[str, bool]:
+        state.metadata["usage_total"] = {"input_tokens": 99}
+        return {"ok": True}
+
+    tools = tools_from([inject] if scenario == "injected-total" else [], include_done=True)
+    config = LoopConfig(
+        max_steps=2,
+        use_native_tools=False,
+        harness_profile="minimal",
+        max_turn_continuations=1 if scenario == "text-continuation" else 0,
+    )
+    args = {
+        "llm": AsyncBackend() if asynchronous else Backend(),
+        "tools": tools,
+        "state": state,
+        "config": config,
+    }
+    result = await run_result_async(**args) if asynchronous else run_result(**args)
+    assert result.completed
+    diag = result.diagnostics()
+    assert diag["llm_calls"] == 2
+    if scenario == "text-continuation":
+        assert diag["usage"] == {"input_tokens": 30, "output_tokens": 9, "total_tokens": 39}
+        assert diag["usage_calls"] == 2 and diag["missing_usage_calls"] == 0
+        assert diag["usage_known"] is True and diag["usage_complete"] is True
+    elif scenario == "parse-recovery":
+        assert diag["usage"] == {"input_tokens": 24, "output_tokens": 5, "total_tokens": 29}
+        assert diag["usage_calls"] == 2 and diag["missing_usage_calls"] == 0
+        assert diag["usage_known"] is True and diag["usage_complete"] is True
+    else:
+        assert diag["usage"] == {"input_tokens": 99}
+        assert diag["usage_known"] is True
+        assert diag["usage_calls"] is None and diag["missing_usage_calls"] is None
+        assert diag["usage_complete"] is False
 
 
 @pytest.mark.parametrize("async_run", [False, True])

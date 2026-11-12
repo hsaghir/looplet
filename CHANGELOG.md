@@ -35,6 +35,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Replay keeps captured responses authoritative when a loop configuration or CLI factory supplies a model router.
+- Multi-tool trajectory steps link only the turn's root model calls and each step's own scoped helper calls.
+- SDK-issued request and attempt identifiers survive content redaction across manifests, trajectories, replay lineage, and retained model attempts.
+- Run diagnostics report `usage_calls`, `missing_usage_calls`, and `usage_complete` alongside observed usage totals.
 - Captured-response replay pairs model calls by invocation address, including concurrent helpers. Ambiguous helper captures fail before execution.
 - Replay results and retained calls identify their source evidence. Diagnostics separate captured usage from fresh consumption.
 - Async replay loads and validates evidence in drained workers. Manifest parsing occurs once; host binding stays on the caller thread.

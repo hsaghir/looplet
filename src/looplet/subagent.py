@@ -165,11 +165,13 @@ class SharedModelBudget:
                 self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token)
             )
         if isinstance(backend, _ScopedLLMProxy):
+            wrapped = self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token)
             return _ScopedLLMProxy(
-                self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token),
-                backend._recording,
+                wrapped,
+                wrapped if callable(getattr(wrapped, "_scope_calls", None)) else backend._recording,
                 backend._scope,
                 step_num=backend._step_num,
+                _scope_id=backend._scope_id,
             )
         if isinstance(backend, _BudgetedBackend) and backend.budget is self:
             if backend.deadline is not None:

@@ -131,6 +131,7 @@ class _ModelRequestCapture:
     provider_response: Any = None
     stop_reason: str | None = None
     usage: dict[str, int] | None = None
+    replay_source: dict[str, Any] | None = None
 
 
 _SINGLE_MODEL_REQUEST: ContextVar[bool] = ContextVar("looplet_single_model_request", default=False)
@@ -157,6 +158,7 @@ def _capture_model_request(
             parent.provider_response = captured.provider_response
             parent.stop_reason = captured.stop_reason
             parent.usage = captured.usage
+            parent.replay_source = captured.replay_source
 
 
 @contextmanager
@@ -178,12 +180,19 @@ def _record_request_capture(request: dict[str, Any]) -> None:
         captured.usage = {}
 
 
-def _record_response_capture(response: Any, stop_reason: str | None, usage: dict[str, int]) -> None:
+def _record_response_capture(
+    response: Any,
+    stop_reason: str | None,
+    usage: dict[str, int],
+    *,
+    replay_source: dict[str, Any] | None = None,
+) -> None:
     captured = _MODEL_REQUEST_CAPTURE.get()
     if captured is not None:
         captured.provider_response = response
         captured.stop_reason = stop_reason
         captured.usage = dict(usage)
+        captured.replay_source = replay_source
 
 
 def single_model_request_active() -> bool:
@@ -206,6 +215,7 @@ FORWARDED_CAPABILITIES = frozenset(
         "set_conversation_input",
         "apply_context_compaction",
         "set_model_turn_context",
+        "_scope_calls",
         "record_tool_result",
         "record_tool_receipt",
         "supports_stateless_text_generation",

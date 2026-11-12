@@ -154,6 +154,9 @@ def run_diagnostics(
         )
         if type(raw_usage) is dict and number(raw_usage.get(name)) is not None
     }
+    replay = metadata.get("replay")
+    replayed = type(replay) is dict and replay.get("schema") == "looplet.replay.v1"
+    observed_usage = {} if replayed else usage
     tool_errors: Counter[str] = Counter()
     for step in steps:
         if type(step) is Step:
@@ -226,9 +229,11 @@ def run_diagnostics(
         "tool_error_kinds": dict(tool_errors),
         "llm_calls": number(stats.get("llm_calls", metadata.get("llm_calls"))),
         "duration_ms": number(metadata.get("runtime_duration_ms", stats.get("duration_ms"))),
-        "usage": usage or None,
-        "usage_known": bool(usage),
-        "cost_usd": usage.get("cost_usd"),
+        "usage": observed_usage or None,
+        "usage_known": bool(observed_usage),
+        "cost_usd": observed_usage.get("cost_usd"),
+        "usage_origin": "captured" if replayed else "backend_reported" if usage else None,
+        "captured_usage": usage or None if replayed else None,
         "run_error": (type(status_name) is str and status_name == "failed")
         or metadata.get("error") is not None
         or metadata.get("eval_run_error") is not None,

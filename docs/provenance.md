@@ -834,8 +834,8 @@ for step in replay_loop("traces/run_1/", tools=my_tools):
     print(step.pretty())
 ```
 
-`replay_loop` reads `manifest.jsonl` from the trace directory and feeds captured responses
-back into `composable_loop` in order. New captures use the validated structured snapshot;
+`replay_loop` reads `manifest.jsonl` from the trace directory and selects captured responses
+for `composable_loop`. New captures use the validated structured snapshot;
 legacy captures fall back to `call_NN_response.txt`. Required readable artifact files are
 still validated, even when replay does not parse their contents.
 The LLM is **not** called again. Your tools, hooks, permission
@@ -857,6 +857,23 @@ Saved scalar settings do not reconstruct executable policy or grader expectation
 Without `task`, replay reuses the saved trajectory task, or `{}` when no task was saved.
 Pass `task={}` to request an empty task, or another dictionary to replace the saved task.
 Replay does not restore checkpoints or copy starting files.
+
+### Request identity and usage
+
+**Source preview:** New captures assign request identities before backend execution.
+Root calls use invocation ordinals. Helper identities also include their tool step and enclosing scopes.
+Replay matches these identities rather than completion order or prompt text.
+Concurrent helpers retain their own responses when completion order changes.
+Changing a helper's invocation path can exhaust its saved responses.
+Duplicate or mixed identities are rejected before execution.
+Older root-only captures remain positional. Older helper captures without identities must be recorded again.
+
+Replay metadata includes `replay.source_trace` and `replay.usage_origin="captured"`.
+Newly recorded replay calls include `replay_source`, linking their source trace, call index, request identity, and attempt ID.
+The link describes saved evidence, not a new provider response.
+Policies still receive captured `last_usage` and `usage_total` values.
+Diagnostics expose historical totals as `captured_usage`, with `usage_origin="captured"`.
+Fresh `usage` and `cost_usd` stay `None`; `usage_known` stays `False`.
 
 ### Inspect replay failures
 
@@ -885,6 +902,10 @@ Missing or invalid capture files can still raise before the loop starts.
 
 The async entry point uses the same evidence validation, saved task, protocol, and budget defaults.
 It awaits async hooks and tools; synchronous implementations remain supported.
+**Source preview:** Evidence loading and validation run in drained workers.
+The manifest is read once, and replay reuses its parsed entries.
+Cancellation drains a started load without binding or executing the replay.
+Configuration, host policy, and sink binding remain on the caller thread.
 Use `aclosing` to release loop-owned resources when iteration stops early:
 
 ```python title="replay_async.py"

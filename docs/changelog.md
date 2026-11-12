@@ -35,6 +35,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Captured-response replay pairs model calls by invocation address, including concurrent helpers. Ambiguous helper captures fail before execution.
+- Replay results and retained calls identify their source evidence. Diagnostics separate captured usage from fresh consumption.
+- Async replay loads and validates evidence in drained workers. Manifest parsing occurs once; host binding stays on the caller thread.
 - Automatic traces isolate recording state per run while preserving shared host recorder history and redaction. Recorders restore call-owned conversation input before delegation after persistence yields.
 - Async startup initializes owned evidence storage in drained workers. Host configuration and resource binding remain on the caller thread.
 - Harness snapshots capture explicit `provenance_config()` descriptions, preserving policy settings and callable identities without inspecting arbitrary object state.

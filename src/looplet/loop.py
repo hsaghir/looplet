@@ -1321,7 +1321,7 @@ def _build_tool_ctx(
     # Build a scoped LLM for tool-internal use.  If the effective LLM
     # is a recording backend, wrap it so tool-internal calls are tagged
     # with scope="tool:<name>" for nested provenance.
-    _tool_llm = _scope_llm_for_tool(llm, tool_call) if llm is not None else None
+    _tool_llm = _scope_llm_for_tool(llm, tool_call, step_num) if llm is not None else None
 
     # Populate metadata: config.tool_metadata (defaults) + state.metadata
     # (per-run overrides). State wins on key conflicts.
@@ -1356,7 +1356,7 @@ def _build_tool_ctx(
         on_progress=_progress_fn,
         llm=_tool_llm,
         async_llm=(
-            _scope_llm_for_tool(async_llm, tool_call)
+            _scope_llm_for_tool(async_llm, tool_call, step_num)
             if async_llm is not None
             else (_SyncToAsyncLLM(_tool_llm) if _tool_llm is not None else None)
         ),
@@ -1438,12 +1438,10 @@ class _SyncToAsyncLLM:
         return result
 
 
-def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
-    """Wrap a recording LLM so tool-internal calls get a scope tag.
+def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None, step_num: int | None = None) -> Any:
+    """Preserve tool-call scope in recording and replay backends.
 
-    If ``llm`` is (or wraps) a ``_RecordingBase``, returns a thin proxy
-    that sets ``scope`` on every captured :class:`LLMCall`.  Otherwise
-    returns ``llm`` unchanged - no overhead for non-recording backends.
+    Backends without call scoping pass through unchanged.
     """
     tool_name = getattr(tool_call, "tool", "unknown") if tool_call else "unknown"
 
@@ -1451,7 +1449,7 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
     inner = llm
     recording = None
     for _ in range(5):  # bounded unwrap
-        if hasattr(inner, "calls") and hasattr(inner, "_record"):
+        if callable(getattr(inner, "_scope_calls", None)):
             recording = inner
             break
         inner = getattr(inner, "_inner", None) or getattr(inner, "_backend", None)
@@ -1461,25 +1459,19 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
     if recording is None:
         return llm  # no recording layer - pass through unchanged
 
-    return _ScopedLLMProxy(llm, recording, f"tool:{tool_name}")
+    return _ScopedLLMProxy(llm, recording, f"tool:{tool_name}", step_num)
 
 
 class _ScopedLLMProxy:
-    """Thin proxy that tags recorded LLM calls with a scope string.
+    """Tag helper requests with their task-local tool scope and step."""
 
-    Delegates ``generate`` (and ``generate_with_tools`` when present)
-    to the wrapped backend. Task-local recording scope separates
-    concurrent tool calls from loop-level calls.
-
-    Zero overhead when the backend isn't recording - the proxy is only
-    created by :func:`_scope_llm_for_tool` when a recording layer is
-    detected.
-    """
-
-    def __init__(self, backend: Any, recording: Any, scope: str) -> None:
+    def __init__(
+        self, backend: Any, recording: Any, scope: str, step_num: int | None = None
+    ) -> None:
         self._backend = backend
         self._recording = recording
         self._scope = scope
+        self._step_num = step_num
         if inspect.iscoroutinefunction(backend.generate):
             self.generate = self._async_method(backend.generate)
         if hasattr(backend, "generate_with_tools"):
@@ -1494,7 +1486,7 @@ class _ScopedLLMProxy:
 
         @wraps(method)
         async def invoke(*args: Any, **kwargs: Any) -> Any:
-            with self._recording._scope_calls(self._scope):
+            with self._recording._scope_calls(self._scope, step_num=self._step_num):
                 return await method(*args, **kwargs)
 
         return invoke
@@ -1507,7 +1499,7 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> str:
-        with self._recording._scope_calls(self._scope):
+        with self._recording._scope_calls(self._scope, step_num=self._step_num):
             return self._backend.generate(
                 prompt,
                 max_tokens=max_tokens,
@@ -1524,7 +1516,7 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> Any:
-        with self._recording._scope_calls(self._scope):
+        with self._recording._scope_calls(self._scope, step_num=self._step_num):
             return self._backend.generate_with_tools(
                 prompt,
                 tools=tools,

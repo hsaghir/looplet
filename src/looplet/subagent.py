@@ -169,6 +169,7 @@ class SharedModelBudget:
                 self.wrap(backend._backend, deadline=deadline, cancel_token=cancel_token),
                 backend._recording,
                 backend._scope,
+                step_num=backend._step_num,
             )
         if isinstance(backend, _BudgetedBackend) and backend.budget is self:
             if backend.deadline is not None:

@@ -68,11 +68,17 @@ from looplet._storage import DiskBackedDict, DiskBackedList
 from looplet.artifact_compat import (
     _artifact_path,
     _atomic_write,
+    _read_artifact,
+    _validate_model_call_files,
     begin_artifact_write,
-    read_artifact_descriptor,
     write_artifact_descriptor,
 )
-from looplet.backend_contract import _capture_model_request, _ModelRequestCapture
+from looplet.backend_contract import (
+    _capture_model_request,
+    _ModelRequestCapture,
+    _record_request_capture,
+    _record_response_capture,
+)
 from looplet.telemetry import Span, Tracer
 
 if TYPE_CHECKING:
@@ -288,6 +294,34 @@ class _PreparedRequestCallbacks:
             observer()
 
 
+class _ModelCallIdentity:
+    def __init__(self) -> None:
+        self._path: ContextVar[tuple[str, ...]] = ContextVar(
+            "looplet_model_call_path", default=("loop",)
+        )
+        self._ordinals: dict[tuple[str, ...], int] = {}
+        self._lock = Lock()
+
+    @contextmanager
+    def scope(self, scope: str, step_num: int | None) -> Iterator[None]:
+        token = self._path.set((*self._path.get(), f"{scope}:{step_num}"))
+        try:
+            yield
+        finally:
+            self._path.reset(token)
+
+    def next(self) -> str:
+        path = self._path.get()
+        with self._lock:
+            ordinal = self._ordinals.get(path, 0)
+            self._ordinals[path] = ordinal + 1
+        return "/".join((*path, str(ordinal)))
+
+    def reset(self) -> None:
+        with self._lock:
+            self._ordinals.clear()
+
+
 class _RecordingBase:
     """Shared state for sync/async recording backends."""
 
@@ -313,6 +347,7 @@ class _RecordingBase:
         self._redact_upstream = redact_upstream
         self.calls: MutableSequence[LLMCall] = DiskBackedList(vars, lambda value: LLMCall(**value))
         self._calls_lock = Lock()
+        self._call_identity = _ModelCallIdentity()
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
         self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_model_call_context", default=None
@@ -345,6 +380,7 @@ class _RecordingBase:
         )
         recorder.calls = self.calls
         recorder._calls_lock = self._calls_lock
+        recorder._call_identity = self._call_identity
         recorder.current_step_num = self.current_step_num
         recorder._call_scope = self._call_scope
         recorder._model_call_context = self._model_call_context
@@ -358,14 +394,17 @@ class _RecordingBase:
             object.__setattr__(self, name, value)
 
     @contextmanager
-    def _scope_calls(self, scope: str) -> Iterator[None]:
+    def _scope_calls(self, scope: str, *, step_num: int | None = None) -> Iterator[None]:
         token = self._call_scope.set(self._call_scope.get() or scope)
         try:
-            recording = _recording_backend(self._backend)
-            if recording is None:
-                yield
-            else:
-                with recording._scope_calls(scope):
+            with self._call_identity.scope(scope, step_num):
+                nested_scope: Callable[..., Any] | None = getattr(
+                    self._backend, "_scope_calls", None
+                )
+                if callable(nested_scope):
+                    with nested_scope(scope, step_num=step_num):
+                        yield
+                else:
                     yield
         finally:
             self._call_scope.reset(token)
@@ -458,6 +497,7 @@ class _RecordingBase:
         temperature: float | None,
         tools: list[dict[str, Any]] | None,
         options: dict[str, Any],
+        request_id: str | None = None,
     ) -> str | None:
         if self._attempt_directory is None:
             return None
@@ -467,6 +507,7 @@ class _RecordingBase:
             "intent",
             {
                 "started_at": time.time(),
+                "request_id": request_id,
                 "execution": self._model_call_context.get(),
                 "scope": "logical_request_intent_not_provider_delivery_attestation",
                 "request": {
@@ -573,6 +614,7 @@ class _RecordingBase:
         prepared_requests: list[Any] | None = None,
         native_capture: _ModelRequestCapture | None = None,
         persist: bool = True,
+        request_id: str | None = None,
     ) -> LLMCall:
         duration_ms = (time.time() - started_at) * 1000.0
         execution = self._model_call_context.get()
@@ -585,7 +627,9 @@ class _RecordingBase:
             stored_response = self._redact_native_response(response)
         else:
             stored_response = response
-        if native_capture is not None and native_capture.provider_request is not None:
+        if native_capture is not None and (
+            native_capture.provider_request is not None or native_capture.replay_source is not None
+        ):
             provider_request = native_capture.provider_request
             provider_response = native_capture.provider_response
             stop_reason = native_capture.stop_reason
@@ -619,6 +663,13 @@ class _RecordingBase:
                 json_snapshot(
                     {
                         "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
+                        **({"request_id": request_id} if request_id is not None else {}),
+                        **(
+                            {"replay_source": native_capture.replay_source}
+                            if native_capture is not None
+                            and native_capture.replay_source is not None
+                            else {}
+                        ),
                         **({"execution": execution} if execution else {}),
                         "request": {
                             "method": method,
@@ -719,6 +770,7 @@ class _RecordingBase:
 
     def reset(self) -> None:
         self.calls.clear()
+        self._call_identity.reset()
         self.current_step_num = None
         self._conversation_input.set(None)
 
@@ -817,6 +869,7 @@ class RecordingLLMBackend(_RecordingBase):
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = self._begin_attempt(
             method="generate",
             prompt=upstream_prompt,
@@ -825,6 +878,7 @@ class RecordingLLMBackend(_RecordingBase):
             temperature=temperature,
             tools=None,
             options=options,
+            request_id=request_id,
         )
         prepared_requests: list[Any] = []
         native_capture = None
@@ -864,6 +918,7 @@ class RecordingLLMBackend(_RecordingBase):
                 failure=failure,
                 prepared_requests=prepared_requests,
                 native_capture=native_capture,
+                request_id=request_id,
             )
 
     def _generate_with_tools_impl(
@@ -883,6 +938,7 @@ class RecordingLLMBackend(_RecordingBase):
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = self._begin_attempt(
             method="generate_with_tools",
             prompt=upstream_prompt,
@@ -891,6 +947,7 @@ class RecordingLLMBackend(_RecordingBase):
             temperature=temperature,
             tools=tools,
             options=options,
+            request_id=request_id,
         )
         prepared_requests: list[Any] = []
         native_capture = None
@@ -931,6 +988,7 @@ class RecordingLLMBackend(_RecordingBase):
                 failure=failure,
                 prepared_requests=prepared_requests,
                 native_capture=native_capture,
+                request_id=request_id,
             )
 
     def _stream_impl(
@@ -949,6 +1007,7 @@ class RecordingLLMBackend(_RecordingBase):
         chunks: list[str] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = self._begin_attempt(
             method="generate",
             prompt=upstream_prompt,
@@ -957,6 +1016,7 @@ class RecordingLLMBackend(_RecordingBase):
             temperature=temperature,
             tools=None,
             options=options,
+            request_id=request_id,
         )
         prepared_requests: list[Any] = []
         native_capture = _ModelRequestCapture()
@@ -1010,6 +1070,7 @@ class RecordingLLMBackend(_RecordingBase):
                 failure=failure,
                 prepared_requests=prepared_requests,
                 native_capture=native_capture,
+                request_id=request_id,
             )
 
 
@@ -1056,6 +1117,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = await self._capture_io(
             lambda: self._begin_attempt(
                 method="generate",
@@ -1065,6 +1127,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 temperature=temperature,
                 tools=None,
                 options=options,
+                request_id=request_id,
             )
         )
         prepared_requests: list[Any] = []
@@ -1110,6 +1173,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     prepared_requests=prepared_requests,
                     native_capture=native_capture,
                     persist=False,
+                    request_id=request_id,
                 )
                 await self._capture_io(
                     lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
@@ -1136,6 +1200,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = await self._capture_io(
             lambda: self._begin_attempt(
                 method="generate_with_tools",
@@ -1145,6 +1210,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 temperature=temperature,
                 tools=tools,
                 options=options,
+                request_id=request_id,
             )
         )
         prepared_requests: list[Any] = []
@@ -1191,6 +1257,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     prepared_requests=prepared_requests,
                     native_capture=native_capture,
                     persist=False,
+                    request_id=request_id,
                 )
                 await self._capture_io(
                     lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
@@ -1216,6 +1283,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         chunks: list[str] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
+        request_id = self._call_identity.next()
         attempt_id = await self._capture_io(
             lambda: self._begin_attempt(
                 method="generate",
@@ -1225,6 +1293,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 temperature=temperature,
                 tools=None,
                 options=options,
+                request_id=request_id,
             )
         )
         prepared_requests: list[Any] = []
@@ -1294,6 +1363,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     prepared_requests=prepared_requests,
                     native_capture=native_capture,
                     persist=False,
+                    request_id=request_id,
                 )
                 await self._capture_io(
                     lambda: self._commit_call(call, attempt_id, failure, prepared_requests)
@@ -1903,27 +1973,42 @@ class ProvenanceSink:
 
 
 class _ReplayLLMBackend:
-    """Internal LLM backend that returns captured responses in order.
+    """Internal LLM backend that selects captured responses by request identity.
 
     Used by :func:`replay_loop`. Not exported in ``__init__.__all__`` -
     most users should call :func:`replay_loop` instead. Surface it via
     ``from looplet.provenance import _ReplayLLMBackend`` if you need
     low-level control.
 
-    Raises :class:`TerminalLLMError` on exhaustion and :class:`RuntimeError`
-    on a protocol mismatch. The public replay loops handle these errors
-    as failed runs; they do not propagate them to the caller.
+    Exhaustion and protocol mismatches raise :class:`TerminalLLMError`.
+    Recorded ordinary failures raise :class:`RuntimeError`.
+    Public replay loops record these failures instead of raising them.
     """
 
-    def __init__(self, calls: list[dict[str, Any]]) -> None:
+    def __init__(self, calls: list[dict[str, Any]], *, source_trace: str | None = None) -> None:
         self._calls = calls
+        self._source_trace = source_trace
         self._index = 0
+        self._call_identity = _ModelCallIdentity()
+        self._calls_by_id = (
+            {call["request_id"]: call for call in calls}
+            if all("request_id" in call for call in calls)
+            else None
+        )
+        self._lock = Lock()
         # Surface ``generate_with_tools`` only if any recorded call used
         # it - keeps ``hasattr`` detection honest for the loop.
         if any(c.get("method") == "generate_with_tools" for c in calls):
             self.generate_with_tools = self._generate_with_tools_impl
 
+    def _scope_calls(self, scope: str, *, step_num: int | None = None) -> Any:
+        return self._call_identity.scope(scope, step_num)
+
     def _next(self, expected_method: str) -> dict[str, Any]:
+        with self._lock:
+            return self._next_call(expected_method)
+
+    def _next_call(self, expected_method: str) -> dict[str, Any]:
         if self._index >= len(self._calls):
             raise TerminalLLMError(
                 f"replay exhausted: loop asked for call #{self._index + 1} "
@@ -1931,19 +2016,42 @@ class _ReplayLLMBackend:
                 f"loop's max_steps or re-record the trace.",
                 termination_reason="replay_exhausted",
             )
-        call = self._calls[self._index]
+        if self._calls_by_id is None:
+            call = self._calls[self._index]
+        else:
+            request_id = self._call_identity.next()
+            call = self._calls_by_id.pop(request_id, None)
+            if call is None:
+                raise TerminalLLMError(
+                    f"replay has no recorded request for identity {request_id!r}",
+                    termination_reason="replay_exhausted",
+                )
         if call.get("method") != expected_method:
-            raise RuntimeError(
+            raise TerminalLLMError(
                 f"replay mismatch at call #{self._index}: recorded "
                 f"method={call.get('method')!r} but loop called "
                 f"{expected_method!r}. Your tool registry or hooks may "
-                f"have diverged from the recorded run."
+                f"have diverged from the recorded run.",
+                termination_reason="llm_error",
             )
         self._index += 1
         self.last_stop_reason = call.get("stop_reason")
         self.last_usage = call.get("usage") or {}
         self.last_request = call.get("provider_request")
         self.last_response = call.get("provider_response")
+        if self.last_request is not None:
+            _record_request_capture(self.last_request)
+        _record_response_capture(
+            self.last_response,
+            self.last_stop_reason,
+            self.last_usage,
+            replay_source={
+                "trace": self._source_trace,
+                "call_index": call.get("index", self._index - 1),
+                "request_id": call.get("request_id"),
+                "attempt_id": call.get("attempt_id"),
+            },
+        )
         return call
 
     def generate(
@@ -1998,6 +2106,12 @@ class _ReplayLLMBackend:
 
 
 def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
+    return _load_trace_evidence(trace_dir)[0]
+
+
+def _load_trace_evidence(
+    trace_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Read the call stream from ``trace_dir``.
 
     Prefers ``manifest.jsonl`` (which contains structured metadata per
@@ -2005,7 +2119,7 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     the manifest is missing, falls back to the response files alone
     (every call treated as ``generate`` returning the file contents).
     """
-    descriptor = read_artifact_descriptor(
+    descriptor, entries = _read_artifact(
         trace_dir,
         expected_kinds=("eval_run", "provenance"),
     )
@@ -2013,32 +2127,20 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
         raise ValueError(f"Saved artifact in {trace_dir} does not declare a model_calls component")
     manifest = _artifact_path(trace_dir, "manifest.jsonl")
     calls: list[dict[str, Any]] = []
+    request_ids: set[str] = set()
     if manifest.exists():
-        for line_number, line in enumerate(
-            manifest.read_text(encoding="utf-8").split("\n"), start=1
-        ):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid {manifest} line {line_number}: {exc}") from exc
-            if not isinstance(entry, dict):
-                raise ValueError(f"invalid {manifest} line {line_number}: expected an object")
-            idx = entry.get("index")
-            expected_index = len(calls)
-            if isinstance(idx, bool) or not isinstance(idx, int) or idx != expected_index:
-                raise ValueError(
-                    f"invalid {manifest} line {line_number}: "
-                    f"expected index {expected_index}, got {idx!r}"
-                )
+        if entries is None:
+            entries = _validate_model_call_files(trace_dir, manifest, require_projections=False)
+        for line_number, entry in enumerate(entries, start=1):
+            idx = entry["index"]
             method = entry.get("method", "generate")
-            if method not in {"generate", "generate_with_tools"}:
-                raise ValueError(
-                    f"invalid {manifest} line {line_number}: unsupported method {method!r}"
-                )
             capture = entry.get("capture")
+            if entry.get("scope") is not None and not (
+                isinstance(capture, dict) and capture.get("request_id") is not None
+            ):
+                raise ValueError(
+                    "Recorded helper calls lack request identities. Re-record the trace."
+                )
             if capture is not None and capture != {}:
                 if (
                     not isinstance(capture, dict)
@@ -2082,6 +2184,17 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
                     raise ValueError(
                         f"invalid structured response in {manifest} line {line_number}"
                     )
+                request_id = capture.get("request_id")
+                if request_id is not None:
+                    if not isinstance(request_id, str) or not request_id:
+                        raise ValueError(
+                            f"invalid request identity in {manifest} line {line_number}"
+                        )
+                    if request_id in request_ids:
+                        raise ValueError(
+                            f"duplicate request identity in {manifest} line {line_number}"
+                        )
+                    request_ids.add(request_id)
                 calls.append({**capture, "index": idx, "method": method})
                 continue
             response_txt = _read_call_body(trace_dir, idx)
@@ -2139,7 +2252,11 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
             f"no recorded calls found in {trace_dir} - expected "
             f"manifest.jsonl or call_NN_response.txt files"
         )
-    return calls
+    if any("request_id" in call for call in calls) and not all(
+        "request_id" in call for call in calls
+    ):
+        raise ValueError("Recorded calls mix identified and positional requests")
+    return calls, descriptor
 
 
 def _read_call_body(trace_dir: Path, idx: int | None) -> str | None:
@@ -2269,7 +2386,7 @@ def replay_loop(
     Reads the recorded LLM calls from ``trace_dir`` (as written by
     :meth:`RecordingLLMBackend.save` or :meth:`ProvenanceSink.flush`)
     and yields :class:`Step`\\s from :func:`composable_loop` using a
-    replay LLM that returns each captured response in order.
+    replay backend that selects recorded responses by invocation address.
 
     The user's tool registry, hooks, permission engine, and state are
     the ones passed in - this is what makes replay useful: change those
@@ -2318,9 +2435,14 @@ def replay_loop(
     """
     from looplet.loop import composable_loop  # noqa: PLC0415
 
+    evidence = _load_replay_evidence(
+        trace_dir,
+        load_trajectory=config is None or task is None or bool(stub_tools),
+        max_steps=max_steps,
+    )
     yield from composable_loop(
         **_prepare_replay(
-            trace_dir,
+            evidence,
             tools=tools,
             state=state,
             hooks=hooks,
@@ -2362,9 +2484,16 @@ async def async_replay_loop(
     so the underlying async loop is closed with the replay iterator.
     """
     from looplet.async_loop import async_composable_loop  # noqa: PLC0415
+    from looplet.checkpoint import _run_persistence
 
-    arguments = _prepare_replay(
+    evidence = await _run_persistence(
+        _load_replay_evidence,
         trace_dir,
+        load_trajectory=config is None or task is None or bool(stub_tools),
+        max_steps=max_steps,
+    )
+    arguments = _prepare_replay(
+        evidence,
         tools=tools,
         state=state,
         hooks=hooks,
@@ -2381,8 +2510,35 @@ async def async_replay_loop(
             yield step
 
 
-def _prepare_replay(
+def _load_replay_evidence(
     trace_dir: str | Path,
+    *,
+    load_trajectory: bool,
+    max_steps: int | None,
+) -> tuple[Path, list[dict[str, Any]], dict[str, Any]]:
+    if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+        raise ValueError("max_steps must be a positive integer")
+    trace_path = Path(trace_dir)
+    if not trace_path.exists():
+        raise FileNotFoundError(f"trace directory does not exist: {trace_path}")
+    calls, descriptor = _load_trace_evidence(trace_path)
+    requires_policy = any(
+        call.get("execution", {}).get("assistant_policy_required") is True for call in calls
+    )
+    trajectory: dict[str, Any] = {}
+    if load_trajectory or requires_policy:
+        trajectory_path = _artifact_path(trace_path, "trajectory.json")
+        if trajectory_path.is_file() and (
+            descriptor is None or "trajectory" in descriptor["components"]
+        ):
+            trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            if not isinstance(trajectory, dict):
+                raise ValueError("trajectory.json must contain an object")
+    return trace_path, calls, trajectory
+
+
+def _prepare_replay(
+    evidence: tuple[Path, list[dict[str, Any]], dict[str, Any]],
     *,
     tools: Any,
     state: Any | None,
@@ -2398,26 +2554,11 @@ def _prepare_replay(
     from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
-    if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
-        raise ValueError("max_steps must be a positive integer")
-    trace_path = Path(trace_dir)
-    if not trace_path.exists():
-        raise FileNotFoundError(f"trace directory does not exist: {trace_path}")
-    calls = _load_trace_calls(trace_path)
+    trace_path, calls, trajectory = evidence
     requires_policy = any(
         call.get("execution", {}).get("assistant_policy_required") is True for call in calls
     )
-    trajectory: dict[str, Any] = {}
-    if config is None or task is None or requires_policy or stub_tools:
-        descriptor = read_artifact_descriptor(trace_path, expected_kinds=("eval_run", "provenance"))
-        trajectory_path = _artifact_path(trace_path, "trajectory.json")
-        if trajectory_path.is_file() and (
-            descriptor is None or "trajectory" in descriptor["components"]
-        ):
-            trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
-            if not isinstance(trajectory, dict):
-                raise ValueError("trajectory.json must contain an object")
-    backend = _ReplayLLMBackend(calls)
+    backend = _ReplayLLMBackend(calls, source_trace=str(trace_path))
     if config is None:
         recorded_steps = trajectory.get("step_count")
         if recorded_steps is not None and (
@@ -2499,6 +2640,11 @@ def _prepare_replay(
         task = recorded_task if recorded_task is not None else {}
     if state is None:
         state = DefaultState(max_steps=replay_config.max_steps)
+    state.metadata["replay"] = {
+        "schema": "looplet.replay.v1",
+        "source_trace": str(trace_path),
+        "usage_origin": "captured",
+    }
     binding = assistant_turn_policy or replay_config.assistant_turn_policy
     if requires_policy or replay_config.requires_assistant_turn_policy:
         if binding is None:

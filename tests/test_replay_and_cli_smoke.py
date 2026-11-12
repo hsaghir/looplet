@@ -332,6 +332,465 @@ def test_legacy_terminal_error_text_does_not_infer_structured_semantics():
 
 
 class TestReplayLoopSmoke:
+    @pytest.mark.parametrize("concurrent_replay", [False, True])
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("profile", ["minimal", "execution-v1"])
+    async def test_replay_preserves_overlapping_helper_call_identity(
+        self, tmp_path, concurrent_replay, asynchronous, native, profile
+    ):
+        import asyncio
+        from dataclasses import replace
+        from threading import Event
+
+        from looplet import ToolContext, async_replay_loop, run_result, run_result_async
+
+        entered = Event()
+        finished = Event()
+        requests = []
+        responses = iter(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "id": label,
+                        "name": "helper",
+                        "input": {"label": label},
+                    }
+                    for label in ("alpha", "beta")
+                ],
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "finish",
+                        "name": "done",
+                        "input": {"summary": "Finished."},
+                    }
+                ],
+            ]
+        )
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                requests.append(prompt)
+                if prompt == "alpha":
+                    entered.set()
+                    assert finished.wait(10)
+                elif prompt == "beta":
+                    assert entered.wait(10)
+                else:
+                    return json.dumps(
+                        {
+                            "tools": [
+                                {"tool": block["name"], "args": block["input"]}
+                                for block in next(responses)
+                            ]
+                        }
+                    )
+                return f"{prompt}_answer"
+
+            def generate_with_tools(self, prompt, **kwargs):
+                requests.append(prompt)
+                return next(responses)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return await asyncio.to_thread(super().generate, prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+        def registry():
+            if asynchronous:
+
+                async def helper(label: str, ctx: ToolContext):
+                    try:
+                        return {"answer": await ctx.async_llm.generate(label)}
+                    finally:
+                        if label == "beta":
+                            finished.set()
+            else:
+
+                def helper(label: str, ctx: ToolContext):
+                    try:
+                        return {"answer": ctx.llm.generate(label)}
+                    finally:
+                        if label == "beta":
+                            finished.set()
+
+            tools = tools_from([helper], include_done=True)
+            tools._tools["helper"] = replace(tools._tools["helper"], concurrent_safe=True)
+            return tools
+
+        def configuration(concurrent):
+            return LoopConfig(
+                max_steps=3,
+                use_native_tools=native,
+                concurrent_dispatch=concurrent,
+                max_parallel_calls=2,
+                harness_profile=profile,
+            )
+
+        def answers(steps):
+            return {
+                step.tool_call.args["label"]: step.tool_result.data
+                for step in steps
+                if step.tool_call.tool == "helper"
+            }
+
+        sink = ProvenanceSink(tmp_path / "capture")
+        arguments = {
+            "llm": sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+            "tools": registry(),
+            "hooks": [sink.trajectory_hook()],
+            "config": configuration(True),
+        }
+        original = await run_result_async(**arguments) if asynchronous else run_result(**arguments)
+        expected = {
+            "alpha": {"answer": "alpha_answer"},
+            "beta": {"answer": "beta_answer"},
+        }
+        assert original.completed and answers(original.steps) == expected
+        trace = sink.flush()
+        assert [
+            call["request"]["prompt"]
+            for call in _load_trace_calls(trace)
+            if call["request"]["prompt"] in {"alpha", "beta"}
+        ] == ["beta", "alpha"]
+        state = DefaultState(max_steps=3)
+
+        replay_arguments = {
+            "tools": registry(),
+            "state": state,
+            "config": configuration(concurrent_replay),
+        }
+        if asynchronous:
+            replayed = [step async for step in async_replay_loop(trace, **replay_arguments)]
+        else:
+            replayed = list(replay_loop(trace, **replay_arguments))
+
+        assert answers(replayed) == expected
+        assert state._stop_reason == "done"
+        assert len(requests) == 4
+
+    def test_request_identity_survives_shared_budget_wrapper(self):
+        from looplet.loop import _ScopedLLMProxy
+        from looplet.provenance import RecordingLLMBackend
+        from looplet.subagent import SharedModelBudget
+
+        recorded = RecordingLLMBackend(MockLLMBackend(["captured answer"]))
+        scoped = _ScopedLLMProxy(recorded, recorded, "tool:helper", step_num=7)
+        budget = SharedModelBudget(2)
+
+        assert budget.wrap(scoped).generate("request") == "captured answer"
+
+        assert recorded.calls[0].capture["request_id"] == "loop/tool:helper:7/0"
+        assert budget.remaining == 1
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
+    async def test_recorder_assigns_request_identity_before_completion(
+        self, tmp_path, asynchronous, method
+    ):
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+
+        entered = Event()
+        release = Event()
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                if prompt == "alpha":
+                    entered.set()
+                    assert release.wait(10)
+                return f"{prompt}_answer"
+
+            def generate_with_tools(self, prompt, **kwargs):
+                return [{"type": "text", "text": self.generate(prompt)}]
+
+            def stream(self, prompt, **kwargs):
+                yield self.generate(prompt)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return await asyncio.to_thread(super().generate, prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return [{"type": "text", "text": await self.generate(prompt)}]
+
+            async def stream(self, prompt, **kwargs):
+                yield await self.generate(prompt)
+
+        recorder = (
+            AsyncRecordingLLMBackend(AsyncBackend())
+            if asynchronous
+            else RecordingLLMBackend(Backend())
+        )
+
+        def invoke(label):
+            if method == "stream":
+                return "".join(recorder.stream(label))
+            return getattr(recorder, method)(
+                label, **({"tools": []} if method.endswith("tools") else {})
+            )
+
+        async def invoke_async(label):
+            if method == "stream":
+                return "".join([chunk async for chunk in recorder.stream(label)])
+            return await getattr(recorder, method)(
+                label, **({"tools": []} if method.endswith("tools") else {})
+            )
+
+        try:
+            if asynchronous:
+                first = asyncio.create_task(invoke_async("alpha"))
+                assert await asyncio.to_thread(entered.wait, 10)
+                second_answer = await invoke_async("beta")
+                release.set()
+                first_answer = await first
+            else:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(invoke, "alpha")
+                    assert entered.wait(10)
+                    second_answer = executor.submit(invoke, "beta").result(timeout=10)
+                    release.set()
+                    first_answer = first.result(timeout=10)
+        finally:
+            release.set()
+        recorder.save(tmp_path)
+        calls = _load_trace_calls(tmp_path)
+        assert [call["request_id"] for call in calls] == ["loop/1", "loop/0"]
+        replay = _ReplayLLMBackend(calls)
+        replay_method = "generate" if method == "stream" else method
+        arguments = {"tools": []} if method.endswith("tools") else {}
+
+        assert getattr(replay, replay_method)("changed alpha", **arguments) == first_answer
+        assert getattr(replay, replay_method)("changed beta", **arguments) == second_answer
+
+    @pytest.mark.parametrize("loading_failure", [False, True])
+    async def test_async_replay_drains_cancelled_loading_without_binding(
+        self, tmp_path, monkeypatch, loading_failure
+    ):
+        import asyncio
+        from threading import Event
+
+        from looplet import async_replay_loop
+
+        trace = _captured_dir(tmp_path)
+        entered = Event()
+        release = Event()
+        finished = Event()
+        bindings = []
+        original_read = Path.read_text
+        replay_sink = ProvenanceSink(tmp_path / "replay")
+
+        def read(path, *args, **kwargs):
+            if path == trace / "manifest.jsonl":
+                entered.set()
+                try:
+                    assert release.wait(10)
+                    if loading_failure:
+                        raise OSError("Synthetic evidence read failure")
+                finally:
+                    finished.set()
+            return original_read(path, *args, **kwargs)
+
+        def unexpected_binding(backend):
+            bindings.append(backend)
+            pytest.fail("Cancelled replay must not bind or execute a backend")
+
+        monkeypatch.setattr(Path, "read_text", read)
+        monkeypatch.setattr(replay_sink, "wrap_llm", unexpected_binding)
+
+        async def consume():
+            return [
+                step
+                async for step in async_replay_loop(
+                    trace, tools=_make_tools(), recording_sink=replay_sink
+                )
+            ]
+
+        pending = asyncio.create_task(consume())
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            pending.cancel("first cancellation")
+            delivered = asyncio.Event()
+            asyncio.get_running_loop().call_soon(delivered.set)
+            await delivered.wait()
+            assert not pending.done() and not finished.is_set()
+            pending.cancel("second cancellation")
+            release.set()
+            with pytest.raises(asyncio.CancelledError, match="first cancellation"):
+                await pending
+            assert finished.is_set() and bindings == []
+        finally:
+            release.set()
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+    @pytest.mark.parametrize("invalid", ["duplicate", "mixed", "empty", "legacy-helper"])
+    def test_replay_rejects_ambiguous_request_identities(self, tmp_path, invalid):
+        trace = _captured_dir(tmp_path)
+        manifest = trace / "manifest.jsonl"
+        entries = [json.loads(line) for line in manifest.read_text().splitlines()]
+        if invalid == "duplicate":
+            entries[1]["capture"]["request_id"] = entries[0]["capture"]["request_id"]
+        elif invalid == "empty":
+            entries[0]["capture"]["request_id"] = ""
+        else:
+            entries[0]["capture"].pop("request_id")
+            if invalid == "legacy-helper":
+                entries[0]["scope"] = "tool:add"
+        manifest.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+        with pytest.raises(ValueError, match="identit|identified"):
+            _load_trace_calls(trace)
+
+    def test_replay_preserves_legacy_positional_capture(self, tmp_path):
+        trace = _captured_dir(tmp_path)
+        manifest = trace / "manifest.jsonl"
+        entries = [json.loads(line) for line in manifest.read_text().splitlines()]
+        for entry in entries:
+            entry["capture"].pop("request_id")
+        manifest.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+        steps = list(replay_loop(trace, tools=_make_tools()))
+
+        assert [step.tool_call.tool for step in steps] == ["add", "add", "done"]
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_replay_labels_captured_usage_and_attempt_lineage(self, tmp_path, asynchronous):
+        from looplet import RunResult, async_replay_loop, run_result, run_result_async
+        from looplet.provenance import load_model_attempts
+
+        usage = {"input_tokens": 13, "output_tokens": 7, "total_tokens": 20, "cost_usd": 0.25}
+        invocations = []
+
+        class Backend:
+            last_usage = usage
+            last_request = {"model": "synthetic-provider"}
+            last_response = {"id": "original-provider-response"}
+
+            def generate(self, prompt, **kwargs):
+                invocations.append(prompt)
+                return '{"tool":"done","args":{"summary":"Finished."}}'
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        config = LoopConfig(max_steps=1, use_native_tools=False, harness_profile="minimal")
+        source_sink = ProvenanceSink(tmp_path / "source")
+        arguments = {
+            "llm": source_sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+            "tools": tools_from([], include_done=True),
+            "hooks": [source_sink.trajectory_hook()],
+            "config": config,
+        }
+        source_result = (
+            await run_result_async(**arguments) if asynchronous else run_result(**arguments)
+        )
+        assert source_result.completed and source_result.diagnostics()["usage"] == usage
+        trace = source_sink.flush()
+        source_call = _load_trace_calls(trace)[0]
+        replay_sink = ProvenanceSink(tmp_path / "replay")
+        state = DefaultState(max_steps=1)
+        replay_arguments = {
+            "tools": tools_from([], include_done=True),
+            "state": state,
+            "config": config,
+            "recording_sink": replay_sink,
+        }
+
+        if asynchronous:
+            steps = [step async for step in async_replay_loop(trace, **replay_arguments)]
+        else:
+            steps = list(replay_loop(trace, **replay_arguments))
+
+        result = RunResult.from_state(state)
+        assert result.completed and len(steps) == 1 and len(invocations) == 1
+        assert result.metadata["usage_total"] == usage
+        assert result.metadata["replay"]["source_trace"] == str(trace)
+        diagnostics = result.diagnostics()
+        assert diagnostics["usage"] is None and diagnostics["usage_known"] is False
+        assert diagnostics["cost_usd"] is None
+        assert diagnostics["usage_origin"] == "captured"
+        assert diagnostics["captured_usage"] == usage
+        replay_trace = replay_sink.flush()
+        expected_source = {
+            "trace": str(trace),
+            "call_index": source_call["index"],
+            "request_id": source_call["request_id"],
+            "attempt_id": source_call["attempt_id"],
+        }
+        replay_call = _load_trace_calls(replay_trace)[0]
+        assert replay_call["replay_source"] == expected_source
+        assert replay_call["provider_response"]["id"] == "original-provider-response"
+        attempt = load_model_attempts(replay_trace)[0]
+        assert attempt["attempt_id"] != source_call["attempt_id"]
+        assert attempt["outcome"]["capture"]["replay_source"] == expected_source
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_replay_loads_evidence_once_and_binds_on_caller(
+        self, tmp_path, monkeypatch, asynchronous
+    ):
+        from threading import get_ident
+
+        from looplet import async_replay_loop
+
+        trace = _captured_dir(tmp_path)
+        replay_sink = ProvenanceSink(tmp_path / "replay")
+        owner = get_ident()
+        reads = []
+        parsed = []
+        bindings = []
+        original_read = Path.read_text
+        original_loads = json.loads
+        original_wrap = replay_sink.wrap_llm
+        inputs = {
+            path.read_text() for path in (trace / ARTIFACT_DESCRIPTOR, trace / "trajectory.json")
+        }
+        inputs.update((trace / "manifest.jsonl").read_text().splitlines())
+
+        def read(path, *args, **kwargs):
+            if path.is_relative_to(trace):
+                reads.append((path.name, get_ident()))
+            return original_read(path, *args, **kwargs)
+
+        def loads(value, *args, **kwargs):
+            if isinstance(value, str) and value in inputs:
+                parsed.append(get_ident())
+            return original_loads(value, *args, **kwargs)
+
+        def wrap(backend):
+            bindings.append(get_ident())
+            return original_wrap(backend)
+
+        monkeypatch.setattr(Path, "read_text", read)
+        monkeypatch.setattr(json, "loads", loads)
+        monkeypatch.setattr(replay_sink, "wrap_llm", wrap)
+        arguments = {
+            "tools": _make_tools(),
+            "recording_sink": replay_sink,
+            "config": LoopConfig(max_steps=3, use_native_tools=False, harness_profile="minimal"),
+        }
+
+        if asynchronous:
+            steps = [step async for step in async_replay_loop(trace, **arguments)]
+        else:
+            steps = list(replay_loop(trace, **arguments))
+
+        assert [step.tool_call.tool for step in steps] == ["add", "add", "done"]
+        assert sum(name == "manifest.jsonl" for name, _ in reads) == 1
+        assert reads and parsed
+        assert all((thread != owner) is asynchronous for _, thread in reads)
+        assert all((thread != owner) is asynchronous for thread in parsed)
+        assert bindings == [owner]
+
     @pytest.mark.parametrize("native", [False, True])
     def test_structured_capture_reconstructs_without_parsing_text_projections(
         self, tmp_path, native

@@ -109,12 +109,20 @@ def read_artifact_descriptor(
     expected_kinds: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
     """Read and validate a v1 descriptor; return ``None`` for legacy v0."""
+    return _read_artifact(directory, expected_kinds=expected_kinds)[0]
+
+
+def _read_artifact(
+    directory: str | Path,
+    *,
+    expected_kinds: Iterable[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
     root = Path(directory)
     if _artifact_path(root, ARTIFACT_PENDING).exists():
         raise ValueError(f"Incomplete saved artifact in {root}: write is still pending")
     descriptor = _artifact_path(root, ARTIFACT_DESCRIPTOR)
     if not descriptor.exists():
-        return None
+        return None, None
     try:
         payload = json.loads(descriptor.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -161,8 +169,8 @@ def read_artifact_descriptor(
             raise ValueError(
                 f"Invalid {ARTIFACT_DESCRIPTOR} in {root}: kind {kind!r} is not {expected}"
             )
-    _validate_component_files(root, components)
-    return payload
+    model_calls = _validate_component_files(root, components)
+    return payload, model_calls
 
 
 def _validate_kind_and_components(
@@ -189,7 +197,8 @@ def _validate_kind_and_components(
     return sorted(normalized)
 
 
-def _validate_component_files(root: Path, components: Iterable[str]) -> None:
+def _validate_component_files(root: Path, components: Iterable[str]) -> list[dict[str, Any]] | None:
+    model_calls = None
     for component in components:
         path = _artifact_path(root, _COMPONENT_FILES[component])
         if not path.is_file():
@@ -198,15 +207,18 @@ def _validate_component_files(root: Path, components: Iterable[str]) -> None:
                 f"requires {_COMPONENT_FILES[component]}"
             )
         if component == "model_calls":
-            _validate_model_call_files(root, path)
+            model_calls = _validate_model_call_files(root, path)
+    return model_calls
 
 
-def _validate_model_call_files(root: Path, manifest: Path) -> None:
+def _validate_model_call_files(
+    root: Path, manifest: Path, *, require_projections: bool = True
+) -> list[dict[str, Any]]:
     try:
         lines = manifest.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise ValueError(f"Invalid model_calls component in {root}: {exc}") from exc
-    expected_index = 0
+    entries = []
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
@@ -219,9 +231,10 @@ def _validate_model_call_files(root: Path, manifest: Path) -> None:
         if not isinstance(entry, dict):
             raise ValueError(
                 f"Invalid model_calls component in {root}: "
-                f"manifest.jsonl line {line_number} must be an object"
+                f"manifest.jsonl line {line_number}: expected an object"
             )
         index = entry.get("index")
+        expected_index = len(entries)
         if isinstance(index, bool) or not isinstance(index, int) or index != expected_index:
             raise ValueError(
                 f"Invalid model_calls component in {root}: manifest.jsonl line "
@@ -232,11 +245,13 @@ def _validate_model_call_files(root: Path, manifest: Path) -> None:
                 f"Invalid model_calls component in {root}: manifest.jsonl line "
                 f"{line_number} has unsupported method {entry.get('method')!r}"
             )
-        for suffix in ("prompt", "response"):
-            call_path = _artifact_path(root, f"call_{index:02d}_{suffix}.txt")
-            if not call_path.is_file():
-                raise ValueError(
-                    f"Incomplete saved artifact in {root}: model_calls index {index} "
-                    f"requires {call_path.name}"
-                )
-        expected_index += 1
+        if require_projections:
+            for suffix in ("prompt", "response"):
+                call_path = _artifact_path(root, f"call_{index:02d}_{suffix}.txt")
+                if not call_path.is_file():
+                    raise ValueError(
+                        f"Incomplete saved artifact in {root}: model_calls index {index} "
+                        f"requires {call_path.name}"
+                    )
+        entries.append(entry)
+    return entries

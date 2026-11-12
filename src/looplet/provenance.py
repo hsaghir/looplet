@@ -258,6 +258,31 @@ def _recorded_json(value: Any, redact: Callable[[str], str] | None) -> str:
     return json.dumps(value, indent=2, default=str)
 
 
+def _recorded_model_json(value: dict[str, Any], redact: Callable[[str], str] | None) -> str:
+    if redact is not None:
+        value = _redact_model_record(value, redact)
+    return json.dumps(value, indent=2, default=str)
+
+
+def _redact_model_record(
+    value: dict[str, Any], redact: Callable[[str], str] | None
+) -> dict[str, Any]:
+    """Redact model evidence without changing SDK-issued linkage identifiers."""
+    redacted = _redact_value(value, redact)
+    for source, target in (
+        (value, redacted),
+        (value.get("capture", {}), redacted.get("capture", {})),
+    ):
+        for field_name in ("request_id", "attempt_id"):
+            if field_name in source:
+                target[field_name] = source[field_name]
+        replay_source = source.get("replay_source")
+        if replay_source is not None:
+            for field_name in ("request_id", "attempt_id"):
+                target["replay_source"][field_name] = replay_source[field_name]
+    return redacted
+
+
 def _recording_backend(backend: Any) -> _RecordingBase | None:
     for _ in range(8):
         if isinstance(backend, _RecordingBase):
@@ -274,6 +299,24 @@ def _recording_backend(backend: Any) -> _RecordingBase | None:
         if backend is None:
             break
     return None
+
+
+def _has_replay_backend(backend: Any) -> bool:
+    for _ in range(8):
+        if isinstance(backend, _ReplayLLMBackend):
+            return True
+        attributes = getattr(backend, "__dict__", {})
+        backend = next(
+            (
+                attributes[name]
+                for name in ("backend", "_backend", "_inner")
+                if attributes.get(name) is not None
+            ),
+            None,
+        )
+        if backend is None:
+            break
+    return False
 
 
 class _PreparedRequestCallbacks:
@@ -349,6 +392,9 @@ class _RecordingBase:
         self._calls_lock = Lock()
         self._call_identity = _ModelCallIdentity()
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
+        self._scoped_step_num: ContextVar[int | None] = ContextVar(
+            "looplet_scoped_step_num", default=None
+        )
         self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_model_call_context", default=None
         )
@@ -383,6 +429,7 @@ class _RecordingBase:
         recorder._call_identity = self._call_identity
         recorder.current_step_num = self.current_step_num
         recorder._call_scope = self._call_scope
+        recorder._scoped_step_num = self._scoped_step_num
         recorder._model_call_context = self._model_call_context
         recorder._conversation_input = self._conversation_input
         return recorder
@@ -396,6 +443,8 @@ class _RecordingBase:
     @contextmanager
     def _scope_calls(self, scope: str, *, step_num: int | None = None) -> Iterator[None]:
         token = self._call_scope.set(self._call_scope.get() or scope)
+        outer_step = self._scoped_step_num.get()
+        step_token = self._scoped_step_num.set(outer_step if outer_step is not None else step_num)
         try:
             with self._call_identity.scope(scope, step_num):
                 nested_scope: Callable[..., Any] | None = getattr(
@@ -407,6 +456,7 @@ class _RecordingBase:
                 else:
                     yield
         finally:
+            self._scoped_step_num.reset(step_token)
             self._call_scope.reset(token)
 
     def _upstream(self, s: str) -> str:
@@ -461,7 +511,7 @@ class _RecordingBase:
         record = _artifact_path(root, f"{attempt_id}.{kind}.json")
         if not policy.exists():
             _atomic_write(policy, "*\n")
-        payload = _redact_value(
+        payload = _redact_model_record(
             json_snapshot(
                 {
                     "schema": "looplet.model-attempt.v1",
@@ -645,6 +695,7 @@ class _RecordingBase:
                 getattr(self._backend, "last_stop_reason", None) if error is None else None
             )
             usage = getattr(self._backend, "last_usage", {}) if error is None else {}
+        scoped_step = self._scoped_step_num.get()
         call = LLMCall(
             index=len(self.calls),
             timestamp=started_at,
@@ -656,10 +707,10 @@ class _RecordingBase:
             temperature=temperature,
             max_tokens=max_tokens,
             tools=_redact_value(tools, self._redact),
-            step_num=self.current_step_num,
+            step_num=scoped_step if scoped_step is not None else self.current_step_num,
             error=self._scrub(error) if error is not None else None,
             scope=self._call_scope.get(),
-            capture=_redact_value(
+            capture=_redact_model_record(
                 json_snapshot(
                     {
                         "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
@@ -763,7 +814,7 @@ class _RecordingBase:
                 (root / f"call_{idx}_response.txt").write_text(
                     _format_response_block(c), encoding="utf-8"
                 )
-                mf.write(json.dumps(_redact_value(c.to_dict(), self._redact)) + "\n")
+                mf.write(json.dumps(_redact_model_record(c.to_dict(), self._redact)) + "\n")
         if publish_descriptor:
             write_artifact_descriptor(root, kind="provenance", components=("model_calls",))
         return root
@@ -772,6 +823,7 @@ class _RecordingBase:
         self.calls.clear()
         self._call_identity.reset()
         self.current_step_num = None
+        self._scoped_step_num.set(None)
         self._conversation_input.set(None)
 
 
@@ -1532,7 +1584,11 @@ class TrajectoryRecorder:
                 pretty = last.pretty()
         llm_indices: list[int] = []
         if self._recording_llm is not None:
-            llm_indices = list(range(self._pending_llm_start, len(self._recording_llm.calls)))
+            llm_indices = [
+                call.index
+                for call in self._recording_llm.calls[self._pending_llm_start :]
+                if call.scope is None or call.step_num in (None, step_num)
+            ]
         tc_dict = (
             tool_call.to_dict()
             if hasattr(tool_call, "to_dict")
@@ -1666,12 +1722,14 @@ class TrajectoryRecorder:
                                 for block in call.response
                             )
                         )
-                        if call.step_num == num or native_match:
+                        if (call.scope is None and call.step_num == num) or native_match:
                             llm_indices.append(call.index)
                     if not llm_indices and st is state.steps[-1]:
-                        llm_indices = list(
-                            range(self._pending_llm_start, len(self._recording_llm.calls))
-                        )
+                        llm_indices = [
+                            call.index
+                            for call in self._recording_llm.calls[self._pending_llm_start :]
+                            if call.scope is None or call.step_num in (None, num)
+                        ]
                 self.trajectory.steps.append(
                     StepRecord(
                         step_num=num,
@@ -1725,6 +1783,8 @@ class TrajectoryRecorder:
                 "run_envelope",
                 "policy_decisions",
                 "looplet_assistant_turns",
+                "usage_total",
+                "replay",
                 "replay_policy_override",
             ):
                 value = getattr(state, key, None)
@@ -1735,7 +1795,7 @@ class TrajectoryRecorder:
                 if value is not None:
                     if hasattr(value, "to_dict"):
                         value = value.to_dict()
-                    self.trajectory.metadata[key] = value
+                    self.trajectory.metadata[key] = json_snapshot(value)
 
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:
@@ -1808,7 +1868,11 @@ class TrajectoryRecorder:
                 for index, record in enumerate(records):
                     if index:
                         stream.write(",\n")
-                    stream.write(_recorded_json(record.to_dict(), self._redact))
+                    stream.write(
+                        _recorded_model_json(record.to_dict(), self._redact)
+                        if name == "llm_calls"
+                        else _recorded_json(record.to_dict(), self._redact)
+                    )
                 stream.write("],\n" if name == "steps" else "]\n")
             stream.write("}\n")
         steps_dir = root / "steps"
@@ -2631,8 +2695,12 @@ def _prepare_replay(
             **turn_config,
         )
     replay_config: LoopConfig = config
-    if max_steps is not None:
-        replay_config = replace(replay_config, max_steps=max_steps)
+    if max_steps is not None or replay_config.router is not None:
+        replay_config = replace(
+            replay_config,
+            max_steps=replay_config.max_steps if max_steps is None else max_steps,
+            router=None,
+        )
     if task is None:
         recorded_task = trajectory.get("task")
         if recorded_task is not None and not isinstance(recorded_task, dict):

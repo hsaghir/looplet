@@ -535,7 +535,16 @@ def _run_cartridge(
         preset.state.max_steps = args.max_steps
     if replay_use_native_tools is not None:
         preset.config.use_native_tools = replay_use_native_tools
+    if backend_override is not None:
+        preset.config.router = None
     state = preset.state
+    source_trace = getattr(backend_override, "_source_trace", None)
+    if source_trace is not None and isinstance(getattr(state, "metadata", None), dict):
+        state.metadata["replay"] = {
+            "schema": "looplet.replay.v1",
+            "source_trace": source_trace,
+            "usage_origin": "captured",
+        }
     if sink is not None:
         backend = sink.wrap_llm(backend)
 
@@ -875,7 +884,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
         return _run_cartridge(
             run_args,
             output=output,
-            backend_override=_ReplayLLMBackend(calls),
+            backend_override=_ReplayLLMBackend(calls, source_trace=str(trace)),
             task_override=task,
             replay_case=cases[0] if cases else None,
             replay_use_native_tools=bool(calls and calls[0]["method"] == "generate_with_tools"),

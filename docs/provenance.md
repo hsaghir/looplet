@@ -77,6 +77,9 @@ The same scope applies to sync and async backends.
 Prompt strings and recorded response copies are scrubbed; live responses and native tool schemas are not rewritten.
 Review exports separately; a redaction callback is not proof that every sensitive value was removed.
 
+**Unreleased:** SDK-issued request and attempt identifiers remain unchanged across manifests, trajectories, replay lineage, and retained attempts.
+Provider payload fields, including fields named `request_id`, remain subject to redaction.
+
 **Version scope:** Native-response redaction and the Python replay defaults below require `0.4.1` or newer.
 Published `0.4.0` can save unredacted native response blocks even when `redact=` is configured.
 See [Safety fixes in `0.4.1`](install.md#unreleased-safety-fixes) before relying on these behaviors.
@@ -782,6 +785,9 @@ for i in indices:
     print(hook.trajectory.llm_calls[i].prompt)
 ```
 
+Multi-tool turns link each step to the turn's root calls and that step's own helper calls.
+Sibling helper calls are not linked to other steps in the batch.
+
 ### What a `StepRecord` captures
 
 | Field                      | Notes                                                               |
@@ -869,11 +875,13 @@ Duplicate or mixed identities are rejected before execution.
 Older root-only captures remain positional. Older helper captures without identities must be recorded again.
 
 Replay metadata includes `replay.source_trace` and `replay.usage_origin="captured"`.
+Configured model routers are ignored during Python and CLI replay so captured responses stay authoritative.
 Newly recorded replay calls include `replay_source`, linking their source trace, call index, request identity, and attempt ID.
 The link describes saved evidence, not a new provider response.
 Policies still receive captured `last_usage` and `usage_total` values.
 Diagnostics expose historical totals as `captured_usage`, with `usage_origin="captured"`.
-Fresh `usage` and `cost_usd` stay `None`; `usage_known` stays `False`.
+Fresh `usage`, `cost_usd`, `usage_calls`, and `missing_usage_calls` stay `None`.
+`usage_known` and `usage_complete` stay `False`.
 
 ### Inspect replay failures
 

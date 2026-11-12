@@ -1153,7 +1153,7 @@ def _set_run_lifecycle(
     state = loop_ctx.state
     if loop_ctx.phase is RunPhase.STARTING:
         try:
-            setattr(state, "_looplet_run_stats", {"llm_calls": 0})
+            setattr(state, "_looplet_run_stats", {"llm_calls": 0, "usage_calls": 0})
         except AttributeError:
             pass
     if loop_ctx.phase is RunPhase.STARTING or terminal_tool is not None:
@@ -1182,15 +1182,27 @@ def _set_run_lifecycle(
             metadata["termination_reason"] = loop_ctx.termination_reason
 
 
+def _count_usage_calls(result: LLMResult, backend: Any) -> int:
+    from looplet.run_records import _has_diagnostic_usage
+
+    if result.model_calls:
+        return sum(1 for record in result.model_calls if _has_diagnostic_usage(record.get("usage")))
+    if result.ok and _has_diagnostic_usage(result.usage or getattr(backend, "last_usage", None)):
+        return 1
+    return 0
+
+
 def _record_run_stats(
     state: Any,
     *,
     llm_calls: int,
+    usage_calls: int | None = None,
     duration_ms: float | None = None,
     config: LoopConfig | None = None,
 ) -> None:
     """Retain host-only measurements without changing model/tool metadata."""
     from looplet.assistant_turns import TURN_STATE_KEY
+    from looplet.run_records import _has_diagnostic_usage
 
     metadata = getattr(state, "metadata", {})
     turns = metadata.get(TURN_STATE_KEY) if isinstance(metadata, dict) else None
@@ -1200,6 +1212,17 @@ def _record_run_stats(
             if turns.get("max_model_calls") is not None
             else max(llm_calls, turns["model_calls"])
         )
+    if isinstance(turns, dict) and isinstance(turns.get("requests"), list):
+        turns_usage_calls = sum(
+            1
+            for request in turns["requests"]
+            if isinstance(request, dict) and _has_diagnostic_usage(request.get("usage"))
+        )
+        usage_calls = (
+            turns_usage_calls
+            if turns.get("max_model_calls") is not None or usage_calls is None
+            else max(usage_calls, turns_usage_calls)
+        )
     stats = getattr(state, "_looplet_run_stats", None)
     if not isinstance(stats, dict):
         stats = {}
@@ -1208,6 +1231,8 @@ def _record_run_stats(
         except AttributeError:
             return
     stats["llm_calls"] = llm_calls
+    if usage_calls is not None:
+        stats["usage_calls"] = usage_calls
     if isinstance(turns, dict) and type(turns.get("model_calls")) is int:
         stats["model_requests"] = turns["model_calls"]
     if config is not None:
@@ -1448,11 +1473,19 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None, step_num: int | No
     # Unwrap ResilientBackend / CostTracker to find the recording layer
     inner = llm
     recording = None
-    for _ in range(5):  # bounded unwrap
+    for _ in range(8):  # bounded unwrap
         if callable(getattr(inner, "_scope_calls", None)):
             recording = inner
             break
-        inner = getattr(inner, "_inner", None) or getattr(inner, "_backend", None)
+        attributes = getattr(inner, "__dict__", {})
+        inner = next(
+            (
+                attributes[name]
+                for name in ("backend", "_backend", "_inner")
+                if attributes.get(name) is not None
+            ),
+            None,
+        )
         if inner is None:
             break
 
@@ -3056,13 +3089,18 @@ def _composable_loop_impl(
             pass
 
     # ── Resolve effective LLM (router overrides direct llm) ────
-    def _get_llm() -> Any:
-        if config is not None and config.router is not None:  # pyright: ignore[reportOptionalMemberAccess]
-            selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
-            from looplet.provenance import _RecordingBase
+    from looplet.provenance import _has_replay_backend, _recording_backend
 
-            if isinstance(llm, _RecordingBase):
-                selected = llm.for_backend(selected)
+    _replaying = _has_replay_backend(llm)
+
+    def _get_llm() -> Any:
+        if config is not None and config.router is not None and not _replaying:  # pyright: ignore[reportOptionalMemberAccess]
+            selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
+            recorder = _recording_backend(llm)
+            if recorder is not None:
+                selected = recorder.for_backend(selected)
+                if isinstance(llm, _ScopedLLMProxy):
+                    selected = _ScopedLLMProxy(selected, recorder, llm._scope, llm._step_num)
         else:
             selected = llm
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
@@ -3086,7 +3124,9 @@ def _composable_loop_impl(
         )
         resumed = _resume_loop_state(saved_checkpoint, max_steps=config.max_steps)
         restore_backend = (
-            config.router.select(purpose="reasoning") if config.router is not None else llm
+            config.router.select(purpose="reasoning")
+            if config.router is not None and not _replaying
+            else llm
         )
         restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
         if callable(restore_backend_state):
@@ -3177,6 +3217,7 @@ def _composable_loop_impl(
     quality_gate_message = ""
     post_dispatch_parts: list[str] = []
     llm_calls = 0
+    usage_calls = 0
     done = False
     stop_reason = "budget_exhausted"  # tracks why the loop exited
     llm_failed = False
@@ -3501,6 +3542,7 @@ def _composable_loop_impl(
         if _turns is not None and _turns.persistent_admission and _hook_requested_stop:
             break
 
+        turn_usage_calls = 0
         if preflight_too_long:
             _stream_executor = None
             logger.warning(
@@ -3668,7 +3710,9 @@ def _composable_loop_impl(
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations
             )
-            _record_run_stats(state, llm_calls=llm_calls, config=config)
+            turn_usage_calls = _count_usage_calls(llm_result, effective_llm)
+            usage_calls += turn_usage_calls
+            _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
             if _deadline_expired(loop_ctx) and _turns is None:
                 stop_reason = "deadline_exceeded"
                 done = True
@@ -3754,7 +3798,8 @@ def _composable_loop_impl(
                 compact_service=_compact_service,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
-            _record_run_stats(state, llm_calls=llm_calls)
+            usage_calls += _count_usage_calls(llm_result, effective_llm) - turn_usage_calls
+            _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
             loop_ctx.native_tool_stats.record(llm_result)
 
         raw_response = llm_result.text
@@ -3767,7 +3812,7 @@ def _composable_loop_impl(
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         measured_usage[name] = measured_usage.get(name, 0) + value
             llm_result.usage = measured_usage or None
-            _record_run_stats(state, llm_calls=llm_calls)
+            _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
 
         # ── Record LLM turn in conversation thread via unified recorder ──
         _history.record_llm_turn(
@@ -3799,7 +3844,7 @@ def _composable_loop_impl(
                     if not isinstance(_totals, dict):
                         _totals = {}
                     for _k, _v in _step_usage.items():
-                        if isinstance(_v, (int, float)):
+                        if isinstance(_v, (int, float)) and not isinstance(_v, bool):
                             _totals[_k] = _totals.get(_k, 0) + _v
                     _meta["usage_total"] = _totals
             except Exception:  # pragma: no cover - defensive
@@ -4025,7 +4070,8 @@ def _composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
-                _record_run_stats(state, llm_calls=llm_calls)
+                usage_calls += _count_usage_calls(recovery_result, effective_llm)
+                _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
 
@@ -4613,7 +4659,7 @@ def _composable_loop_impl(
         llm_calls = _turns.data["model_calls"]
         if _turns.checkpoint is not None:
             _turns.checkpoint()
-    _record_run_stats(state, llm_calls=llm_calls)
+    _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
 
     # Fire STOP - event-style hooks see termination reason before
     # on_loop_end cleanup runs. Return values are ignored (the loop
@@ -4634,7 +4680,7 @@ def _composable_loop_impl(
         llm_calls = _turns.call_total(llm_calls)
         if _turns.checkpoint is not None:
             _turns.checkpoint()
-    _record_run_stats(state, llm_calls=llm_calls)
+    _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
 
     # Emit LoopEndEvent - skip if StreamingHook already emits it
     if (
@@ -4653,7 +4699,7 @@ def _composable_loop_impl(
 
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
-    _record_run_stats(state, llm_calls=llm_calls, duration_ms=elapsed)
+    _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, duration_ms=elapsed)
     _build_trace_fn = config.resolve_callable("build_trace")
     if _build_trace_fn is not None:
         # Pass ``context`` through when the callable's signature
@@ -4710,7 +4756,12 @@ def _composable_loop_impl(
         }
     if _turns is not None:
         llm_calls = _turns.call_total(llm_calls)
-        _record_run_stats(state, llm_calls=llm_calls, duration_ms=(time.time() - t0) * 1000)
+        _record_run_stats(
+            state,
+            llm_calls=llm_calls,
+            usage_calls=usage_calls,
+            duration_ms=(time.time() - t0) * 1000,
+        )
         if _turns.checkpoint is not None:
             _turns.checkpoint()
         if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:

@@ -382,9 +382,15 @@ class _AssistantTurns:
         return observed if self.persistent_admission else max(reported, observed)
 
     def surface_usage(self) -> None:
+        from looplet.run_records import _has_diagnostic_usage
+
         totals: dict[str, Any] = {}
+        usage_calls = 0
         for record in self.data["requests"]:
-            for name, value in record.get("usage", {}).items():
+            record_usage = record.get("usage", {})
+            if _has_diagnostic_usage(record_usage):
+                usage_calls += 1
+            for name, value in record_usage.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     totals[name] = totals.get(name, 0) + value
         if totals:
@@ -392,6 +398,11 @@ class _AssistantTurns:
             if isinstance(metadata, dict):
                 metadata["usage_total"] = totals
                 metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
+        stats = getattr(self.state, "_looplet_run_stats", None)
+        if isinstance(stats, dict):
+            stats["llm_calls"] = self.call_total(stats.get("llm_calls", 0))
+            stats["model_requests"] = self.data["model_calls"]
+            stats["usage_calls"] = usage_calls
 
 
 def _checkpoint_step_record(step: Any) -> dict[str, Any]:

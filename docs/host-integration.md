@@ -183,7 +183,11 @@ the host wrapper; direct elapsed time comes from the loop driver.
 
 Missing usage and cost are `None`, never assumed zero. Measured zero remains a
 valid measurement. Invalid, non-finite, negative, and boolean measurements are
-excluded. Failed runtime results retain already observed state metadata.
+excluded. `usage_calls` and `missing_usage_calls` count fresh model calls with
+and without valid usage. `usage_complete` is `True` only when every executed
+fresh model call reported valid usage. Replayed runs and records without
+per-call counts leave both call counters `None`. Failed runtime results retain
+already observed state metadata.
 
 The view omits prompts, arguments, outputs, error messages, arbitrary metadata,
 artifacts, protected case data, and grader scores. Structural IDs and labels are

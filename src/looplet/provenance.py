@@ -1722,7 +1722,7 @@ class TrajectoryRecorder:
                                 for block in call.response
                             )
                         )
-                        if (call.scope is None and call.step_num == num) or native_match:
+                        if call.step_num == num or native_match:
                             llm_indices.append(call.index)
                     if not llm_indices and st is state.steps[-1]:
                         llm_indices = [

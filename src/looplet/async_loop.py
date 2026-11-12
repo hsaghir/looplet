@@ -61,6 +61,7 @@ from looplet.loop import (
     RunEnvelope,
     RunPhase,
     RunStatus,
+    _accumulate_step_usage,
     _bind_loop_context_async,
     _build_tool_ctx,
     _call_check_done,
@@ -672,7 +673,13 @@ async def async_llm_call(
                 if inspect.isawaitable(result):
                     result = await result
             raw_usage = getattr(llm, "last_usage", None)
-            text_calls = [{"usage": dict(raw_usage) if isinstance(raw_usage, dict) else {}}]
+            first_usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+            text_calls = [{"usage": first_usage}]
+            text_usage: dict[str, Any] = {
+                key: value
+                for key, value in first_usage.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
             stop = getattr(llm, "last_stop_reason", None)
             continuation_count = 0
             accumulated = result if isinstance(result, str) else ""
@@ -696,10 +703,12 @@ async def async_llm_call(
                     more = await more
                 if not isinstance(more, str):
                     break
-                cont_usage = getattr(llm, "last_usage", None)
-                text_calls.append(
-                    {"usage": dict(cont_usage) if isinstance(cont_usage, dict) else {}}
-                )
+                cont_raw = getattr(llm, "last_usage", None)
+                cont_usage = dict(cont_raw) if isinstance(cont_raw, dict) else {}
+                text_calls.append({"usage": cont_usage})
+                for key, value in cont_usage.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        text_usage[key] = text_usage.get(key, 0) + value
                 accumulated += more
                 stop = getattr(llm, "last_stop_reason", None)
                 continuation_count += 1
@@ -711,6 +720,7 @@ async def async_llm_call(
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
                 native_succeeded=False,
+                usage=text_usage or None,
                 model_calls=text_calls,
             )
 
@@ -1236,7 +1246,7 @@ async def _async_composable_loop_impl(
             if recorder is not None:
                 selected = recorder.for_backend(selected)
                 if isinstance(llm, _ScopedLLMProxy):
-                    selected = _ScopedLLMProxy(selected, recorder, llm._scope, llm._step_num)
+                    selected = llm.for_backend(selected)
         else:
             selected = llm
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
@@ -1608,7 +1618,7 @@ async def _async_composable_loop_impl(
         llm_calls += llm_result.calls + (
             0 if llm_result.native_attempted else llm_result.continuations
         )
-        turn_usage_calls = _count_usage_calls(llm_result, effective_llm)
+        turn_usage_calls = _count_usage_calls(llm_result)
         usage_calls += turn_usage_calls
         _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
         if _deadline_expired(loop_ctx) and _turns is None:
@@ -1687,7 +1697,7 @@ async def _async_composable_loop_impl(
                 compact_service=_compact_service,
             )
             llm_calls += recovery_calls
-            usage_calls += _count_usage_calls(llm_result, effective_llm) - turn_usage_calls
+            usage_calls += _count_usage_calls(llm_result) - turn_usage_calls
             _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
             raw_response = llm_result.text
         if _turns is not None:
@@ -1718,19 +1728,7 @@ async def _async_composable_loop_impl(
             getattr(effective_llm, "last_usage", None) if llm_result.ok else None
         )
         if _step_usage and _turns is None:
-            try:
-                _meta = getattr(state, "metadata", None)
-                if isinstance(_meta, dict):
-                    _meta["last_usage"] = dict(_step_usage)
-                    _totals = _meta.get("usage_total")
-                    if not isinstance(_totals, dict):
-                        _totals = {}
-                    for _k, _v in _step_usage.items():
-                        if isinstance(_v, (int, float)) and not isinstance(_v, bool):
-                            _totals[_k] = _totals.get(_k, 0) + _v
-                    _meta["usage_total"] = _totals
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("usage surfacing failed", exc_info=True)
+            _accumulate_step_usage(state, _step_usage)
 
         _post_llm_decisions = await emit_event_async(
             hooks,
@@ -1938,7 +1936,17 @@ async def _async_composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
-                usage_calls += _count_usage_calls(recovery_result, effective_llm)
+                usage_calls += _count_usage_calls(recovery_result)
+                if _turns is None:
+                    _accumulate_step_usage(
+                        state,
+                        recovery_result.usage
+                        or (
+                            getattr(effective_llm, "last_usage", None)
+                            if recovery_result.ok
+                            else None
+                        ),
+                    )
                 _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)

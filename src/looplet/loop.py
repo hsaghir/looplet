@@ -11,7 +11,8 @@ import logging
 import time
 import warnings
 from collections.abc import AsyncIterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import (
@@ -1182,14 +1183,26 @@ def _set_run_lifecycle(
             metadata["termination_reason"] = loop_ctx.termination_reason
 
 
-def _count_usage_calls(result: LLMResult, backend: Any) -> int:
+def _count_usage_calls(result: LLMResult) -> int:
     from looplet.run_records import _has_diagnostic_usage
 
-    if result.model_calls:
-        return sum(1 for record in result.model_calls if _has_diagnostic_usage(record.get("usage")))
-    if result.ok and _has_diagnostic_usage(result.usage or getattr(backend, "last_usage", None)):
-        return 1
-    return 0
+    return sum(1 for record in result.model_calls if _has_diagnostic_usage(record.get("usage")))
+
+
+def _accumulate_step_usage(state: Any, step_usage: Any) -> None:
+    if not isinstance(step_usage, dict) or not step_usage:
+        return
+    meta = getattr(state, "metadata", None)
+    if not isinstance(meta, dict):
+        return
+    meta["last_usage"] = dict(step_usage)
+    totals = meta.get("usage_total")
+    if not isinstance(totals, dict):
+        totals = {}
+    for key, value in step_usage.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            totals[key] = totals.get(key, 0) + value
+    meta["usage_total"] = totals
 
 
 def _record_run_stats(
@@ -1495,16 +1508,28 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None, step_num: int | No
     return _ScopedLLMProxy(llm, recording, f"tool:{tool_name}", step_num)
 
 
+_ACTIVE_SCOPED_PROXIES: ContextVar[frozenset[object]] = ContextVar(
+    "looplet_active_scoped_proxies", default=frozenset()
+)
+
+
 class _ScopedLLMProxy:
     """Tag helper requests with their task-local tool scope and step."""
 
     def __init__(
-        self, backend: Any, recording: Any, scope: str, step_num: int | None = None
+        self,
+        backend: Any,
+        recording: Any,
+        scope: str,
+        step_num: int | None = None,
+        *,
+        _scope_id: object | None = None,
     ) -> None:
         self._backend = backend
         self._recording = recording
         self._scope = scope
         self._step_num = step_num
+        self._scope_id = _scope_id if _scope_id is not None else object()
         if inspect.iscoroutinefunction(backend.generate):
             self.generate = self._async_method(backend.generate)
         if hasattr(backend, "generate_with_tools"):
@@ -1514,12 +1539,47 @@ class _ScopedLLMProxy:
                 else self._generate_with_tools_impl
             )
 
+    @contextmanager
+    def _enter_own_scope(self) -> Generator[None, None, None]:
+        active = _ACTIVE_SCOPED_PROXIES.get()
+        if self._scope_id in active:
+            yield
+            return
+        token = _ACTIVE_SCOPED_PROXIES.set(active | {self._scope_id})
+        try:
+            with self._recording._scope_calls(self._scope, step_num=self._step_num):
+                yield
+        finally:
+            _ACTIVE_SCOPED_PROXIES.reset(token)
+
+    @contextmanager
+    def _scope_calls(
+        self, scope: str, *, step_num: int | None = None
+    ) -> Generator[None, None, None]:
+        with self._enter_own_scope():
+            with self._recording._scope_calls(scope, step_num=step_num):
+                yield
+
+    def for_backend(self, selected: Any) -> "_ScopedLLMProxy":
+        inner = (
+            self._recording.for_backend(selected)
+            if isinstance(self._recording, _ScopedLLMProxy)
+            else selected
+        )
+        return _ScopedLLMProxy(
+            inner,
+            inner,
+            self._scope,
+            self._step_num,
+            _scope_id=self._scope_id,
+        )
+
     def _async_method(self, method: Any) -> Any:
         from functools import wraps
 
         @wraps(method)
         async def invoke(*args: Any, **kwargs: Any) -> Any:
-            with self._recording._scope_calls(self._scope, step_num=self._step_num):
+            with self._enter_own_scope():
                 return await method(*args, **kwargs)
 
         return invoke
@@ -1532,7 +1592,7 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> str:
-        with self._recording._scope_calls(self._scope, step_num=self._step_num):
+        with self._enter_own_scope():
             return self._backend.generate(
                 prompt,
                 max_tokens=max_tokens,
@@ -1549,7 +1609,7 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float | None = None,
     ) -> Any:
-        with self._recording._scope_calls(self._scope, step_num=self._step_num):
+        with self._enter_own_scope():
             return self._backend.generate_with_tools(
                 prompt,
                 tools=tools,
@@ -3100,7 +3160,7 @@ def _composable_loop_impl(
             if recorder is not None:
                 selected = recorder.for_backend(selected)
                 if isinstance(llm, _ScopedLLMProxy):
-                    selected = _ScopedLLMProxy(selected, recorder, llm._scope, llm._step_num)
+                    selected = llm.for_backend(selected)
         else:
             selected = llm
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
@@ -3710,7 +3770,7 @@ def _composable_loop_impl(
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations
             )
-            turn_usage_calls = _count_usage_calls(llm_result, effective_llm)
+            turn_usage_calls = _count_usage_calls(llm_result)
             usage_calls += turn_usage_calls
             _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
             if _deadline_expired(loop_ctx) and _turns is None:
@@ -3798,7 +3858,7 @@ def _composable_loop_impl(
                 compact_service=_compact_service,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
-            usage_calls += _count_usage_calls(llm_result, effective_llm) - turn_usage_calls
+            usage_calls += _count_usage_calls(llm_result) - turn_usage_calls
             _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
             loop_ctx.native_tool_stats.record(llm_result)
 
@@ -3836,19 +3896,7 @@ def _composable_loop_impl(
             getattr(effective_llm, "last_usage", None) if llm_result.ok else None
         )
         if _step_usage and _turns is None:
-            try:
-                _meta = getattr(state, "metadata", None)
-                if isinstance(_meta, dict):
-                    _meta["last_usage"] = dict(_step_usage)
-                    _totals = _meta.get("usage_total")
-                    if not isinstance(_totals, dict):
-                        _totals = {}
-                    for _k, _v in _step_usage.items():
-                        if isinstance(_v, (int, float)) and not isinstance(_v, bool):
-                            _totals[_k] = _totals.get(_k, 0) + _v
-                    _meta["usage_total"] = _totals
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("usage surfacing failed", exc_info=True)
+            _accumulate_step_usage(state, _step_usage)
 
         # Fire POST_LLM_RESPONSE - hooks can observe raw text before
         # it hits the parser. Stop requests are honored at end-of-step.
@@ -4070,7 +4118,17 @@ def _composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
-                usage_calls += _count_usage_calls(recovery_result, effective_llm)
+                usage_calls += _count_usage_calls(recovery_result)
+                if _turns is None:
+                    _accumulate_step_usage(
+                        state,
+                        recovery_result.usage
+                        or (
+                            getattr(effective_llm, "last_usage", None)
+                            if recovery_result.ok
+                            else None
+                        ),
+                    )
                 _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)

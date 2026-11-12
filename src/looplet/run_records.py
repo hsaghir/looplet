@@ -182,7 +182,7 @@ def run_diagnostics(
         and call_count is not None
         and raw_usage_calls is not None
         and raw_usage_calls <= call_count
-        and (raw_usage_calls == 0 or bool(observed_usage))
+        and (raw_usage_calls > 0) == bool(observed_usage)
     ):
         usage_calls = raw_usage_calls
         missing_usage_calls = call_count - raw_usage_calls

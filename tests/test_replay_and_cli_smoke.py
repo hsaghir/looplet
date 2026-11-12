@@ -710,6 +710,126 @@ class TestReplayLoopSmoke:
         assert steps_by_num[3]["llm_call_indices"] == ([0] if same_turn_done else [3])
 
     @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("child_profile", ["minimal", "execution-v1"])
+    async def test_nested_subagent_tool_calls_preserve_outer_to_inner_scope_and_step(
+        self, tmp_path, asynchronous, child_profile
+    ):
+        from looplet import RunResult, ToolContext, async_replay_loop, run_result, run_result_async
+        from looplet.subagent import (
+            ChildRunPolicy,
+            SharedModelBudget,
+            run_sub_loop,
+            run_sub_loop_async,
+        )
+
+        responses = iter(
+            [
+                json.dumps(
+                    {
+                        "tools": [
+                            {"tool": "noop", "args": {}},
+                            {"tool": "delegate", "args": {}},
+                        ]
+                    }
+                ),
+                json.dumps({"tool": "child_helper", "args": {}}),
+                "leaf_answer",
+                json.dumps({"tool": "done", "args": {"summary": "child_done"}}),
+                json.dumps({"tool": "done", "args": {"summary": "parent_done"}}),
+            ]
+        )
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                return next(responses)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        def make_tools():
+            def noop():
+                return {"ok": True}
+
+            if asynchronous:
+
+                async def child_helper(ctx: ToolContext):
+                    return {"leaf": await ctx.async_llm.generate("leaf_prompt")}
+
+                async def delegate(ctx: ToolContext):
+                    budget = SharedModelBudget(5)
+                    return await run_sub_loop_async(
+                        ctx.async_llm,
+                        task={"goal": "child"},
+                        tools=tools_from([child_helper], include_done=True),
+                        config=LoopConfig(
+                            max_steps=2,
+                            use_native_tools=False,
+                            harness_profile=child_profile,
+                            run_dir=str(tmp_path / f"child-{budget.remaining}"),
+                        ),
+                        policy=ChildRunPolicy(parent_id="parent", model_budget=budget),
+                    )
+            else:
+
+                def child_helper(ctx: ToolContext):
+                    return {"leaf": ctx.llm.generate("leaf_prompt")}
+
+                def delegate(ctx: ToolContext):
+                    budget = SharedModelBudget(5)
+                    return run_sub_loop(
+                        ctx.llm,
+                        task={"goal": "child"},
+                        tools=tools_from([child_helper], include_done=True),
+                        config=LoopConfig(
+                            max_steps=2,
+                            use_native_tools=False,
+                            harness_profile=child_profile,
+                            run_dir=str(tmp_path / f"child-{budget.remaining}"),
+                        ),
+                        policy=ChildRunPolicy(parent_id="parent", model_budget=budget),
+                    )
+
+            return tools_from([noop, delegate], include_done=True)
+
+        sink = ProvenanceSink(tmp_path / "parent")
+        cfg = LoopConfig(max_steps=3, use_native_tools=False, harness_profile="minimal")
+        args = {
+            "llm": sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+            "tools": make_tools(),
+            "hooks": [sink.trajectory_hook()],
+            "config": cfg,
+        }
+        original = await run_result_async(**args) if asynchronous else run_result(**args)
+        assert original.completed and original.output["summary"] == "parent_done"
+        trace = sink.flush()
+        trajectory = json.loads((trace / "trajectory.json").read_text())
+        request_ids = [call["capture"]["request_id"] for call in trajectory["llm_calls"]]
+        assert request_ids == [
+            "loop/0",
+            "loop/tool:delegate:2/0",
+            "loop/tool:delegate:2/tool:child_helper:1/0",
+            "loop/tool:delegate:2/1",
+            "loop/1",
+        ]
+        leaf_call = trajectory["llm_calls"][2]
+        assert leaf_call["scope"] == "tool:delegate"
+        assert leaf_call["step_num"] == 2
+        steps_by_num = {step["step_num"]: step for step in trajectory["steps"]}
+        assert steps_by_num[1]["llm_call_indices"] == [0]
+        assert steps_by_num[2]["llm_call_indices"] == [0, 1, 2, 3]
+        assert steps_by_num[3]["llm_call_indices"] == [4]
+
+        replay_state = DefaultState(max_steps=3)
+        replay_args = {"tools": make_tools(), "state": replay_state, "config": cfg}
+        if asynchronous:
+            _ = [step async for step in async_replay_loop(trace, **replay_args)]
+        else:
+            _ = list(replay_loop(trace, **replay_args))
+        replayed = RunResult.from_state(replay_state)
+        assert replayed.completed and replayed.output == original.output
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
     async def test_recorder_assigns_request_identity_before_completion(
         self, tmp_path, asynchronous, method

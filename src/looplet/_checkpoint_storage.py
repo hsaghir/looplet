@@ -16,12 +16,16 @@ from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
-from looplet._storage import DiskBackedList
+from looplet._storage import TrackedList
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _FANOUT = 32
 _CACHE_BYTES = 64 * 1024
 _CACHE_ENTRIES = 1024
+
+
+def _identity_encode(item: Any) -> Any:
+    return item
 
 
 class CheckpointSequence:
@@ -64,16 +68,24 @@ class CheckpointDocuments:
             else:
                 os.close(descriptor)
             connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
-        else:
-            connection = sqlite3.connect(
-                f"file:{quote(str(self.path.resolve()))}?mode=ro", uri=True
-            )
-        connection.execute("PRAGMA cache_size=-64")
-        if write:
-            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA cache_size=-4096")
+            connection.execute("PRAGMA temp_store=MEMORY")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS records (digest TEXT PRIMARY KEY, payload BLOB NOT NULL)"
             )
+            return connection
+        if not self.path.is_file():
+            raise sqlite3.OperationalError("checkpoint database does not exist")
+        try:
+            connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
+            connection.execute("PRAGMA query_only=ON")
+        except sqlite3.OperationalError:
+            connection = sqlite3.connect(
+                f"file:{quote(str(self.path.resolve()))}?mode=ro", uri=True
+            )
+        connection.execute("PRAGMA cache_size=-512")
         return connection
 
     def _put(self, connection: sqlite3.Connection, value: Any) -> str:
@@ -194,10 +206,14 @@ class CheckpointDocuments:
                 raise ValueError("checkpoint contains circular data")
             active.add(identity)
             try:
-                if isinstance(value, CheckpointSequence) and isinstance(
-                    value.values, DiskBackedList
+                if isinstance(value, CheckpointSequence) and callable(
+                    getattr(value.values, "changes_since", None)
                 ):
                     return self._encode_sequence(connection, value, active)
+                if isinstance(value, TrackedList):
+                    return self._encode_sequence(
+                        connection, CheckpointSequence(value, _identity_encode), active
+                    )
                 if isinstance(value, dict):
                     members = []
                     for key, child in value.items():

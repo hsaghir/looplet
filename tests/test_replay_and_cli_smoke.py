@@ -488,6 +488,284 @@ class TestReplayLoopSmoke:
         assert budget.remaining == 1
 
     @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_redaction_preserves_request_identity_across_manifest_and_trajectory(
+        self, tmp_path, asynchronous
+    ):
+        import re
+
+        from looplet import LoopConfig, run_result, run_result_async, tools_from
+        from looplet.provenance import (
+            ProvenanceSink,
+            _load_trace_calls,
+            load_model_attempts,
+        )
+
+        # Non-idempotent + numeric-scrubbing redactor: verifies single-pass
+        # redaction AND preservation of SDK-issued request_id/attempt_id across
+        # manifest.jsonl, trajectory.json, and model-attempts/*.json.
+        def redact(value: str) -> str:
+            return re.sub(r"\b\d{2,}\b", "[redacted]", value).replace("SECRET", "[SECRET_MASK]")
+
+        decisions = iter(
+            [
+                json.dumps({"tool": "tick", "args": {"value": "Account 1234 SECRET"}})
+                for _ in range(11)
+            ]
+            + [json.dumps({"tool": "done", "args": {"summary": "Account 1234 SECRET"}})]
+        )
+
+        class Backend:
+            last_request = {
+                "request_id": "provider request 1234",
+                "capture": {"attempt_id": "provider attempt 5678"},
+            }
+            last_response = {"replay_source": {"request_id": "provider response 1234"}}
+
+            def generate(self, prompt, **kwargs):
+                return next(decisions)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        def tick(value: str):
+            return {"value": value}
+
+        sink = ProvenanceSink(tmp_path / "trace", redact=redact)
+        recorder = sink.wrap_llm(AsyncBackend() if asynchronous else Backend())
+        kwargs = dict(
+            llm=recorder,
+            tools=tools_from([tick], include_done=True),
+            hooks=[sink.trajectory_hook()],
+            task="Account 1234 SECRET",
+            config=LoopConfig(max_steps=12, use_native_tools=False, harness_profile="minimal"),
+        )
+        res = await run_result_async(**kwargs) if asynchronous else run_result(**kwargs)
+        assert res.completed
+        trace = sink.flush()
+        expected = [f"loop/{ordinal}" for ordinal in range(12)]
+
+        manifest_calls = _load_trace_calls(trace)
+        trajectory = json.loads((trace / "trajectory.json").read_text())
+        traj_ids = [call["capture"]["request_id"] for call in trajectory["llm_calls"]]
+        manifest_ids = [call["request_id"] for call in manifest_calls]
+        assert manifest_ids == expected
+        assert traj_ids == expected
+        assert [c["capture"]["attempt_id"] for c in trajectory["llm_calls"]] == [
+            c["attempt_id"] for c in manifest_calls
+        ]
+        # Single-pass redaction: "[SECRET_MASK]" was not nested into "[[SECRET_MASK]_MASK]"
+        for call in manifest_calls:
+            assert "[SECRET_MASK]" in call["request"]["prompt"]
+            assert "[[SECRET_MASK]" not in call["request"]["prompt"]
+            assert "1234" not in call["request"]["prompt"]
+            assert call["provider_request"]["request_id"] == "provider request [redacted]"
+            assert (
+                call["provider_request"]["capture"]["attempt_id"] == "provider attempt [redacted]"
+            )
+            assert (
+                call["provider_response"]["replay_source"]["request_id"]
+                == "provider response [redacted]"
+            )
+        attempts = load_model_attempts(trace)
+        assert {a["intent"]["request_id"] for a in attempts} == set(expected)
+        assert {a["outcome"]["capture"]["request_id"] for a in attempts} == set(expected)
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("concurrent_dispatch", [False, True])
+    @pytest.mark.parametrize("same_turn_done", [False, True])
+    async def test_concurrent_helper_calls_attribute_to_owning_steps(
+        self, tmp_path, asynchronous, native, concurrent_dispatch, same_turn_done
+    ):
+        import asyncio
+        from dataclasses import replace
+        from threading import Event
+
+        from looplet import LoopConfig, ToolContext, run_result, run_result_async, tools_from
+        from looplet.provenance import ProvenanceSink
+
+        entered = Event()
+        finished = Event()
+        first_batch = [
+            {"type": "tool_use", "id": "alpha", "name": "helper", "input": {"label": "alpha"}},
+            {"type": "tool_use", "id": "beta", "name": "helper", "input": {"label": "beta"}},
+        ]
+        done_block = {
+            "type": "tool_use",
+            "id": "finish",
+            "name": "done",
+            "input": {"summary": "ok"},
+        }
+        decisions = iter(
+            [first_batch + [done_block]] if same_turn_done else [first_batch, [done_block]]
+        )
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                if prompt in {"alpha", "beta"}:
+                    if concurrent_dispatch and prompt == "alpha":
+                        entered.set()
+                        assert finished.wait(10)
+                    elif concurrent_dispatch:
+                        assert entered.wait(10)
+                    return f"{prompt}_answer"
+                return json.dumps(
+                    {
+                        "tools": [
+                            {"tool": block["name"], "args": block["input"]}
+                            for block in next(decisions)
+                        ]
+                    }
+                )
+
+            def generate_with_tools(self, prompt, **kwargs):
+                return next(decisions)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return await asyncio.to_thread(super().generate, prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+        if asynchronous:
+
+            async def helper(label: str, ctx: ToolContext):
+                try:
+                    return {"answer": await ctx.async_llm.generate(label)}
+                finally:
+                    if label == "beta":
+                        finished.set()
+        else:
+
+            def helper(label: str, ctx: ToolContext):
+                try:
+                    return {"answer": ctx.llm.generate(label)}
+                finally:
+                    if label == "beta":
+                        finished.set()
+
+        tools = tools_from([helper], include_done=True)
+        tools._tools["helper"] = replace(tools._tools["helper"], concurrent_safe=True)
+        sink = ProvenanceSink(tmp_path / "trace")
+        recorder = sink.wrap_llm(AsyncBackend() if asynchronous else Backend())
+        arguments = {
+            "llm": recorder,
+            "tools": tools,
+            "hooks": [sink.trajectory_hook()],
+            "config": LoopConfig(
+                max_steps=3,
+                use_native_tools=native,
+                concurrent_dispatch=concurrent_dispatch,
+                max_parallel_calls=2,
+                harness_profile="minimal",
+            ),
+        }
+        result = await run_result_async(**arguments) if asynchronous else run_result(**arguments)
+        assert result.completed
+        trajectory = json.loads((sink.flush() / "trajectory.json").read_text())
+        helper_calls = {
+            call["capture"]["request"]["prompt"]: call
+            for call in trajectory["llm_calls"]
+            if call["scope"] == "tool:helper"
+        }
+        assert set(helper_calls) == {"alpha", "beta"}
+        assert helper_calls["alpha"]["step_num"] == 1
+        assert helper_calls["beta"]["step_num"] == 2
+        steps_by_num = {step["step_num"]: step for step in trajectory["steps"]}
+        assert steps_by_num[1]["llm_call_indices"] == [0, helper_calls["alpha"]["index"]]
+        assert steps_by_num[2]["llm_call_indices"] == [0, helper_calls["beta"]["index"]]
+        assert steps_by_num[3]["llm_call_indices"] == ([0] if same_turn_done else [3])
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("with_sink", [False, True])
+    async def test_replay_ignores_config_router_and_never_calls_live_provider(
+        self, tmp_path, asynchronous, with_sink
+    ):
+        from looplet import DefaultState, LoopConfig, RunResult, run_result, tools_from
+        from looplet.provenance import ProvenanceSink, async_replay_loop, replay_loop
+        from looplet.router import ModelProfile, SimpleRouter
+
+        capture_sink = ProvenanceSink(tmp_path / "captured")
+        recorded = capture_sink.wrap_llm(
+            MockLLMBackend([json.dumps({"tool": "done", "args": {"summary": "captured_answer"}})])
+        )
+        orig = run_result(
+            llm=recorded,
+            tools=tools_from([], include_done=True),
+            hooks=[capture_sink.trajectory_hook()],
+            config=LoopConfig(max_steps=2, use_native_tools=False, harness_profile="minimal"),
+        )
+        assert orig.completed
+        trace = capture_sink.flush()
+
+        live_calls = 0
+
+        class CountingLiveBackend:
+            last_usage = {"input_tokens": 100, "output_tokens": 9, "cost_usd": 3.0}
+
+            def generate(self, prompt, **kwargs):
+                nonlocal live_calls
+                live_calls += 1
+                return json.dumps({"tool": "done", "args": {"summary": "fresh_live_answer"}})
+
+            async def generate_async(self, prompt, **kwargs):
+                return self.generate(prompt, **kwargs)
+
+        class AsyncCountingLiveBackend:
+            last_usage = {"input_tokens": 100, "output_tokens": 9, "cost_usd": 3.0}
+
+            async def generate(self, prompt, **kwargs):
+                nonlocal live_calls
+                live_calls += 1
+                return json.dumps({"tool": "done", "args": {"summary": "fresh_live_answer"}})
+
+        live_backend = AsyncCountingLiveBackend() if asynchronous else CountingLiveBackend()
+        router = SimpleRouter({}, default_profile=ModelProfile("live", live_backend))
+        routed_cfg = LoopConfig(
+            max_steps=2,
+            use_native_tools=False,
+            harness_profile="minimal",
+            router=router,
+        )
+        replay_sink = ProvenanceSink(tmp_path / "replayed") if with_sink else None
+        state = DefaultState(max_steps=2)
+        if asynchronous:
+            steps = [
+                step
+                async for step in async_replay_loop(
+                    trace,
+                    tools=tools_from([], include_done=True),
+                    state=state,
+                    config=routed_cfg,
+                    recording_sink=replay_sink,
+                )
+            ]
+        else:
+            steps = list(
+                replay_loop(
+                    trace,
+                    tools=tools_from([], include_done=True),
+                    state=state,
+                    config=routed_cfg,
+                    recording_sink=replay_sink,
+                )
+            )
+        replayed = RunResult.from_state(state)
+        assert live_calls == 0
+        assert routed_cfg.router is router  # caller config not mutated
+        assert len(steps) == 1
+        assert replayed.completed and replayed.output == {
+            "status": "completed",
+            "summary": "captured_answer",
+        }
+        assert replayed.diagnostics()["usage_origin"] == "captured"
+        assert (
+            replayed.diagnostics()["usage"] is None and replayed.diagnostics()["cost_usd"] is None
+        )
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
     async def test_recorder_assigns_request_identity_before_completion(
         self, tmp_path, asynchronous, method

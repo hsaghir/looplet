@@ -77,6 +77,10 @@ The same scope applies to sync and async backends.
 Prompt strings and recorded response copies are scrubbed; live responses and native tool schemas are not rewritten.
 Review exports separately; a redaction callback is not proof that every sensitive value was removed.
 
+**Unreleased:** SDK-issued request and attempt identifiers remain unchanged across `manifest.jsonl`, `trajectory.json`, and `model-attempts/` so evidence links and replay pairing stay valid.
+Provider payload fields, including fields named `request_id`, remain subject to redaction.
+Configured model routers are ignored during `replay_loop()` and `async_replay_loop()` so replay never invokes a live provider.
+
 **Version scope:** Native-response redaction and the Python replay defaults below require `0.4.1` or newer.
 Published `0.4.0` can save unredacted native response blocks even when `redact=` is configured.
 See [Safety fixes in `0.4.1`](install.md#unreleased-safety-fixes) before relying on these behaviors.

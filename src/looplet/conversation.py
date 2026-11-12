@@ -120,13 +120,31 @@ class Conversation:
     """
 
     def __init__(self, messages: list[Message] | None = None) -> None:
-        self.messages: list[Message] = list(messages) if messages else []
+        from looplet._storage import TrackedList
+
+        self.messages: list[Message] = TrackedList(messages) if messages else TrackedList()
+        self._serialized_messages: TrackedList = TrackedList()
+        self._serialized_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
+        self._cont_lines: list[str | None] = []
+        self._cont_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
+        self._proj_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
+        self._proj_by_call_id: dict[str, ToolResult] = {}
+        self._proj_by_step_num: dict[int, ToolResult] = {}
+        self._compacted_call_ids: set[str] = set()
+        self._compacted_steps: set[int] = set()
+
+    def _ensure_tracked(self) -> Any:
+        from looplet._storage import TrackedList
+
+        if not isinstance(self.messages, TrackedList):
+            self.messages = TrackedList(self.messages)
+        return self.messages
 
     # ── Core operations ──────────────────────────────────────────
 
     def append(self, msg: Message) -> "Conversation":
         """Append a message to the thread. Returns self for chaining."""
-        self.messages.append(msg)
+        self._ensure_tracked().append(msg)
         return self
 
     def fork(self) -> "Conversation":
@@ -135,7 +153,7 @@ class Conversation:
         Mutations to the fork (append, truncate, metadata edits) do not
         affect the parent, and vice versa. Use for sub-agent branching.
         """
-        return Conversation(messages=copy.deepcopy(self.messages))
+        return Conversation(messages=copy.deepcopy(list(self.messages)))
 
     def truncate(self, keep_last: int, preserve_system: bool = True) -> "Conversation":
         """Remove old messages, keeping the last ``keep_last`` and optionally
@@ -150,6 +168,7 @@ class Conversation:
         """
         if len(self.messages) <= keep_last:
             return self
+        from looplet._storage import TrackedList
 
         if preserve_system:
             system_msgs = [m for m in self.messages if m.role == MessageRole.SYSTEM]
@@ -158,9 +177,9 @@ class Conversation:
             recent_ids = {id(m) for m in recent}
             merged = [m for m in system_msgs if id(m) not in recent_ids]
             merged.extend(recent)
-            self.messages = merged
+            self.messages = TrackedList(merged)
         else:
-            self.messages = self.messages[-keep_last:]
+            self.messages = TrackedList(self.messages[-keep_last:])
 
         return self
 
@@ -262,39 +281,147 @@ class Conversation:
             head.append(summary_msg)
         if last_user_in_compact is not None and last_user_in_compact not in head:
             head.append(last_user_in_compact)
-        self.messages = head + to_keep
+        from looplet._storage import TrackedList
+
+        self.messages = TrackedList(head + to_keep)
         return self
 
     def find_compaction_boundaries(self) -> list[Message]:
         """Return all compaction-boundary messages in order of insertion."""
         return [m for m in self.messages if m.metadata.get("kind") == "compaction_boundary"]
 
+    @staticmethod
+    def _index_message(
+        message: Message,
+        by_call_id: dict[str, ToolResult],
+        by_step_num: dict[int, ToolResult],
+        compacted_call_ids: set[str],
+        compacted_steps: set[int],
+    ) -> None:
+        if message.tool_result is not None:
+            if message.tool_result.call_id is not None:
+                by_call_id[message.tool_result.call_id] = message.tool_result
+            if (
+                isinstance(message.metadata, dict)
+                and type(message.metadata.get("step_number")) is int
+            ):
+                by_step_num[message.metadata["step_number"]] = message.tool_result
+        meta = message.metadata
+        if isinstance(meta, dict) and meta.get("kind") == "compaction_boundary":
+            for cid in meta.get("compacted_call_ids") or ():
+                if isinstance(cid, str):
+                    compacted_call_ids.add(cid)
+            for snum in meta.get("compacted_step_numbers") or ():
+                if type(snum) is int:
+                    compacted_steps.add(snum)
+            step_range = meta.get("dropped_step_range")
+            if (
+                isinstance(step_range, (list, tuple))
+                and len(step_range) == 2
+                and type(step_range[0]) is int
+                and type(step_range[1]) is int
+            ):
+                compacted_steps.update(range(step_range[0], step_range[1] + 1))
+
+    def _projection_index(
+        self,
+    ) -> tuple[dict[str, Any], dict[int, Any], set[str], set[int]]:
+        tracked = self._ensure_tracked()
+        ident, gen, rev, length = self._proj_cursor
+        if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
+            self._proj_by_call_id = {}
+            self._proj_by_step_num = {}
+            self._compacted_call_ids = set()
+            self._compacted_steps = set()
+            for msg in tracked:
+                self._index_message(
+                    msg,
+                    self._proj_by_call_id,
+                    self._proj_by_step_num,
+                    self._compacted_call_ids,
+                    self._compacted_steps,
+                )
+        else:
+            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
+                for _, msg in changed:
+                    self._index_message(
+                        msg,
+                        self._proj_by_call_id,
+                        self._proj_by_step_num,
+                        self._compacted_call_ids,
+                        self._compacted_steps,
+                    )
+            for msg in tracked[max(0, len(tracked) - 4) :]:
+                self._index_message(
+                    msg,
+                    self._proj_by_call_id,
+                    self._proj_by_step_num,
+                    self._compacted_call_ids,
+                    self._compacted_steps,
+                )
+        self._proj_cursor = (
+            tracked._record_identity,
+            tracked._generation,
+            tracked._revision,
+            len(tracked),
+        )
+        return (
+            self._proj_by_call_id,
+            self._proj_by_step_num,
+            self._compacted_call_ids,
+            self._compacted_steps,
+        )
+
     # ── Rendering ────────────────────────────────────────────────
+
+    @staticmethod
+    def _render_continuation_line(message: Message, payload_text_fn: Any) -> str | None:
+        if message.tool_result is not None:
+            result = message.tool_result
+            payload = payload_text_fn(result)
+            return f"[TOOL RESULT {result.tool}] {payload}"
+        if (
+            message.metadata.get("kind") == "compaction_boundary"
+            or message.role == MessageRole.SYSTEM
+        ):
+            return f"[PRIOR CONTEXT, NOT VERIFIED FACTS] {message.text}"
+        if message.metadata.get("origin") == "host":
+            return f"[HOST FEEDBACK] {message.text}"
+        if message.metadata.get("origin") == "model":
+            text = "\n".join(block.text for block in message.text_blocks())
+            return f"[ASSISTANT, NOT VERIFIED FACTS] {text}" if text else None
+        if message.role == MessageRole.USER:
+            return f"[USER CONTEXT] {message.text}"
+        return None
 
     def continuation_context(self) -> str:
         """Render logical turns without repeating generated prompts."""
         from looplet.result_projection import payload_text
 
-        lines = []
-        for message in self.messages:
-            if message.tool_result is not None:
-                result = message.tool_result
-                payload = payload_text(result)
-                lines.append(f"[TOOL RESULT {result.tool}] {payload}")
-            elif (
-                message.metadata.get("kind") == "compaction_boundary"
-                or message.role == MessageRole.SYSTEM
-            ):
-                lines.append(f"[PRIOR CONTEXT, NOT VERIFIED FACTS] {message.text}")
-            elif message.metadata.get("origin") == "host":
-                lines.append(f"[HOST FEEDBACK] {message.text}")
-            elif message.metadata.get("origin") == "model":
-                text = "\n".join(block.text for block in message.text_blocks())
-                if text:
-                    lines.append(f"[ASSISTANT, NOT VERIFIED FACTS] {text}")
-            elif message.role == MessageRole.USER:
-                lines.append(f"[USER CONTEXT] {message.text}")
-        return "\n".join(lines)
+        tracked = self._ensure_tracked()
+        ident, gen, rev, length = self._cont_cursor
+        if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
+            self._cont_lines = [
+                self._render_continuation_line(msg, payload_text) for msg in tracked
+            ]
+        else:
+            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
+                for pos, msg in changed:
+                    rendered = self._render_continuation_line(msg, payload_text)
+                    if pos < len(self._cont_lines):
+                        self._cont_lines[pos] = rendered
+                    else:
+                        self._cont_lines.append(rendered)
+            tail_start = max(0, len(tracked) - 4)
+            for pos in range(tail_start, len(tracked)):
+                self._cont_lines[pos] = self._render_continuation_line(tracked[pos], payload_text)
+        self._cont_cursor = (
+            tracked._record_identity,
+            tracked._generation,
+            tracked._revision,
+            len(tracked),
+        )
+        return "\n".join(line for line in self._cont_lines if line is not None)
 
     def render(self, max_tokens: int | None = None) -> str:
         """Produce a formatted text representation for LLM prompt inclusion.
@@ -337,16 +464,49 @@ class Conversation:
 
     # ── Persistence ──────────────────────────────────────────────
 
-    def serialize(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dict for persistence."""
-        payload = {
-            "version": 1,
-            "messages": [_serialize_message(m) for m in self.messages],
-        }
+    @staticmethod
+    def _json_safe_message(msg: Message) -> dict[str, Any]:
         try:
-            return json.loads(json.dumps(payload, allow_nan=False))
+            return json.loads(json.dumps(_serialize_message(msg), allow_nan=False))
         except (TypeError, ValueError) as exc:
             raise ValueError("conversation contains non-JSON-safe data") from exc
+
+    def serialize(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict for persistence."""
+        from looplet._storage import TrackedList
+
+        tracked = self._ensure_tracked()
+        ident, gen, rev, length = self._serialized_cursor
+        if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
+            self._serialized_messages = TrackedList(self._json_safe_message(m) for m in tracked)
+        else:
+            touched: set[int] = set()
+            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
+                for pos, msg in changed:
+                    touched.add(pos)
+                    encoded = self._json_safe_message(msg)
+                    if pos < len(self._serialized_messages):
+                        if encoded != self._serialized_messages[pos]:
+                            self._serialized_messages[pos] = encoded
+                    else:
+                        self._serialized_messages.append(encoded)
+            tail_start = max(0, len(tracked) - 4)
+            for pos in range(tail_start, len(tracked)):
+                if pos in touched:
+                    continue
+                encoded = self._json_safe_message(tracked[pos])
+                if encoded != self._serialized_messages[pos]:
+                    self._serialized_messages[pos] = encoded
+        self._serialized_cursor = (
+            tracked._record_identity,
+            tracked._generation,
+            tracked._revision,
+            len(tracked),
+        )
+        return {
+            "version": 1,
+            "messages": self._serialized_messages.snapshot_list(),
+        }
 
     @classmethod
     def deserialize(cls, data: dict[str, Any]) -> "Conversation":

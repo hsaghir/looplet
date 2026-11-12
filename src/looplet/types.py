@@ -860,42 +860,49 @@ class DefaultState:
         # The first tuple element is just an ordering tag (we don't use
         # it for anything but stable iteration) so ``int`` covers both
         # the real step number and the ``id(step)`` fallback.
+        from looplet.conversation import Conversation
+
         rendered: list[tuple[int, str]] = []
         view_numbers: set[int] = set()
         conversation = getattr(self, "conversation", None)
-        conv_messages = getattr(conversation, "messages", [])
-        projections = {
-            message.tool_result.call_id: message.tool_result
-            for message in conv_messages
-            if message.tool_result is not None and message.tool_result.call_id is not None
-        }
-        step_projections = {
-            message.metadata["step_number"]: message.tool_result
-            for message in conv_messages
-            if message.tool_result is not None
-            and isinstance(getattr(message, "metadata", None), dict)
-            and type(message.metadata.get("step_number")) is int
-        }
-        compacted_call_ids: set[str] = set()
-        compacted_steps: set[int] = set()
-        for message in conv_messages:
-            meta = getattr(message, "metadata", None)
-            if not isinstance(meta, dict) or meta.get("kind") != "compaction_boundary":
-                continue
-            for cid in meta.get("compacted_call_ids") or ():
-                if isinstance(cid, str):
-                    compacted_call_ids.add(cid)
-            for snum in meta.get("compacted_step_numbers") or ():
-                if type(snum) is int:
-                    compacted_steps.add(snum)
-            step_range = meta.get("dropped_step_range")
-            if (
-                isinstance(step_range, (list, tuple))
-                and len(step_range) == 2
-                and type(step_range[0]) is int
-                and type(step_range[1]) is int
-            ):
-                compacted_steps.update(range(step_range[0], step_range[1] + 1))
+        if isinstance(conversation, Conversation):
+            projections, step_projections, compacted_call_ids, compacted_steps = (
+                conversation._projection_index()
+            )
+        else:
+            conv_messages = getattr(conversation, "messages", [])
+            projections = {
+                message.tool_result.call_id: message.tool_result
+                for message in conv_messages
+                if message.tool_result is not None and message.tool_result.call_id is not None
+            }
+            step_projections = {
+                message.metadata["step_number"]: message.tool_result
+                for message in conv_messages
+                if message.tool_result is not None
+                and isinstance(getattr(message, "metadata", None), dict)
+                and type(message.metadata.get("step_number")) is int
+            }
+            compacted_call_ids = set()
+            compacted_steps = set()
+            for message in conv_messages:
+                meta = getattr(message, "metadata", None)
+                if not isinstance(meta, dict) or meta.get("kind") != "compaction_boundary":
+                    continue
+                for cid in meta.get("compacted_call_ids") or ():
+                    if isinstance(cid, str):
+                        compacted_call_ids.add(cid)
+                for snum in meta.get("compacted_step_numbers") or ():
+                    if type(snum) is int:
+                        compacted_steps.add(snum)
+                step_range = meta.get("dropped_step_range")
+                if (
+                    isinstance(step_range, (list, tuple))
+                    and len(step_range) == 2
+                    and type(step_range[0]) is int
+                    and type(step_range[1]) is int
+                ):
+                    compacted_steps.update(range(step_range[0], step_range[1] + 1))
         recent_steps = self.steps[-CONTEXT_WINDOW_STEPS:] if CONTEXT_WINDOW_STEPS > 0 else []
         for step in recent_steps:
             tr = getattr(step, "tool_result", None)

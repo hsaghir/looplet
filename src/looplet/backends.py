@@ -437,6 +437,9 @@ def _conversation_messages(
     snapshot = getattr(backend, "_conversation_input", None)
     if snapshot is None:
         return [{"role": "user", "content": prompt}]
+    cached = getattr(backend, "_translated_conversation_messages", None)
+    if cached is not None and getattr(backend, "_translated_native_blocks", None) is native_blocks:
+        return copy.deepcopy(cached)
     messages: list[dict[str, Any]] = [{"role": "user", "content": snapshot["prompt"]}]
     pending: set[str] = set()
     for message in snapshot["conversation"].get("messages", []):
@@ -675,15 +678,18 @@ class _ConversationBackend:
 
     def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
         detached = json_snapshot(snapshot)
+        translated = None
         if detached is not None:
             from types import SimpleNamespace
 
-            _conversation_messages(
+            translated = _conversation_messages(
                 SimpleNamespace(_conversation_input=detached),
                 detached["prompt"],
                 native_blocks=self._native_blocks,
             )
         self._conversation_input = detached
+        self._translated_conversation_messages = translated
+        self._translated_native_blocks = self._native_blocks
 
 
 class OpenAIBackend(_ConversationBackend):

@@ -89,6 +89,9 @@ def _trace_shape_error(
     failure_modes = trajectory.get("failure_modes")
     if failure_modes is not None and not isinstance(failure_modes, list):
         return "trajectory.failure_modes must be an array"
+    spans = trajectory.get("spans")
+    if spans is not None and not isinstance(spans, list):
+        return "trajectory.spans must be an array"
     for index, call in enumerate(calls):
         for field in ("duration_ms", "prompt_chars", "response_chars"):
             value = call.get(field)

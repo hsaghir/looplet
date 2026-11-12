@@ -35,6 +35,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Captured-response replay ignores configured model routers so replay never dispatches live provider calls or mislabels fresh usage as captured.
+- SDK-issued request and attempt identifiers survive content redaction across manifests, consolidated trajectories, replay lineage, and retained model attempts, while redacting each recorded field in a single pass.
+- Trajectory step-to-call linkage uses invocation-scoped step ownership rather than completion-index slices, preventing cross-step attribution during concurrent tool batches, and exports recorded tracer spans in `trajectory.json`.
+- Temporary record spools share one process-local SQLite connection, incremental checkpoints encode `Conversation` and `SessionLog` deltas via revision-tracked lists over WAL storage, and `MemoryRunStore` appends events in linear time.
+- Sync and async loops share Sans-I/O turn-engine setup, router-safe scoped helper proxies, checkpoint restoration, and non-blocking async LEP hook dispatch.
+- Cartridge loading caches `extends` overlays by content digest under a thread-safe import lock, rejects duplicate YAML mapping keys and unknown compatibility manifest fields fail-closed, and supports bounded `max_concurrency` in `run_cartridge_evals()`.
 - Captured-response replay pairs model calls by invocation address, including concurrent helpers. Ambiguous helper captures fail before execution.
 - Replay results and retained calls identify their source evidence. Diagnostics separate captured usage from fresh consumption.
 - Async replay loads and validates evidence in drained workers. Manifest parsing occurs once; host binding stays on the caller thread.

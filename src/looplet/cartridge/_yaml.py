@@ -135,6 +135,11 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if ":" not in stripped:
                 raise CartridgeSerializationError(f"unparseable workspace YAML line{src}: {line!r}")
             key, _, raw_val = stripped.partition(":")
+            clean_key = key.strip()
+            if clean_key in out:
+                raise CartridgeSerializationError(
+                    f"duplicate workspace YAML key {clean_key!r}{src}"
+                )
             raw_val = _strip_inline_comment(raw_val.strip())
             pos += 1
             if raw_val in ("|", "|-", "|+", ">", ">-", ">+"):
@@ -166,12 +171,12 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                 stripped_lines = [bl[common:] if bl else "" for bl in block_lines]
                 joiner = "\n" if style == "|" else " "
                 value = joiner.join(stripped_lines).rstrip("\n")
-                out[key.strip()] = value
+                out[clean_key] = value
             elif not raw_val:
                 # Nested block follows.
-                out[key.strip()] = parse_block(indent + 2)
+                out[clean_key] = parse_block(indent + 2)
             else:
-                out[key.strip()] = _scalar(raw_val)
+                out[clean_key] = _scalar(raw_val)
         return out
 
     def parse_list(indent: int) -> list[Any]:
@@ -193,29 +198,20 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if not after:
                 out.append(parse_block(indent + 2))
             elif _is_inline_single_key_dict(after):
-                # ``- key: <flow value or scalar>`` - may be a single-key
-                # dict (when no follow-on fields at the same indent),
-                # OR the first key of a multi-field block mapping list
-                # item:
-                #     - key: value
-                #       other: thing
-                # The follow-on fields live at the indent of the dash
-                # plus 2 (the standard YAML alignment for keys after
-                # ``- ``). We parse them via ``parse_block(...)`` and
-                # merge into the item; absent follow-ons, the result
-                # is the same single-key dict the parser produced before.
                 key, _, val = after.partition(":")
+                clean_key = key.strip()
                 item: dict[str, Any] = {}
                 if val.strip():
-                    item[key.strip()] = _scalar(val.strip())
+                    item[clean_key] = _scalar(val.strip())
                 else:
-                    item[key.strip()] = parse_block(cur_indent + 2)
-                # Consume any additional ``key: value`` lines at
-                # ``cur_indent + 2``. ``parse_block`` returns ``{}`` if
-                # nothing matches, so this is a no-op when the list
-                # item is genuinely single-key.
+                    item[clean_key] = parse_block(cur_indent + 2)
                 extra = parse_block(cur_indent + 2)
                 if isinstance(extra, dict):
+                    for ek in extra:
+                        if ek in item:
+                            raise CartridgeSerializationError(
+                                f"duplicate workspace YAML key {ek!r}{src}"
+                            )
                     item.update(extra)
                 out.append(item)
             else:
@@ -302,6 +298,14 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                     return raw[:i].rstrip()
         return raw
 
+    def _unique_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        for k, v in pairs:
+            if k in obj:
+                raise CartridgeSerializationError(f"duplicate workspace YAML key {k!r}{src}")
+            obj[k] = v
+        return obj
+
     def _scalar(raw: str) -> Any:
         if raw in ("null", "~", ""):
             return None
@@ -320,7 +324,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                 return raw
         if raw.startswith(("[", "{")):
             try:
-                return json.loads(raw)
+                return json.loads(raw, object_pairs_hook=_unique_object_pairs)
             except json.JSONDecodeError:
                 # Strict JSON failed (likely YAML flow style with
                 # unquoted keys/values). Try the tolerant flow parser.
@@ -345,6 +349,8 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         text = raw.strip()
         try:
             value, idx = _parse_flow_value(text, 0)
+        except CartridgeSerializationError:
+            raise
         except (ValueError, IndexError):
             return None, False
         # All input must be consumed (modulo trailing whitespace).
@@ -413,6 +419,8 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                 key = s[start:i].strip()
             if i >= len(s) or s[i] != ":":
                 raise ValueError(f"expected ':' in flow map at offset {i}")
+            if key in out:
+                raise CartridgeSerializationError(f"duplicate workspace YAML key {key!r}{src}")
             i = _skip_ws(s, i + 1)
             value, i = _parse_flow_value(s, i)
             out[key] = value

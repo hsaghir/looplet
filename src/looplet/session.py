@@ -82,11 +82,15 @@ class SessionLog:
         title: str = "SESSION LOG",
         highlights_label: str = "highlights",
     ) -> None:
-        self.entries: list[LogEntry] = []
+        from looplet._storage import TrackedList
+
+        self.entries: list[LogEntry] = TrackedList()
         self.current_theory: str = ""
         self._entity_formatter = entity_formatter
         self._title = title
         self._highlights_label = highlights_label
+        self._serialized_entries: TrackedList = TrackedList()
+        self._serialized_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
 
     def record(
         self,
@@ -305,21 +309,46 @@ class SessionLog:
             new_entries.append(summary_entry)
         new_entries.extend(preserved)
         new_entries.extend(recent_entries)
-        self.entries = new_entries
+        from looplet._storage import TrackedList
+
+        self.entries = TrackedList(new_entries)
         return True
+
+    @staticmethod
+    def _entry_dict(e: LogEntry) -> dict[str, Any]:
+        return {
+            "step": e.step,
+            "theory": e.theory,
+            "tool": e.tool,
+            "reasoning": e.reasoning,
+            "entities_seen": list(e.entities_seen),
+            "findings": list(e.findings),
+            "highlights": list(e.highlights),
+            "recall_key": e.recall_key,
+        }
 
     def to_list(self) -> list[dict[str, Any]]:
         """Serialize entries for state snapshot."""
-        return [
-            {
-                "step": e.step,
-                "theory": e.theory,
-                "tool": e.tool,
-                "reasoning": e.reasoning,
-                "entities_seen": e.entities_seen,
-                "findings": e.findings,
-                "highlights": e.highlights,
-                "recall_key": e.recall_key,
-            }
-            for e in self.entries
-        ]
+        from looplet._storage import TrackedList
+
+        if not isinstance(self.entries, TrackedList):
+            self.entries = TrackedList(self.entries)
+        tracked: TrackedList = self.entries
+        ident, gen, rev, length = self._serialized_cursor
+        if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
+            self._serialized_entries = TrackedList(self._entry_dict(e) for e in tracked)
+        else:
+            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
+                for pos, entry in changed:
+                    encoded = self._entry_dict(entry)
+                    if pos < len(self._serialized_entries):
+                        self._serialized_entries[pos] = encoded
+                    else:
+                        self._serialized_entries.append(encoded)
+        self._serialized_cursor = (
+            tracked._record_identity,
+            tracked._generation,
+            tracked._revision,
+            len(tracked),
+        )
+        return self._serialized_entries.snapshot_list()

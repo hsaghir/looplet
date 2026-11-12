@@ -1659,6 +1659,17 @@ def _select_eval_cases(
     return selected
 
 
+def _rebind_eval_bundle(
+    overview: "CartridgeEvals", case_runtime: dict[str, Any]
+) -> "CartridgeEvals":
+    raw_collectors = [getattr(fn, "func", fn) for fn in overview.collectors]
+    return CartridgeEvals(
+        cases=overview.cases,
+        graders=overview.graders,
+        collectors=_bind_collectors(raw_collectors, case_runtime),
+    )
+
+
 def run_cartridge_evals(
     cartridge_dir: str | Path,
     *,
@@ -1673,6 +1684,7 @@ def run_cartridge_evals(
     capture: bool = True,
     redact: Callable[[str], str] | None = None,
     redact_upstream: bool = True,
+    max_concurrency: int = 1,
 ) -> list["EvalRunRecord"]:
     """Run a cartridge against its shipped eval cases, end to end.
 
@@ -1728,9 +1740,7 @@ def run_cartridge_evals(
     overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
     return _run_case_evals(
         overview,
-        load_definitions=lambda case_runtime: load_cartridge_evals(
-            cdir, runtime=case_runtime, strict=True
-        ),
+        load_definitions=lambda case_runtime: _rebind_eval_bundle(overview, case_runtime),
         build_preset=lambda case_runtime: cartridge_to_preset(cdir, runtime=case_runtime),
         llm=llm,
         output_dir=output_dir,
@@ -1743,6 +1753,7 @@ def run_cartridge_evals(
         capture=capture,
         redact=redact,
         redact_upstream=redact_upstream,
+        max_concurrency=max_concurrency,
     )
 
 
@@ -1762,11 +1773,20 @@ def _run_case_evals(
     capture: bool = True,
     redact: Callable[[str], str] | None = None,
     redact_upstream: bool = True,
+    max_concurrency: int = 1,
 ) -> list["EvalRunRecord"]:
+    if type(max_concurrency) is not int or max_concurrency < 1:
+        raise ValueError("max_concurrency must be an integer >= 1")
     base_runtime = dict(runtime or {})
     selected = _select_eval_cases(overview.cases, cases, case_marks=case_marks)
     if not overview.graders:
         raise ValueError("No graders selected")
+    for case in selected:
+        if "expected" in case.task:
+            raise ValueError(
+                f"Eval case {case.id!r} puts reserved grader data in task['expected']; "
+                "use the top-level case expected field"
+            )
 
     run_dirs: dict[str, Path] = {}
     if output_dir is not None:
@@ -1784,15 +1804,9 @@ def _run_case_evals(
                 )
             run_dirs[case.id] = run_dir
 
-    records: list[EvalRunRecord] = []
-    for case in selected:
-        if "expected" in case.task:
-            raise ValueError(
-                f"Eval case {case.id!r} puts reserved grader data in task['expected']; "
-                "use the top-level case expected field"
-            )
+    def _execute_one_case(case: EvalCase) -> EvalRunRecord:
         if output_dir is not None:
-            run_dir = run_dirs[case.id]
+            run_dir: Path | None = run_dirs[case.id]
             run_dir.mkdir(parents=True, mode=0o700)
             begin_artifact_write(run_dir)
             sandbox = run_dir / "workspace"
@@ -1808,8 +1822,6 @@ def _run_case_evals(
         except BaseException:
             if run_dir is None:
                 shutil.rmtree(sandbox, ignore_errors=True)
-                for previous in records:
-                    previous.cleanup()
             raise
         if max_steps is not None:
             preset.config.max_steps = max_steps
@@ -1894,27 +1906,49 @@ def _run_case_evals(
                 preset.close()
                 if failed and run_dir is None:
                     shutil.rmtree(sandbox, ignore_errors=True)
-                    for previous in records:
-                        previous.cleanup()
 
-        if run_dir is not None:
-            directory = run_dir
-        else:
-            directory = sandbox
-
-        # ``on_loop_end`` always sets the context once the loop runs; fall
-        # back to an empty context defensively so the record type stays clean.
+        directory = run_dir if run_dir is not None else sandbox
         ctx = hook.context if hook.context is not None else EvalContext(steps=[])
-        records.append(
-            EvalRunRecord(
-                case=case,
-                context=ctx,
-                results=list(hook.results),
-                directory=directory,
-                cleanup_directory=None if run_dir is not None else sandbox,
-            )
+        return EvalRunRecord(
+            case=case,
+            context=ctx,
+            results=list(hook.results),
+            directory=directory,
+            cleanup_directory=None if run_dir is not None else sandbox,
         )
-    return records
+
+    if max_concurrency == 1 or len(selected) <= 1:
+        records: list[EvalRunRecord] = []
+        try:
+            for case in selected:
+                records.append(_execute_one_case(case))
+        except BaseException:
+            if output_dir is None:
+                for previous in records:
+                    previous.cleanup()
+            raise
+        return records
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = min(max_concurrency, len(selected))
+    ordered: list[EvalRunRecord | None] = [None] * len(selected)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [(idx, pool.submit(_execute_one_case, case)) for idx, case in enumerate(selected)]
+        first_error: BaseException | None = None
+        for idx, fut in futures:
+            try:
+                ordered[idx] = fut.result()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            if output_dir is None:
+                for item in ordered:
+                    if item is not None:
+                        item.cleanup()
+            raise first_error
+    return [item for item in ordered if item is not None]
 
 
 def pytest_param_cases(cases: list["EvalCase"]) -> list[Any]:

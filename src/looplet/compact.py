@@ -904,6 +904,8 @@ class PruneToolResults:
             msgs[idx].content = self.cleared_marker
             if msgs[idx].tool_result is not None:
                 msgs[idx].tool_result = replace(msgs[idx].tool_result, data=self.cleared_marker)
+            if hasattr(msgs, "mark_modified"):
+                msgs.mark_modified(idx)
             cleared += 1
 
         return CompactOutcome(

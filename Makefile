@@ -42,9 +42,11 @@ check: install style lint format-check typecheck test
 ci: check
 
 install-hooks:
-	@install -m 0755 scripts/pre-commit.sh .git/hooks/pre-commit
-	@install -m 0755 scripts/pre-push.sh .git/hooks/pre-push
-	@install -m 0755 .githooks/commit-msg .git/hooks/commit-msg
+	@hooks_dir="$$(git rev-parse --git-path hooks)" && \
+	mkdir -p "$$hooks_dir" && \
+	install -m 0755 scripts/pre-commit.sh "$$hooks_dir/pre-commit" && \
+	install -m 0755 scripts/pre-push.sh "$$hooks_dir/pre-push" && \
+	install -m 0755 .githooks/commit-msg "$$hooks_dir/commit-msg"
 	@echo "✓ pre-commit hook installed - \`git commit\` auto-formats + lints staged files."
 	@echo "✓ commit-msg hook installed - enforces conventional commit format."
 	@echo "✓ pre-push hook installed - \`git push\` runs full \`make check\` first."

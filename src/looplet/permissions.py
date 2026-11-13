@@ -606,11 +606,14 @@ class PermissionHook:
             return None
         if payload.event == LifecycleEvent.STOP:
             state = getattr(payload, "state", None)
-            if state is not None:
-                with self._lock:
+            with self._lock:
+                if state is not None:
                     entry = self._tools_by_state_id.get(id(state))
                     if entry is not None and entry[0] is state:
                         self._tools_by_state_id.pop(id(state), None)
+                else:
+                    self._approved_by_key.clear()
+            self._approved = None
             return None
         if payload.event != LifecycleEvent.PRE_TOOL_USE:
             return None

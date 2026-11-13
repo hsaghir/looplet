@@ -337,6 +337,19 @@ class WorkspaceWatcher:
             h.update(b"\n")
         return h.hexdigest()
 
+    def _base_only_digest(self) -> str:
+        """Return the digest of ``root`` with all configured overlay slots treated as absent."""
+        h = hashlib.sha256()
+        h.update(b"base:")
+        h.update(_content_digest_layer(Path(self.root), include_unwatched=False).encode("ascii"))
+        h.update(b"\n")
+        absent_layer = hashlib.sha256(b"ABSENT\n").hexdigest().encode("ascii")
+        for index in range(len(self.overlays)):
+            h.update(f"overlay[{index}]:".encode("ascii"))
+            h.update(absent_layer)
+            h.update(b"\n")
+        return h.hexdigest()
+
     def _active_overlay_paths(self) -> list[Path]:
         active: list[Path] = []
         for item in self.overlays:
@@ -532,10 +545,20 @@ class ReloadHook:
         fallback_base: Any = None
         try:
             initial = self.watcher.preset()
-            active_fp = dict(self.watcher._fp)
-            active_digest = self.watcher.digest()
+            if loop_ctx.tools is initial.tools:
+                active_fp = dict(self.watcher._fp)
+                active_digest = self.watcher.digest()
+            else:
+                active_fp = (
+                    {f"base:{k}": v for k, v in fingerprint_workspace(self.watcher.root).items()}
+                    if self.watcher.overlays
+                    else fingerprint_workspace(self.watcher.root)
+                )
+                active_digest = self.watcher._base_only_digest()
         except Exception:
-            # When resuming from a base preset while an unapplied overlay on disk
+            if not self.watcher.overlays:
+                raise
+            # When binding against a base preset while an unapplied overlay on disk
             # holds a broken edit, defer overlay rejection to pre_prompt rather
             # than crashing hook binding before checkpoint validation/recovery.
             fallback_base = cartridge_to_preset(
@@ -544,10 +567,14 @@ class ReloadHook:
                 runtime=self.watcher.runtime,
             )
             initial = fallback_base
-            active_fp = {}
-            active_digest = WorkspaceWatcher(self.watcher.root).digest()
+            active_fp = {
+                f"base:{k}": v for k, v in fingerprint_workspace(self.watcher.root).items()
+            }
+            active_digest = self.watcher._base_only_digest()
         try:
-            self._initial_run_preset = initial if fallback_base is None else None
+            self._initial_run_preset = (
+                initial if fallback_base is None and loop_ctx.tools is initial.tools else None
+            )
             self._protected_tools = set(self.watcher.protected_tools) | set(
                 self._explicit_protected_tools
             )
@@ -576,6 +603,17 @@ class ReloadHook:
         finally:
             if fallback_base is not None:
                 fallback_base.close()
+
+    def _live_protected_tools(self) -> set[str]:
+        live_protected = set(self._protected_tools)
+        if self._loop_ctx is not None:
+            for tool_name, tool_spec in self._loop_ctx.tools.tool_specs.items():
+                if tool_spec.origin == "overlay":
+                    continue
+                if not self.protect_initial_tools and tool_spec.origin == "cartridge":
+                    continue
+                live_protected.add(tool_name)
+        return live_protected
 
     @staticmethod
     def _record_on_state(state: Any, observation: ReloadObservation) -> None:
@@ -774,13 +812,7 @@ class ReloadHook:
             self._last_attempted_fingerprint = dict(current_fp)
             return None
 
-        live_protected = set(self._protected_tools)
-        for tool_name, tool_spec in self._loop_ctx.tools.tool_specs.items():
-            if tool_spec.origin == "overlay":
-                continue
-            if not self.protect_initial_tools and tool_spec.origin == "cartridge":
-                continue
-            live_protected.add(tool_name)
+        live_protected = self._live_protected_tools()
 
         candidate: Any = None
         try:
@@ -894,22 +926,29 @@ class ReloadHook:
         self.last_error = None
         if state["active_digest"] == state["disk_digest"]:
             current_fp = self.watcher.fingerprint()
-            candidate = self.watcher._load_preset(
-                strict=True,
-                extra_protected_tools=self._protected_tools,
+            already_applied = (
+                self._active_digest == state["active_digest"]
+                and self.watcher._preset is not None
+                and self._loop_ctx is not None
+                and self._loop_ctx.tools is self.watcher._preset.tools
             )
-            try:
-                if self._loop_ctx is not None:
-                    self._apply_candidate(candidate)
-                self.watcher._commit_preset(
-                    candidate,
-                    current_fp,
-                    close_previous=self.watcher._preset is not self._initial_run_preset,
+            if not already_applied:
+                candidate = self.watcher._load_preset(
+                    strict=True,
+                    extra_protected_tools=self._live_protected_tools(),
                 )
-                candidate = None
-            finally:
-                if candidate is not None:
-                    candidate.close()
+                try:
+                    if self._loop_ctx is not None:
+                        self._apply_candidate(candidate)
+                    self.watcher._commit_preset(
+                        candidate,
+                        current_fp,
+                        close_previous=self.watcher._preset is not self._initial_run_preset,
+                    )
+                    candidate = None
+                finally:
+                    if candidate is not None:
+                        candidate.close()
             self._active_fingerprint = current_fp
             self._last_attempted_fingerprint = dict(current_fp)
             self._active_digest = state["active_digest"]

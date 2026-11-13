@@ -1361,10 +1361,10 @@ def test_reload_hook_full_mode_atomic_rollback_and_checkpoint_revert_recovery(tm
                 {"tools": p_dev.tools, "config": p_dev.config, "resources": p_dev.resources},
             )()
         )
-        # Force active digest to base so pre_prompt applies the overlay override of echo_base
-        rh_dev._active_digest = "base_init"
-        rh_dev._active_fingerprint = {}
-        rh_dev._last_attempted_digest = "base_init"
+        # Binding against a separate base preset naturally starts at _base_only_digest()
+        assert (
+            rh_dev._active_digest == WorkspaceWatcher(base, overlays=[tmp_path / "absent"]).digest()
+        )
         rh_dev.pre_prompt(p_dev.state, None, None, 1)
         assert rh_dev.observations[-1].status == "reloaded"
         assert "echo_base" in rh_dev.observations[-1].updated_tools
@@ -1497,3 +1497,29 @@ def test_reload_hook_full_mode_atomic_rollback_and_checkpoint_revert_recovery(tm
 
     assert res_steps[1].tool_result.data == {"v": 24}
     assert RunResult.from_state(st2).status == "completed"
+
+    # 3. Resuming with watcher.preset() when active_digest == disk_digest skips redundant _load_preset
+    clean_state = {
+        "schema": ReloadHook._checkpoint_schema,
+        "active_digest": WorkspaceWatcher(base, overlays=[ov2]).digest(),
+        "disk_digest": WorkspaceWatcher(base, overlays=[ov2]).digest(),
+        "last_attempted_digest": WorkspaceWatcher(base, overlays=[ov2]).digest(),
+        "reload_count": 1,
+    }
+    with WorkspaceWatcher(base, overlays=[ov2], allowed_overlay_slots={"tools"}, strict=True) as w3:
+        p3 = w3.preset()
+        rh3 = ReloadHook(w3)
+        rh3.bind(
+            type("LCtx", (), {"tools": p3.tools, "config": p3.config, "resources": p3.resources})()
+        )
+        load_calls = 0
+        orig_load = w3._load_preset
+
+        def tracked_load(**kw: Any) -> Any:
+            nonlocal load_calls
+            load_calls += 1
+            return orig_load(**kw)
+
+        w3._load_preset = tracked_load  # type: ignore[method-assign]
+        rh3.restore_checkpoint_state(clean_state)
+        assert load_calls == 0

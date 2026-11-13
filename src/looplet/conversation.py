@@ -109,61 +109,54 @@ class Message:
         return [b for b in self.blocks if b.kind == "text"]
 
 
-def _shallow_dict_stamp(mapping: Any) -> Any:
-    if not isinstance(mapping, dict):
-        return id(mapping)
-    if len(mapping) > 64:
-        return (id(mapping), len(mapping))
-    return tuple(
-        (
-            k,
-            v
-            if isinstance(v, (str, int, float, bool, type(None)))
-            else (id(v), len(v) if isinstance(v, (dict, list, tuple, set)) else type(v)),
+def _value_stamp(value: Any, depth: int = 0) -> Any:
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if depth >= 4:
+        return (
+            id(value),
+            len(value) if isinstance(value, (dict, list, tuple, set)) else type(value),
         )
-        for k, v in mapping.items()
-    )
+    if isinstance(value, dict):
+        if len(value) > 64:
+            return (id(value), len(value))
+        return tuple((k, _value_stamp(v, depth + 1)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        if len(value) > 64:
+            return (id(value), len(value))
+        return tuple(_value_stamp(v, depth + 1) for v in value)
+    return id(value)
 
 
 def _message_stamp(msg: Message) -> tuple[Any, ...]:
     content_sig: Any = (
         msg.content
         if isinstance(msg.content, str)
-        else tuple((b.kind, _shallow_dict_stamp(b.data)) for b in msg.content)
+        else tuple((b.kind, _value_stamp(b.data)) for b in msg.content)
     )
     tc = msg.tool_call
     tc_sig = (
         (
             tc.tool,
-            _shallow_dict_stamp(tc.args),
+            _value_stamp(tc.args),
             tc.reasoning,
             tc.call_id,
-            _shallow_dict_stamp(tc.metadata),
+            _value_stamp(tc.metadata),
         )
         if tc is not None
         else None
     )
     tr = msg.tool_result
-    tr_data_sig = (
-        None
-        if tr is None
-        else tr.data
-        if isinstance(tr.data, (str, int, float, bool, type(None)))
-        else _shallow_dict_stamp(tr.data)
-        if isinstance(tr.data, dict)
-        else (
-            id(tr.data),
-            len(tr.data) if isinstance(tr.data, (list, tuple, set)) else type(tr.data),
-        )
-    )
     tr_sig = (
         (
             tr.tool,
-            tr_data_sig,
+            _value_stamp(tr.data),
             tr.error,
+            tr.error_detail.kind.value if tr.error_detail else None,
+            tr.error_detail.retriable if tr.error_detail else None,
             tr.result_key,
             tuple(tr.warnings),
-            _shallow_dict_stamp(tr.metadata),
+            _value_stamp(tr.metadata),
             tr.call_id,
         )
         if tr is not None
@@ -174,7 +167,7 @@ def _message_stamp(msg: Message) -> tuple[Any, ...]:
         content_sig,
         tc_sig,
         tr_sig,
-        _shallow_dict_stamp(msg.metadata),
+        _value_stamp(msg.metadata),
         msg.timestamp,
     )
 
@@ -197,6 +190,8 @@ class Conversation:
         self._stamp_identity: str = ""
         self._stamp_generation: int = -1
         self._serialized_messages: TrackedList = TrackedList()
+        self._serialized_sizes: list[int] = []
+        self._serialized_total_chars: int = 28
         self._serialized_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
         self._cont_lines: list[str | None] = []
         self._cont_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
@@ -574,16 +569,24 @@ class Conversation:
         tracked = self._sync_tracked()
         ident, gen, rev, length = self._serialized_cursor
         if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
-            self._serialized_messages = TrackedList(self._json_safe_message(m) for m in tracked)
+            encoded_items = [self._json_safe_message(m) for m in tracked]
+            self._serialized_messages = TrackedList(encoded_items)
+            self._serialized_sizes = [len(json.dumps(item)) + 2 for item in encoded_items]
+            self._serialized_total_chars = 28 + sum(self._serialized_sizes)
         else:
             with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
                 for pos, msg in changed:
                     encoded = self._json_safe_message(msg)
+                    item_size = len(json.dumps(encoded)) + 2
                     if pos < len(self._serialized_messages):
                         if encoded != self._serialized_messages[pos]:
                             self._serialized_messages[pos] = encoded
+                            self._serialized_total_chars += item_size - self._serialized_sizes[pos]
+                            self._serialized_sizes[pos] = item_size
                     else:
                         self._serialized_messages.append(encoded)
+                        self._serialized_sizes.append(item_size)
+                        self._serialized_total_chars += item_size
         self._serialized_cursor = (
             tracked._record_identity,
             tracked._generation,
@@ -594,6 +597,11 @@ class Conversation:
             "version": 1,
             "messages": self._serialized_messages.snapshot_list(),
         }
+
+    def serialized_char_estimate(self) -> int:
+        """Return incremental JSON character count without re-dumping unchanged messages."""
+        self.serialize()
+        return self._serialized_total_chars
 
     @classmethod
     def deserialize(cls, data: dict[str, Any]) -> "Conversation":

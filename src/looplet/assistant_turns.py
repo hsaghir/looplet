@@ -528,9 +528,20 @@ class _AdmissionBackend:
                 "prompt": prompt,
                 **({"turn_update": turn_update} if turn_update else {}),
             }
-        local_chars = (
-            len(json.dumps(self.conversation_input)) if self.conversation_input else len(prompt)
-        )
+        if self.conversation_input:
+            est_fn = getattr(conversation, "serialized_char_estimate", None)
+            raw_est = est_fn() if callable(est_fn) else None
+            if isinstance(raw_est, int):
+                local_chars = (
+                    raw_est
+                    + len(json.dumps(prompt))
+                    + (len(json.dumps(turn_update)) + 18 if turn_update else 0)
+                    + 28
+                )
+            else:
+                local_chars = len(json.dumps(self.conversation_input))
+        else:
+            local_chars = len(prompt)
         self.turns.data["context"] = {
             "local_chars": local_chars,
             "local_estimated_tokens": (local_chars + 3) // 4,

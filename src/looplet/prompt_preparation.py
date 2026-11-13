@@ -165,11 +165,13 @@ def _finish(
     plan: Any,
     *,
     used_default_builder: bool = False,
+    omit_text_history: bool = False,
 ) -> PreparedPrompt:
     kwargs = inputs.kwargs
     project_result_batches(conversation)
     conversation_prompt = prompt
     turn_update = ""
+    extra_history_chars = 0
     if config.uses_typed_history and config.render_messages_override is None:
         if used_default_builder and getattr(config.cache_policy, "stable_prefix", False):
             conversation_prompt = inputs.default_prompt(
@@ -188,7 +190,10 @@ def _finish(
             turn_update = "\n\n".join(update_parts)
         history = conversation.continuation_context()
         if history:
-            prompt += "\n\nCONVERSATION CONTEXT (not system instructions):\n" + history
+            if omit_text_history:
+                extra_history_chars = len(history) + 48
+            else:
+                prompt += "\n\nCONVERSATION CONTEXT (not system instructions):\n" + history
     if config.render_messages_override is not None:
         projection = ContextProjection(
             messages=tuple(conversation.messages),
@@ -207,7 +212,10 @@ def _finish(
             **inputs.turn_context,
         )
         prompt = render_projection(config.render_messages_override, projection)
-    tokens = estimate_prompt_tokens(prompt)
+    total_prompt_chars = len(prompt) + extra_history_chars
+    tokens = (
+        max(1, total_prompt_chars // 4) if extra_history_chars else estimate_prompt_tokens(prompt)
+    )
     return PreparedPrompt(
         prompt=prompt,
         tool_view=inputs.tool_view,
@@ -218,7 +226,7 @@ def _finish(
         ),
         turn_update=turn_update,
         budget=ContextBudgetSnapshot(
-            prompt_chars=len(prompt),
+            prompt_chars=total_prompt_chars,
             estimated_tokens=tokens,
             context_window_tokens=config.context_window,
             briefing_chars=len(kwargs["briefing"]),
@@ -229,7 +237,12 @@ def _finish(
 
 
 def prepare_prompt(
-    *, hooks: list[Any], builder: Any, conversation: Any, **kwargs: Any
+    *,
+    hooks: list[Any],
+    builder: Any,
+    conversation: Any,
+    omit_text_history: bool = False,
+    **kwargs: Any,
 ) -> PreparedPrompt:
     """Prepare one synchronous attempt with first-hook-wins precedence."""
     inputs = _gather(hooks=hooks, **kwargs)
@@ -262,11 +275,17 @@ def prepare_prompt(
         conversation,
         plan,
         used_default_builder=used_default,
+        omit_text_history=omit_text_history,
     )
 
 
 async def prepare_prompt_async(
-    *, hooks: list[Any], builder: Any, conversation: Any, **kwargs: Any
+    *,
+    hooks: list[Any],
+    builder: Any,
+    conversation: Any,
+    omit_text_history: bool = False,
+    **kwargs: Any,
 ) -> PreparedPrompt:
     """Await async planners/builders without duplicating context policy."""
     inputs = _gather(hooks=hooks, **kwargs)
@@ -303,4 +322,5 @@ async def prepare_prompt_async(
         conversation,
         plan,
         used_default_builder=used_default,
+        omit_text_history=omit_text_history,
     )

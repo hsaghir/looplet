@@ -3170,6 +3170,7 @@ def _composable_loop_impl(
     from looplet.turn_engine import (
         bind_state_attributes,
         build_pending_dispatch_kwargs,
+        commit_step_to_history,
         finalize_checkpoint_restore,
         resolve_domain_callables,
         resolve_turn_llm,
@@ -3454,11 +3455,27 @@ def _composable_loop_impl(
             briefing_parts.append("\n".join(post_dispatch_parts))
             post_dispatch_parts = []
 
+        # Resolve effective LLM once per step - used by both the main call and
+        # parse-recovery below, regardless of whether pre-flight fires.
+        effective_llm = _get_llm()
+        _typed_turns = config.uses_typed_history and config.render_messages_override is None
+        _omit_text_history = (
+            _typed_turns
+            and config.use_native_tools
+            and getattr(effective_llm, "conversation_mode", "text") in {"messages", "stateful"}
+            and callable(getattr(effective_llm, "set_conversation_input", None))
+            and callable(getattr(effective_llm, "generate_with_tools", None))
+        )
+
         # ── Build prompt ────────────────────────────────────
-        context_history = state.context_summary()
+        context_history = "" if _typed_turns else state.context_summary()
         if quality_gate_message:
             if _turns is None or not _turns.enabled:
-                context_history += "\n" + quality_gate_message
+                context_history = (
+                    (context_history + "\n" + quality_gate_message)
+                    if context_history
+                    else quality_gate_message
+                )
             quality_gate_message = ""
 
         _prepared = prepare_prompt(
@@ -3470,10 +3487,11 @@ def _composable_loop_impl(
             step_num=step_num,
             briefing="\n".join(briefing_parts),
             context_sources=_context_sources,
-            context_history=context_history,
+            context_history=None if (_typed_turns and not context_history) else context_history,
             hooks=hooks,
             builder=build_prompt_fn,
             conversation=_conv,
+            omit_text_history=_omit_text_history,
         )
         prompt = _prepared.prompt
         _tool_view = _prepared.tool_view
@@ -3490,14 +3508,7 @@ def _composable_loop_impl(
         if stream is not None and _StepStartEvent is not None and _turns is None:
             stream.emit(_StepStartEvent(step_num=step_num))
 
-        # Resolve effective LLM once per step - used by both the main call and
-        # parse-recovery below, regardless of whether pre-flight fires.
-        effective_llm = _get_llm()
-        if (
-            _turns is not None
-            and config.uses_typed_history
-            and config.render_messages_override is None
-        ):
+        if _turns is not None and _typed_turns:
             effective_llm.prepare_conversation(
                 _conv,
                 _prepared.conversation_prompt,
@@ -3530,6 +3541,26 @@ def _composable_loop_impl(
             break
 
         turn_usage_calls = 0
+        _discarded_stream_receipts: list[dict[str, Any]] = []
+        _stream_executor: Any = None
+        _stream_consumed = False
+
+        def _drain_unused_stream_executor() -> list[dict[str, Any]]:
+            nonlocal _stream_consumed
+            if _stream_executor is None or _stream_consumed:
+                return []
+            _stream_consumed = True
+            _stream_executor.discard()
+            receipts = [
+                r.to_dict()
+                for r in _stream_executor.results()
+                if r.metadata.get("execution_status") != "not_executed"
+            ]
+            state_meta = getattr(state, "metadata", None)
+            if receipts and isinstance(state_meta, dict):
+                state_meta.setdefault("speculative_tool_receipts", []).extend(receipts)
+            return receipts
+
         if preflight_too_long:
             _stream_executor = None
             logger.warning(
@@ -3618,6 +3649,8 @@ def _composable_loop_impl(
 
             _stream_executor: Any = None
             _stream_submitted_count = 0
+            _stream_halted = False
+            _stream_submitted_ids: set[str] = set()
             if config.streaming_tool_execution and _ckpt_store is None and not hooks:
                 from looplet.streaming import StreamingToolExecutor  # noqa: PLC0415
 
@@ -3626,13 +3659,11 @@ def _composable_loop_impl(
                 )
 
             def _on_stream_tool_call(block: dict[str, Any]) -> None:
-                nonlocal _stream_submitted_count
-                if _stream_executor is None:
-                    return
-                index = block.get("index")
-                if type(index) is not int or index != _stream_submitted_count:
+                nonlocal _stream_submitted_count, _stream_halted
+                if _stream_executor is None or _stream_halted:
                     return
                 if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
+                    _stream_halted = True
                     return
                 name = block.get("name", "")
                 call_id = block.get("id", "")
@@ -3642,12 +3673,16 @@ def _composable_loop_impl(
                     or not name
                     or not isinstance(call_id, str)
                     or not call_id
+                    or call_id in _stream_submitted_ids
                     or not isinstance(raw_input, dict)
+                    or "_raw_arguments" in raw_input
                     or name in config.resolve_terminal_outcomes()
                 ):
+                    _stream_halted = True
                     return
                 spec = tools._tools.get(name)
                 if spec is None or not spec.is_concurrent_safe(raw_input):
+                    _stream_halted = True
                     return
                 tc = ToolCall(tool=name, args=dict(raw_input), call_id=call_id)
                 t_ctx = _build_tool_ctx(
@@ -3660,6 +3695,7 @@ def _composable_loop_impl(
                     session_log=session_log,
                     llm=effective_llm,
                 )
+                _stream_submitted_ids.add(call_id)
                 _stream_submitted_count += 1
                 _stream_executor.submit(tc, ctx=t_ctx)
 
@@ -3685,14 +3721,11 @@ def _composable_loop_impl(
                     on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
                 )
             except BaseException:
-                if _stream_executor is not None:
-                    _stream_executor.discard()
-                    _stream_executor.results()
+                _drain_unused_stream_executor()
                 raise
             else:
                 if _stream_executor is not None and not llm_result.ok:
-                    _stream_executor.discard()
-                    _stream_executor.results()
+                    _discarded_stream_receipts = _drain_unused_stream_executor()
             loop_ctx.native_tool_stats.record(llm_result)
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations
@@ -3701,6 +3734,7 @@ def _composable_loop_impl(
             usage_calls += turn_usage_calls
             _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
             if _deadline_expired(loop_ctx) and _turns is None:
+                _drain_unused_stream_executor()
                 stop_reason = "deadline_exceeded"
                 done = True
                 break
@@ -3879,6 +3913,8 @@ def _composable_loop_impl(
             llm_failed = True
             logger.error("LLM call failed at step %d: %s", step_num, llm_result.error)
             step = _failed_model_step(step_num, llm_result)
+            if _discarded_stream_receipts:
+                step.metadata["speculative_tool_receipts"] = _discarded_stream_receipts
             state.steps.append(step)
             stop_reason = llm_result.failure_reason
             _history.record_step(
@@ -4061,6 +4097,7 @@ def _composable_loop_impl(
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
 
             if not tool_calls:
+                _drain_unused_stream_executor()
                 logger.warning("Unparseable LLM response at step %d after recovery", step_num)
                 tool_call = ToolCall(
                     tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200]
@@ -4115,6 +4152,7 @@ def _composable_loop_impl(
             tools, tool_calls, config, state, turn_id=f"turn-{llm_calls}"
         )
         if turn_plan is None:
+            _drain_unused_stream_executor()
             stop_reason = "budget_exhausted"
             done = True
             break
@@ -4123,14 +4161,26 @@ def _composable_loop_impl(
 
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
+        if not regular_calls:
+            _drain_unused_stream_executor()
         if regular_calls:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
 
             def _dispatch_regular_calls():
+                nonlocal _stream_consumed
                 groups = (
                     [regular_calls]
                     if config.concurrent_dispatch
                     else [[tool_call] for tool_call in regular_calls]
+                )
+                _pre_streamed_calls = (
+                    _stream_executor.submitted_calls() if _stream_executor is not None else {}
+                )
+                _stream_consumed = True
+                _pre_streamed = (
+                    {r.call_id: r for r in _stream_executor.results() if r.call_id is not None}
+                    if _stream_executor is not None
+                    else {}
                 )
                 offset = 0
                 for group in groups:
@@ -4160,43 +4210,65 @@ def _composable_loop_impl(
                                     policy_checkpoint_metadata=_policy_checkpoint_metadata,
                                 ),
                             )
-                        tool_contexts = [
-                            _build_tool_ctx(
-                                config,
-                                tools=tools,
-                                hooks=hooks,
-                                tool_call=call,
-                                step_num=group_step + index,
-                                state=state,
-                                session_log=session_log,
-                                llm=effective_llm,
+                        reused_by_pos: dict[int, ToolResult] = {}
+                        remaining_calls: list[ToolCall] = []
+                        remaining_contexts: list[Any] = []
+                        for pos, (index, call) in enumerate(dispatch_items):
+                            sub_call = (
+                                _pre_streamed_calls.get(call.call_id)
+                                if call.call_id is not None
+                                else None
                             )
-                            for index, call in dispatch_items
-                        ]
-                        _pre_streamed = (
-                            {
-                                r.call_id: r
-                                for r in _stream_executor.results()
-                                if r.call_id is not None
-                            }
-                            if _stream_executor is not None
-                            else {}
-                        )
-                        if _pre_streamed and all(
-                            c.call_id in _pre_streamed for c in calls_to_dispatch
-                        ):
-                            results = [_pre_streamed[c.call_id] for c in calls_to_dispatch]
+                            if (
+                                call.call_id is not None
+                                and call.call_id in _pre_streamed
+                                and sub_call is not None
+                                and sub_call.tool == call.tool
+                                and sub_call.args == call.args
+                            ):
+                                reused_by_pos[pos] = _pre_streamed.pop(call.call_id)
+                            else:
+                                remaining_calls.append(call)
+                                remaining_contexts.append(
+                                    _build_tool_ctx(
+                                        config,
+                                        tools=tools,
+                                        hooks=hooks,
+                                        tool_call=call,
+                                        step_num=group_step + index,
+                                        state=state,
+                                        session_log=session_log,
+                                        llm=effective_llm,
+                                    )
+                                )
+                        if not remaining_calls:
+                            results = [reused_by_pos[p] for p in range(len(calls_to_dispatch))]
                         elif config.concurrent_dispatch:
                             if type(tools).dispatch_batch is BaseToolRegistry.dispatch_batch:
-                                results = tools.dispatch_batch(
-                                    calls_to_dispatch,
-                                    ctx=tool_contexts,
+                                fresh = tools.dispatch_batch(
+                                    remaining_calls,
+                                    ctx=remaining_contexts,
                                     max_workers=config.max_parallel_calls,
                                 )
                             else:
-                                results = tools.dispatch_batch(calls_to_dispatch, ctx=tool_contexts)
+                                fresh = tools.dispatch_batch(
+                                    remaining_calls, ctx=remaining_contexts
+                                )
+                            fresh_iter = iter(fresh)
+                            results = [
+                                reused_by_pos[p] if p in reused_by_pos else next(fresh_iter)
+                                for p in range(len(calls_to_dispatch))
+                            ]
                         else:
-                            results = [tools.dispatch(calls_to_dispatch[0], ctx=tool_contexts[0])]
+                            fresh = [
+                                tools.dispatch(call, ctx=t_ctx)
+                                for call, t_ctx in zip(remaining_calls, remaining_contexts)
+                            ]
+                            fresh_iter = iter(fresh)
+                            results = [
+                                reused_by_pos[p] if p in reused_by_pos else next(fresh_iter)
+                                for p in range(len(calls_to_dispatch))
+                            ]
                     else:
                         results = []
                     dispatch_results = iter(results)
@@ -4209,6 +4281,15 @@ def _composable_loop_impl(
                         )
                         yield offset + index, call, result, was_intercepted
                     offset += len(group)
+                state_meta = getattr(state, "metadata", None)
+                if _pre_streamed and isinstance(state_meta, dict):
+                    leftovers = [
+                        {**r.to_dict(), "unmatched_speculative": True}
+                        for r in _pre_streamed.values()
+                        if r.metadata.get("execution_status") != "not_executed"
+                    ]
+                    if leftovers:
+                        state_meta.setdefault("speculative_tool_receipts", []).extend(leftovers)
 
             for tc_idx, tool_call, tool_result, was_intercepted in _dispatch_regular_calls():
                 cur_step = step_num + tc_idx
@@ -4271,8 +4352,15 @@ def _composable_loop_impl(
                     and tool_result.error is None
                 ):
                     step.metadata["budget_free"] = True
-                cur_step_count = state.step_count
-                state.steps.append(step)
+                step_entities = commit_step_to_history(
+                    step=step,
+                    cur_step=cur_step,
+                    state=state,
+                    history=_history,
+                    extract_entities=extract_entities,
+                    extract_step_metadata=extract_step_metadata,
+                    all_step_entities=all_step_entities,
+                )
 
                 # Emit ToolResultEvent + StepEndEvent
                 if stream is not None and _ToolResultEvent is not None:
@@ -4290,27 +4378,10 @@ def _composable_loop_impl(
                         _StepEndEvent(
                             step_num=cur_step,
                             classification="continue",
-                            new_entities_count=0,
+                            new_entities_count=len(step_entities),
                             metadata=event_metadata,
                         )
                     )
-
-                step_findings, step_highlights = extract_step_metadata(state, cur_step_count)
-                step_entities = extract_entities(tool_result.data)
-                all_step_entities.extend(step_entities)
-                recall_key = tool_result.result_key or ""
-                theory = tool_call.args.get("__theory__", "")
-
-                # Unified write: state.steps was already appended above, so the
-                # recorder dedups there and fills in the session log + conversation.
-                _history.record_step(
-                    step,
-                    theory=theory,
-                    entities=step_entities,
-                    findings=step_findings,
-                    highlights=step_highlights,
-                    recall_key=recall_key,
-                )
                 _notify_post_step(hooks, state, session_log, cur_step)
 
                 # Save checkpoint after the session log and conversation include this step.
@@ -4845,7 +4916,10 @@ def _recovery_chain(
         llm_result = retry_result
 
         if retry_result.ok:
+            from looplet.turn_engine import clear_recovery_flags  # noqa: PLC0415
+
             logger.info("Recovery strategy '%s' succeeded at step %d", name, step_num)
+            clear_recovery_flags(recovery_state)
             recovery_state["_last_recovery_llm_calls"] = extra_llm_calls
             return retry_result
 

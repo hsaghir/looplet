@@ -10,276 +10,568 @@ else, import from the relevant submodule::
     from looplet.cache import CacheBreakDetector, compute_breakpoints
 """
 
+from __future__ import annotations
+
+import importlib
+import importlib.util
+from typing import TYPE_CHECKING, Any
+
 __version__ = "0.5.0.dev0"
 
-# ── Public re-exports (one import per submodule, alphabetical) ──────────
+# ── Static type-checking imports (zero runtime import cost) ─────────────
 # ruff: noqa: F401 - __init__.py intentionally re-exports for `from looplet import X`
 
-from looplet.approval import ApprovalHook
-from looplet.assistant_turns import AssistantTurnContext, AssistantTurnDecision
-from looplet.async_loop import async_composable_loop, async_llm_call, run_result_async
-from looplet.backends import (
-    AnthropicBackend,
-    AsyncOpenAIResponsesBackend,
-    OpenAIBackend,
-    OpenAIResponsesBackend,
-)
-from looplet.blueprints import (
-    AgentBlueprint,
-    BlueprintComparison,
-    ClaudeSkillCompatibility,
-    ComponentBlueprint,
-    SourceBlueprint,
-    ToolBlueprint,
-    blueprint_from_bundle,
-    blueprint_from_preset,
-    claude_skill_compatibility,
-    compare_blueprints,
-    export_bundle_to_library_code,
-    package_agent_factory_as_bundle,
-    wrap_claude_skill_as_bundle,
-)
-from looplet.budget import ContextBudget, RequestTokenBudget, ThresholdCompactHook
-from looplet.builtin_tools.tool_search import (
-    DeferredToolViewHook,
-    make_tool_search_tool,
-    search_registered_tools,
-)
-from looplet.bundled import bundled_cartridge_path
-from looplet.bundles import (
-    BundleCard,
-    BundleValidation,
-    QuestionSpec,
-    SkillBundle,
-    SkillRuntime,
-    discover_skill_bundles,
-    load_skill_bundle,
-    run_skill_bundle,
-    validate_preset_contract,
-    validate_skill_bundle,
-)
-from looplet.cache import CachePolicy
-from looplet.capabilities import CapabilityDeniedError, ExecutionPolicy
-from looplet.cartridge import (
-    Cartridge,
-    CartridgeCompatibility,
-    CartridgeLayout,
-    CartridgeSerializationError,
-    cartridge_to_preset,
-    preset_to_cartridge,
-    resource_ref_for,
-)
-from looplet.cartridge.hot_reload import (
-    ReloadHook,
-    ReloadObservation,
-    WorkspaceWatcher,
-)
-from looplet.cartridge.scaffold import scaffold_cartridge
-from looplet.checkpoint import (
-    Checkpoint,
-    CheckpointHook,
-    CheckpointParticipant,
-    CheckpointParticipants,
-    CheckpointStore,
-    FileCheckpointStore,
-    UncertainToolEffect,
-    branch_from_checkpoint,
-    resume_loop_state,
-)
-from looplet.compact import (
-    CompactOutcome,
-    CompactService,
-    DefaultCompactService,
-    PruneToolResults,
-    SummarizeCompact,
-    TruncateCompact,
-    compact_chain,
-    default_compact_service,
-    run_compact,
-)
-from looplet.context_plan import (
-    ContextPlan,
-    ContextSourceDecision,
-    ContextSourceSelector,
-    ScopedContextSource,
-)
-from looplet.context_projection import ContextProjection
-from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
-from looplet.done_steps import (
-    is_rejected_done,
-    iter_done_steps,
-    last_accepted_done,
-    last_rejected_done,
-)
-from looplet.evals import (
-    CARTRIDGE_CASES_SUBPATH,
-    CARTRIDGE_EVALS_SUBPATH,
-    CartridgeEvals,
-    EvalCase,
-    EvalContext,
-    EvalHook,
-    EvalReport,
-    EvalResult,
-    EvalRunRecord,
-    assert_evals_pass,
-    discover_collectors,
-    eval_assess,
-    eval_cli,
-    eval_discover,
-    eval_mark,
-    eval_run,
-    eval_run_batch,
-    load_cartridge_cases,
-    load_cartridge_evals,
-    load_cases,
-    load_eval_run,
-    load_evals,
-    parametrize_cases,
-    promote_to_offline,
-    pytest_param_cases,
-    run_cartridge_evals,
-    save_cartridge_cases,
-    save_case,
-    save_cases,
-    save_eval_run,
-    seed_case_workspace,
-)
-from looplet.events import EventPayload, LifecycleEvent
-from looplet.execution_session import ExecutionSession
-from looplet.harness import ResolvedHarness, resolve_harness
-from looplet.harness_snapshot import serialize_harness
-from looplet.hook_decision import (
-    Allow,
-    Block,
-    Continue,
-    Deny,
-    HookDecision,
-    InjectContext,
-    RewriteThread,
-    Stop,
-)
-from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
-from looplet.loop import (
-    DomainAdapter,
-    LoopConfig,
-    LoopContext,
-    LoopHook,
-    composable_loop,
-    emit_event,
-    is_loop_hook,
-    run_result,
-)
-from looplet.mcp import MCPToolAdapter
-from looplet.memory import (
-    AgentsMdMemorySource,
-    CallableMemorySource,
-    StaticMemorySource,
-)
-from looplet.model_gateway import (
-    ModelGatewayClient,
-    ModelGatewayHandle,
-    ModelGatewayServer,
-)
-from looplet.native_tools import (
-    NativeToolPolicy,
-    NativeToolProbeResult,
-    NativeToolUnsupportedError,
-    probe_native_tool_support,
-    supports_native_tools,
-)
-from looplet.permissions import (
-    PermissionDecision,
-    PermissionEngine,
-    PermissionHook,
-    PermissionRule,
-)
-from looplet.presets import (
-    AgentPreset,
-    ShutdownReport,
-    coding_agent_preset,
-    minimal_preset,
-    research_agent_preset,
-)
-from looplet.prompts import preview_prompt
-from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
-from looplet.resilient import AsyncResilientBackend, ResilientBackend, RetryExhausted
-from looplet.result_store import FileToolResultStore
-from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
-from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
-from looplet.runtime import AgentRuntime, RunHandle
-from looplet.session import SessionLog
-from looplet.skills import (
-    FileSkillStore,
-    Skill,
-    SkillActivationHook,
-    SkillCard,
-    SkillManager,
-    install_skills,
-    make_skill_tools,
-)
-from looplet.stagnation import (
-    StagnationHook,
-    result_fingerprint,
-    result_size_fingerprint,
-    tool_call_fingerprint,
-)
-from looplet.state_service import (
-    StateServiceBase,
-    StateServiceClient,
-    StateServiceHandle,
-)
-from looplet.streaming import (
-    AsyncStreamingToolExecutor,
-    StreamingHook,
-    StreamingToolExecutor,
-)
-from looplet.subagent import (
-    ChildRunLimitExceeded,
-    ChildRunPolicy,
-    SharedModelBudget,
-    async_run_sub_loop,
-    run_sub_loop,
-    run_sub_loop_async,
-    run_sub_loops,
-    run_sub_loops_async,
-    run_sub_loops_parallel,
-)
-from looplet.subprocess_tool import run_subprocess_tool, terminate_process_tree
-from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
-from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
-from looplet.tools import (
-    BaseToolRegistry,
-    StopOnUnknownEffectHook,
-    ToolSpec,
-    excerpt_around_match,
-    register_done_tool,
-    suggest_similar,
-    tool,
-    tools_from,
-)
-from looplet.types import (
-    RPC_PROTOCOL_VERSION,
-    CancelToken,
-    CloseableResource,
-    DefaultState,
-    ErrorKind,
-    InvalidRunTransition,
-    LLMBackend,
-    NativeToolBackend,
-    PolicyDecision,
-    RunEnvelope,
-    RunPhase,
-    RunResult,
-    RunStatus,
-    Step,
-    ToolCall,
-    ToolCancelledError,
-    ToolContext,
-    ToolError,
-    ToolResult,
-    ToolValidationError,
-    validate_run_transition,
-)
+if TYPE_CHECKING:
+    from looplet.approval import ApprovalHook
+    from looplet.assistant_turns import AssistantTurnContext, AssistantTurnDecision
+    from looplet.async_loop import async_composable_loop, async_llm_call, run_result_async
+    from looplet.backends import (
+        AnthropicBackend,
+        AsyncOpenAIResponsesBackend,
+        OpenAIBackend,
+        OpenAIResponsesBackend,
+    )
+    from looplet.blueprints import (
+        AgentBlueprint,
+        BlueprintComparison,
+        ClaudeSkillCompatibility,
+        ComponentBlueprint,
+        SourceBlueprint,
+        ToolBlueprint,
+        blueprint_from_bundle,
+        blueprint_from_preset,
+        claude_skill_compatibility,
+        compare_blueprints,
+        export_bundle_to_library_code,
+        package_agent_factory_as_bundle,
+        wrap_claude_skill_as_bundle,
+    )
+    from looplet.budget import ContextBudget, RequestTokenBudget, ThresholdCompactHook
+    from looplet.builtin_tools.tool_search import (
+        DeferredToolViewHook,
+        make_tool_search_tool,
+        search_registered_tools,
+    )
+    from looplet.bundled import bundled_cartridge_path
+    from looplet.bundles import (
+        BundleCard,
+        BundleValidation,
+        QuestionSpec,
+        SkillBundle,
+        SkillRuntime,
+        discover_skill_bundles,
+        load_skill_bundle,
+        run_skill_bundle,
+        validate_preset_contract,
+        validate_skill_bundle,
+    )
+    from looplet.cache import CachePolicy
+    from looplet.capabilities import CapabilityDeniedError, ExecutionPolicy
+    from looplet.cartridge import (
+        Cartridge,
+        CartridgeCompatibility,
+        CartridgeLayout,
+        CartridgeSerializationError,
+        cartridge_to_preset,
+        preset_to_cartridge,
+        resource_ref_for,
+    )
+    from looplet.cartridge.hot_reload import (
+        ReloadHook,
+        ReloadObservation,
+        WorkspaceWatcher,
+    )
+    from looplet.cartridge.scaffold import scaffold_cartridge
+    from looplet.checkpoint import (
+        Checkpoint,
+        CheckpointHook,
+        CheckpointParticipant,
+        CheckpointParticipants,
+        CheckpointStore,
+        FileCheckpointStore,
+        UncertainToolEffect,
+        branch_from_checkpoint,
+        resume_loop_state,
+    )
+    from looplet.compact import (
+        CompactOutcome,
+        CompactService,
+        DefaultCompactService,
+        PruneToolResults,
+        SummarizeCompact,
+        TruncateCompact,
+        compact_chain,
+        default_compact_service,
+        run_compact,
+    )
+    from looplet.context_plan import (
+        ContextPlan,
+        ContextSourceDecision,
+        ContextSourceSelector,
+        ScopedContextSource,
+    )
+    from looplet.context_projection import ContextProjection
+    from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
+    from looplet.done_steps import (
+        is_rejected_done,
+        iter_done_steps,
+        last_accepted_done,
+        last_rejected_done,
+    )
+    from looplet.evals import (
+        CARTRIDGE_CASES_SUBPATH,
+        CARTRIDGE_EVALS_SUBPATH,
+        CartridgeEvals,
+        EvalCase,
+        EvalContext,
+        EvalHook,
+        EvalReport,
+        EvalResult,
+        EvalRunRecord,
+        assert_evals_pass,
+        discover_collectors,
+        eval_assess,
+        eval_cli,
+        eval_discover,
+        eval_mark,
+        eval_run,
+        eval_run_batch,
+        load_cartridge_cases,
+        load_cartridge_evals,
+        load_cases,
+        load_eval_run,
+        load_evals,
+        parametrize_cases,
+        promote_to_offline,
+        pytest_param_cases,
+        run_cartridge_evals,
+        save_cartridge_cases,
+        save_case,
+        save_cases,
+        save_eval_run,
+        seed_case_workspace,
+    )
+    from looplet.events import EventPayload, LifecycleEvent
+    from looplet.execution_session import ExecutionSession
+    from looplet.harness import ResolvedHarness, resolve_harness
+    from looplet.harness_snapshot import serialize_harness
+    from looplet.hook_decision import (
+        Allow,
+        Block,
+        Continue,
+        Deny,
+        HookDecision,
+        InjectContext,
+        RewriteThread,
+        Stop,
+    )
+    from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
+    from looplet.loop import (
+        DomainAdapter,
+        LoopConfig,
+        LoopContext,
+        LoopHook,
+        composable_loop,
+        emit_event,
+        is_loop_hook,
+        run_result,
+    )
+    from looplet.mcp import MCPToolAdapter
+    from looplet.memory import (
+        AgentsMdMemorySource,
+        CallableMemorySource,
+        StaticMemorySource,
+    )
+    from looplet.model_gateway import (
+        ModelGatewayClient,
+        ModelGatewayHandle,
+        ModelGatewayServer,
+    )
+    from looplet.native_tools import (
+        NativeToolPolicy,
+        NativeToolProbeResult,
+        NativeToolUnsupportedError,
+        probe_native_tool_support,
+        supports_native_tools,
+    )
+    from looplet.permissions import (
+        PermissionDecision,
+        PermissionEngine,
+        PermissionHook,
+        PermissionRule,
+    )
+    from looplet.presets import (
+        AgentPreset,
+        ShutdownReport,
+        coding_agent_preset,
+        minimal_preset,
+        research_agent_preset,
+    )
+    from looplet.prompts import preview_prompt
+    from looplet.provenance import (
+        ProvenanceSink,
+        TrajectoryRecorder,
+        async_replay_loop,
+        replay_loop,
+    )
+    from looplet.resilient import AsyncResilientBackend, ResilientBackend, RetryExhausted
+    from looplet.result_store import FileToolResultStore
+    from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
+    from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
+    from looplet.runtime import AgentRuntime, RunHandle
+    from looplet.session import SessionLog
+    from looplet.skills import (
+        FileSkillStore,
+        Skill,
+        SkillActivationHook,
+        SkillCard,
+        SkillManager,
+        install_skills,
+        make_skill_tools,
+    )
+    from looplet.stagnation import (
+        StagnationHook,
+        result_fingerprint,
+        result_size_fingerprint,
+        tool_call_fingerprint,
+    )
+    from looplet.state_service import (
+        StateServiceBase,
+        StateServiceClient,
+        StateServiceHandle,
+    )
+    from looplet.streaming import (
+        AsyncStreamingToolExecutor,
+        StreamingHook,
+        StreamingToolExecutor,
+    )
+    from looplet.subagent import (
+        ChildRunLimitExceeded,
+        ChildRunPolicy,
+        SharedModelBudget,
+        async_run_sub_loop,
+        run_sub_loop,
+        run_sub_loop_async,
+        run_sub_loops,
+        run_sub_loops_async,
+        run_sub_loops_parallel,
+    )
+    from looplet.subprocess_tool import run_subprocess_tool, terminate_process_tree
+    from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
+    from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
+    from looplet.tools import (
+        BaseToolRegistry,
+        StopOnUnknownEffectHook,
+        ToolSpec,
+        excerpt_around_match,
+        register_done_tool,
+        suggest_similar,
+        tool,
+        tools_from,
+    )
+    from looplet.types import (
+        RPC_PROTOCOL_VERSION,
+        CancelToken,
+        CloseableResource,
+        DefaultState,
+        ErrorKind,
+        InvalidRunTransition,
+        LLMBackend,
+        NativeToolBackend,
+        PolicyDecision,
+        RunEnvelope,
+        RunPhase,
+        RunResult,
+        RunStatus,
+        Step,
+        ToolCall,
+        ToolCancelledError,
+        ToolContext,
+        ToolError,
+        ToolResult,
+        ToolValidationError,
+        validate_run_transition,
+    )
+
+_EXPORT_MODULES: dict[str, tuple[str, ...]] = {
+    "looplet.approval": ("ApprovalHook",),
+    "looplet.assistant_turns": ("AssistantTurnContext", "AssistantTurnDecision"),
+    "looplet.async_loop": ("async_composable_loop", "async_llm_call", "run_result_async"),
+    "looplet.backends": (
+        "AnthropicBackend",
+        "AsyncOpenAIResponsesBackend",
+        "OpenAIBackend",
+        "OpenAIResponsesBackend",
+    ),
+    "looplet.blueprints": (
+        "AgentBlueprint",
+        "BlueprintComparison",
+        "ClaudeSkillCompatibility",
+        "ComponentBlueprint",
+        "SourceBlueprint",
+        "ToolBlueprint",
+        "blueprint_from_bundle",
+        "blueprint_from_preset",
+        "claude_skill_compatibility",
+        "compare_blueprints",
+        "export_bundle_to_library_code",
+        "package_agent_factory_as_bundle",
+        "wrap_claude_skill_as_bundle",
+    ),
+    "looplet.budget": ("ContextBudget", "RequestTokenBudget", "ThresholdCompactHook"),
+    "looplet.builtin_tools.tool_search": (
+        "DeferredToolViewHook",
+        "make_tool_search_tool",
+        "search_registered_tools",
+    ),
+    "looplet.bundled": ("bundled_cartridge_path",),
+    "looplet.bundles": (
+        "BundleCard",
+        "BundleValidation",
+        "QuestionSpec",
+        "SkillBundle",
+        "SkillRuntime",
+        "discover_skill_bundles",
+        "load_skill_bundle",
+        "run_skill_bundle",
+        "validate_preset_contract",
+        "validate_skill_bundle",
+    ),
+    "looplet.cache": ("CachePolicy",),
+    "looplet.capabilities": ("CapabilityDeniedError", "ExecutionPolicy"),
+    "looplet.cartridge": (
+        "Cartridge",
+        "CartridgeCompatibility",
+        "CartridgeLayout",
+        "CartridgeSerializationError",
+        "cartridge_to_preset",
+        "preset_to_cartridge",
+        "resource_ref_for",
+    ),
+    "looplet.cartridge.hot_reload": (
+        "ReloadHook",
+        "ReloadObservation",
+        "WorkspaceWatcher",
+    ),
+    "looplet.cartridge.scaffold": ("scaffold_cartridge",),
+    "looplet.checkpoint": (
+        "Checkpoint",
+        "CheckpointHook",
+        "CheckpointParticipant",
+        "CheckpointParticipants",
+        "CheckpointStore",
+        "FileCheckpointStore",
+        "UncertainToolEffect",
+        "branch_from_checkpoint",
+        "resume_loop_state",
+    ),
+    "looplet.compact": (
+        "CompactOutcome",
+        "CompactService",
+        "DefaultCompactService",
+        "PruneToolResults",
+        "SummarizeCompact",
+        "TruncateCompact",
+        "compact_chain",
+        "default_compact_service",
+        "run_compact",
+    ),
+    "looplet.context_plan": (
+        "ContextPlan",
+        "ContextSourceDecision",
+        "ContextSourceSelector",
+        "ScopedContextSource",
+    ),
+    "looplet.context_projection": ("ContextProjection",),
+    "looplet.conversation": ("ContentBlock", "Conversation", "Message", "MessageRole"),
+    "looplet.done_steps": (
+        "is_rejected_done",
+        "iter_done_steps",
+        "last_accepted_done",
+        "last_rejected_done",
+    ),
+    "looplet.evals": (
+        "CARTRIDGE_CASES_SUBPATH",
+        "CARTRIDGE_EVALS_SUBPATH",
+        "CartridgeEvals",
+        "EvalCase",
+        "EvalContext",
+        "EvalHook",
+        "EvalReport",
+        "EvalResult",
+        "EvalRunRecord",
+        "assert_evals_pass",
+        "discover_collectors",
+        "eval_assess",
+        "eval_cli",
+        "eval_discover",
+        "eval_mark",
+        "eval_run",
+        "eval_run_batch",
+        "load_cartridge_cases",
+        "load_cartridge_evals",
+        "load_cases",
+        "load_eval_run",
+        "load_evals",
+        "parametrize_cases",
+        "promote_to_offline",
+        "pytest_param_cases",
+        "run_cartridge_evals",
+        "save_cartridge_cases",
+        "save_case",
+        "save_cases",
+        "save_eval_run",
+        "seed_case_workspace",
+    ),
+    "looplet.events": ("EventPayload", "LifecycleEvent"),
+    "looplet.execution_session": ("ExecutionSession",),
+    "looplet.harness": ("ResolvedHarness", "resolve_harness"),
+    "looplet.harness_snapshot": ("serialize_harness",),
+    "looplet.hook_decision": (
+        "Allow",
+        "Block",
+        "Continue",
+        "Deny",
+        "HookDecision",
+        "InjectContext",
+        "RewriteThread",
+        "Stop",
+    ),
+    "looplet.limits": ("BudgetWarningHook", "PerToolLimitHook", "ToolCallBudgetHook"),
+    "looplet.loop": (
+        "DomainAdapter",
+        "LoopConfig",
+        "LoopContext",
+        "LoopHook",
+        "composable_loop",
+        "emit_event",
+        "is_loop_hook",
+        "run_result",
+    ),
+    "looplet.mcp": ("MCPToolAdapter",),
+    "looplet.memory": ("AgentsMdMemorySource", "CallableMemorySource", "StaticMemorySource"),
+    "looplet.model_gateway": ("ModelGatewayClient", "ModelGatewayHandle", "ModelGatewayServer"),
+    "looplet.native_tools": (
+        "NativeToolPolicy",
+        "NativeToolProbeResult",
+        "NativeToolUnsupportedError",
+        "probe_native_tool_support",
+        "supports_native_tools",
+    ),
+    "looplet.permissions": (
+        "PermissionDecision",
+        "PermissionEngine",
+        "PermissionHook",
+        "PermissionRule",
+    ),
+    "looplet.presets": (
+        "AgentPreset",
+        "ShutdownReport",
+        "coding_agent_preset",
+        "minimal_preset",
+        "research_agent_preset",
+    ),
+    "looplet.prompts": ("preview_prompt",),
+    "looplet.provenance": (
+        "ProvenanceSink",
+        "TrajectoryRecorder",
+        "async_replay_loop",
+        "replay_loop",
+    ),
+    "looplet.resilient": ("AsyncResilientBackend", "ResilientBackend", "RetryExhausted"),
+    "looplet.result_store": ("FileToolResultStore",),
+    "looplet.run_records": ("ArtifactRef", "RunEvent", "RunRecord", "event_from_payload"),
+    "looplet.run_store": ("FileRunStore", "MemoryRunStore", "RunStore"),
+    "looplet.runtime": ("AgentRuntime", "RunHandle"),
+    "looplet.session": ("SessionLog",),
+    "looplet.skills": (
+        "FileSkillStore",
+        "Skill",
+        "SkillActivationHook",
+        "SkillCard",
+        "SkillManager",
+        "install_skills",
+        "make_skill_tools",
+    ),
+    "looplet.stagnation": (
+        "StagnationHook",
+        "result_fingerprint",
+        "result_size_fingerprint",
+        "tool_call_fingerprint",
+    ),
+    "looplet.state_service": ("StateServiceBase", "StateServiceClient", "StateServiceHandle"),
+    "looplet.streaming": ("AsyncStreamingToolExecutor", "StreamingHook", "StreamingToolExecutor"),
+    "looplet.subagent": (
+        "ChildRunLimitExceeded",
+        "ChildRunPolicy",
+        "SharedModelBudget",
+        "async_run_sub_loop",
+        "run_sub_loop",
+        "run_sub_loop_async",
+        "run_sub_loops",
+        "run_sub_loops_async",
+        "run_sub_loops_parallel",
+    ),
+    "looplet.subprocess_tool": ("run_subprocess_tool", "terminate_process_tree"),
+    "looplet.telemetry": ("MetricsCollector", "MetricsHook", "Tracer", "TracingHook"),
+    "looplet.testing": ("AsyncMockLLMBackend", "LLMResponsesExhausted", "MockLLMBackend"),
+    "looplet.tools": (
+        "BaseToolRegistry",
+        "StopOnUnknownEffectHook",
+        "ToolSpec",
+        "excerpt_around_match",
+        "register_done_tool",
+        "suggest_similar",
+        "tool",
+        "tools_from",
+    ),
+    "looplet.types": (
+        "RPC_PROTOCOL_VERSION",
+        "CancelToken",
+        "CloseableResource",
+        "DefaultState",
+        "ErrorKind",
+        "InvalidRunTransition",
+        "LLMBackend",
+        "NativeToolBackend",
+        "PolicyDecision",
+        "RunEnvelope",
+        "RunPhase",
+        "RunResult",
+        "RunStatus",
+        "Step",
+        "ToolCall",
+        "ToolCancelledError",
+        "ToolContext",
+        "ToolError",
+        "ToolResult",
+        "ToolValidationError",
+        "validate_run_transition",
+    ),
+}
+
+_LAZY_EXPORTS: dict[str, str] = {
+    symbol: module_name for module_name, symbols in _EXPORT_MODULES.items() for symbol in symbols
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is not None:
+        mod = importlib.import_module(module_name)
+        value = getattr(mod, name)
+        globals()[name] = value
+        return value
+    if not name.startswith("_") and importlib.util.find_spec(f"looplet.{name}") is not None:
+        submod = importlib.import_module(f"looplet.{name}")
+        globals()[name] = submod
+        return submod
+    raise AttributeError(f"module 'looplet' has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "ToolCallBudgetHook",

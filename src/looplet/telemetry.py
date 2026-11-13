@@ -11,7 +11,9 @@ Provides:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -107,35 +109,46 @@ class Tracer:
     """
 
     def __init__(self) -> None:
-        self._stack: list[Span] = []
+        self._stack_var: ContextVar[tuple[Span, ...]] = ContextVar(
+            f"looplet_tracer_stack_{id(self)}", default=()
+        )
+        self._lock = threading.RLock()
         self._root_spans: list[Span] = []
+
+    @property
+    def _stack(self) -> list[Span]:
+        return list(self._stack_var.get())
 
     @property
     def current_span(self) -> Span | None:
         """The innermost open span, or None if no span is active."""
-        return self._stack[-1] if self._stack else None
+        stk = self._stack_var.get()
+        return stk[-1] if stk else None
 
     @property
     def root_spans(self) -> list[Span]:
         """All top-level spans recorded so far."""
-        return self._root_spans
+        with self._lock:
+            return list(self._root_spans)
 
     def start_span(self, name: str, *, attributes: dict[str, Any] | None = None) -> Span:
         """Create a new span, nesting it under the current span if one is open.
 
-        Returns the new span and pushes it onto the stack.
+        Returns the new span and pushes it onto the task/thread-local stack.
         """
-        parent = self.current_span
+        stk = self._stack_var.get()
+        parent = stk[-1] if stk else None
         span = Span(
             name=name,
             parent_id=parent.span_id if parent else None,
             attributes=dict(attributes or {}),
         )
-        if parent is None:
-            self._root_spans.append(span)
-        else:
-            parent.children.append(span)
-        self._stack.append(span)
+        with self._lock:
+            if parent is None:
+                self._root_spans.append(span)
+            else:
+                parent.children.append(span)
+        self._stack_var.set((*stk, span))
         return span
 
     def end_span(
@@ -146,19 +159,17 @@ class Tracer:
         attributes: dict[str, Any] | None = None,
     ) -> None:
         """End a span: set end_time, status, merge extra attributes, pop from stack."""
-        if span.end_time is None:
-            span.end_time = time.time()
-        span.status = status
-        if attributes:
-            span.attributes.update(attributes)
-        if self._stack and self._stack[-1] is span:
-            self._stack.pop()
-        else:
-            # Handle out-of-order ending - scan and remove
-            try:
-                self._stack.remove(span)
-            except ValueError:
-                pass
+        with self._lock:
+            if span.end_time is None:
+                span.end_time = time.time()
+            span.status = status
+            if attributes:
+                span.attributes.update(attributes)
+        stk = self._stack_var.get()
+        if stk and stk[-1] is span:
+            self._stack_var.set(stk[:-1])
+        elif span in stk:
+            self._stack_var.set(tuple(s for s in stk if s is not span))
 
 
 # ── TracingHook ─────────────────────────────────────────────────────

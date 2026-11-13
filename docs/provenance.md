@@ -78,6 +78,7 @@ Prompt strings and recorded response copies are scrubbed; live responses and nat
 Review exports separately; a redaction callback is not proof that every sensitive value was removed.
 
 **Unreleased:** SDK-issued request and attempt identifiers remain unchanged across manifests, trajectories, replay lineage, and retained attempts, and each recorded field is scrubbed in a single pass.
+Retained `model-attempts/` records deduplicate conversation message blobs by SHA-256 digest and reference `intent` requests from `outcome` records, while `load_model_attempts()` rehydrates complete attempt dictionaries on read.
 Provider payload fields, including fields named `request_id`, remain subject to redaction.
 Configured model routers remain bypassed during `replay_loop()` and `async_replay_loop()` so captured responses stay authoritative.
 

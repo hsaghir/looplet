@@ -111,12 +111,15 @@ def _send_line(sock: socket.socket, obj: dict[str, Any]) -> None:
 class _LineReader:
     """Buffered line reader over a stream socket (one per connection)."""
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, *, max_message_bytes: int = 32 * 1024 * 1024) -> None:
         self._sock = sock
         self._buf = b""
+        self._max_message_bytes = max_message_bytes
 
     def readline(self, *, deadline: float | None = None) -> str | None:
         while b"\n" not in self._buf:
+            if len(self._buf) > self._max_message_bytes:
+                raise ModelGatewayError("model gateway frame exceeded max_message_bytes")
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -126,11 +129,15 @@ class _LineReader:
             chunk = self._sock.recv(65536)
             if not chunk:
                 if self._buf:
+                    if len(self._buf) > self._max_message_bytes:
+                        raise ModelGatewayError("model gateway frame exceeded max_message_bytes")
                     line, self._buf = self._buf, b""
                     return line.decode("utf-8")
                 return None
             self._buf += chunk
         line, _, self._buf = self._buf.partition(b"\n")
+        if len(line) > self._max_message_bytes:
+            raise ModelGatewayError("model gateway frame exceeded max_message_bytes")
         return line.decode("utf-8")
 
 
@@ -364,19 +371,24 @@ class ModelGatewayClient:
     or from the ``LOOPLET_LLM_SOCKET`` env var via :meth:`from_env`.
     """
 
+    _rpc_timeout: float | None = None
+
     def __init__(
         self,
         socket_path: str,
         *,
         connect_timeout: float = 10.0,
+        rpc_timeout: float | None = 120.0,
+        max_message_bytes: int = 32 * 1024 * 1024,
         run_envelope: RunEnvelope | None = None,
     ) -> None:
         self._path = socket_path
         self._lock = threading.Lock()
         self._next_id = 0
         self._run_envelope = run_envelope
+        self._rpc_timeout = rpc_timeout
         self._sock = self._connect(socket_path, connect_timeout)
-        self._reader = _LineReader(self._sock)
+        self._reader = _LineReader(self._sock, max_message_bytes=max_message_bytes)
         self.ready = False
         try:
             init = self._rpc("llm/initialize", {})
@@ -424,13 +436,21 @@ class ModelGatewayClient:
             remaining = remaining_deadline(self._run_envelope)
             if remaining is not None and remaining <= 0:
                 raise ModelGatewayError("model gateway call exceeded run deadline")
+            if self._rpc_timeout is not None and remaining is not None:
+                effective_timeout: float | None = min(self._rpc_timeout, remaining)
+            else:
+                effective_timeout = remaining if remaining is not None else self._rpc_timeout
             self._next_id += 1
             rid = self._next_id
-            deadline = time.monotonic() + remaining if remaining is not None else None
-            old_timeout = self._sock.gettimeout() if remaining is not None else None
-            if remaining is not None:
+            now = time.monotonic() if effective_timeout is not None else 0.0
+            deadline = now + effective_timeout if effective_timeout is not None else None
+            run_deadline = now + remaining if remaining is not None else None
+            old_timeout = self._sock.gettimeout() if effective_timeout is not None else None
+            if effective_timeout is not None:
                 self._sock.settimeout(
-                    min(old_timeout, remaining) if old_timeout is not None else remaining
+                    min(old_timeout, effective_timeout)
+                    if old_timeout is not None
+                    else effective_timeout
                 )
             timed_out = False
             try:
@@ -442,7 +462,7 @@ class ModelGatewayClient:
                 )
             except socket.timeout as exc:
                 timed_out = True
-                if deadline is not None and time.monotonic() >= deadline:
+                if run_deadline is not None and time.monotonic() >= run_deadline:
                     raise ModelGatewayError("model gateway call exceeded run deadline") from exc
                 raise ModelGatewayError(f"gateway transport failed: {exc}") from exc
             except OSError as exc:
@@ -450,7 +470,7 @@ class ModelGatewayClient:
             finally:
                 if timed_out:
                     self.close()
-                elif remaining is not None:
+                elif effective_timeout is not None:
                     self._sock.settimeout(old_timeout)
             if line is None:
                 raise ModelGatewayError("model gateway closed the connection")

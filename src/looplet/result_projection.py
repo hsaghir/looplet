@@ -17,6 +17,9 @@ def model_result_payload(
     data: Any,
     *,
     error: str | None = None,
+    error_kind: str | None = None,
+    error_retriable: bool | None = None,
+    execution_status: str | None = None,
     result_key: str | None = None,
     warnings: list[str] | None = None,
     delivery: dict[str, Any] | None = None,
@@ -26,6 +29,12 @@ def model_result_payload(
     if result_key:
         payload["result_key"] = result_key
     payload.update(data=data, error=error)
+    if error_kind is not None:
+        payload["error_kind"] = error_kind
+    if error_retriable is not None:
+        payload["error_retriable"] = error_retriable
+    if execution_status is not None:
+        payload["execution_status"] = execution_status
     if warnings:
         payload["warnings"] = list(warnings)
     if delivery:
@@ -34,9 +43,14 @@ def model_result_payload(
 
 
 def result_payload(result: ToolResult) -> dict[str, Any]:
+    detail = result.error_detail
+    exec_status = result.metadata.get("execution_status")
     return model_result_payload(
         result.data,
         error=result.error,
+        error_kind=detail.kind.value if detail is not None else None,
+        error_retriable=detail.retriable if detail is not None else None,
+        execution_status=exec_status if isinstance(exec_status, str) and exec_status else None,
         result_key=result.result_key,
         warnings=result.warnings,
         delivery=result.metadata.get("model_projection", {}).get("delivery"),

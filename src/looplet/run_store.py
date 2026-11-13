@@ -210,9 +210,12 @@ class FileRunStore:
     """
 
     def __init__(self, directory: str | Path) -> None:
+        from collections import OrderedDict
+
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._header_cache: OrderedDict[str, tuple[int, int, RunRecord]] = OrderedDict()
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -231,7 +234,7 @@ class FileRunStore:
                 raise FileExistsError(f"run already exists: {envelope.run_id}") from error
             path = self._file(envelope.run_id, "run.json")
             record = RunRecord.create(envelope, metadata=metadata)
-            self._write(path, record.to_dict())
+            self._write_record(envelope.run_id, path, record)
             self._file(envelope.run_id, "events.jsonl").touch()
             (root / "checkpoints").mkdir(exist_ok=True)
             return record
@@ -246,13 +249,18 @@ class FileRunStore:
                 handle.write(json.dumps(event.to_dict(), default=str) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            self._write(
-                self._file(run_id, "run.json"),
-                record.with_updates(
-                    status="running" if record.status == "created" else record.status,
-                    updated_at=event.timestamp,
-                ).to_dict(),
-            )
+            if record.status == "created":
+                updated = record.with_updates(status="running", updated_at=event.timestamp)
+                self._write_record(run_id, self._file(run_id, "run.json"), updated)
+            else:
+                cached = self._header_cache.get(run_id)
+                if cached is not None:
+                    mtime_ns, size, hdr = cached
+                    self._header_cache[run_id] = (
+                        mtime_ns,
+                        size,
+                        hdr.with_updates(updated_at=max(hdr.updated_at, event.timestamp)),
+                    )
 
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._locked():
@@ -268,7 +276,7 @@ class FileRunStore:
                 updated_at=checkpoint.created_at,
                 checkpoint_keys=tuple(dict.fromkeys((*record.checkpoint_keys, key))),
             )
-            self._write(self._file(run_id, "run.json"), updated.to_dict())
+            self._write_record(run_id, self._file(run_id, "run.json"), updated)
             return key
 
     def load_checkpoint(self, run_id: str, key: str) -> Checkpoint | None:
@@ -289,6 +297,7 @@ class FileRunStore:
     ) -> RunRecord:
         with self._locked():
             record = self._require_unlocked(run_id)
+            events = self._events_unlocked(run_id)
             updated = RunRecord(
                 run_id=record.run_id,
                 envelope=record.envelope,
@@ -299,9 +308,9 @@ class FileRunStore:
                 result=result.to_dict(full=True),
                 checkpoint_keys=record.checkpoint_keys,
                 artifact_refs=tuple(artifacts),
-                events=self._events_unlocked(run_id),
+                events=events,
             )
-            self._write(self._file(run_id, "run.json"), updated.to_dict())
+            self._write_record(run_id, self._file(run_id, "run.json"), updated)
             return updated
 
     def load(self, run_id: str) -> RunRecord | None:
@@ -324,14 +333,42 @@ class FileRunStore:
     def _file(self, run_id: str, filename: str) -> Path:
         return _artifact_path(self._root(run_id), filename)
 
+    def _write_record(self, run_id: str, path: Path, record: RunRecord) -> None:
+        serialized = json.dumps(record.to_dict(), indent=2, default=str) + "\n"
+        self._write_text(path, serialized)
+        st = path.stat()
+        detached = RunRecord.from_dict(json.loads(serialized), events=())
+        self._header_cache.pop(run_id, None)
+        self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, detached)
+        while len(self._header_cache) > 64:
+            self._header_cache.popitem(last=False)
+
     def _load_unlocked(self, run_id: str, *, include_events: bool = True) -> RunRecord | None:
         path = self._file(run_id, "run.json")
         if not path.is_file():
+            self._header_cache.pop(run_id, None)
             return None
-        return RunRecord.from_dict(
-            json.loads(path.read_text(encoding="utf-8")),
-            events=self._events_unlocked(run_id) if include_events else (),
+        st = path.stat()
+        cached = self._header_cache.get(run_id)
+        if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+            self._header_cache.move_to_end(run_id)
+            header = copy.deepcopy(cached[2])
+        else:
+            header = RunRecord.from_dict(
+                json.loads(path.read_text(encoding="utf-8")),
+                events=(),
+            )
+            self._header_cache.pop(run_id, None)
+            self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, copy.deepcopy(header))
+            while len(self._header_cache) > 64:
+                self._header_cache.popitem(last=False)
+        if not include_events:
+            return header
+        ev = self._events_unlocked(run_id)
+        updated_at = (
+            max(header.updated_at, max(e.timestamp for e in ev)) if ev else header.updated_at
         )
+        return replace(header, events=ev, updated_at=updated_at)
 
     def _events_unlocked(self, run_id: str) -> tuple[RunEvent, ...]:
         path = self._file(run_id, "events.jsonl")
@@ -351,15 +388,18 @@ class FileRunStore:
         return record
 
     @staticmethod
-    def _write(path: Path, value: Mapping[str, Any]) -> None:
+    def _write_text(path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(value, handle, indent=2, default=str)
-                handle.write("\n")
+                handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, path)
         finally:
             Path(temp_name).unlink(missing_ok=True)
+
+    @staticmethod
+    def _write(path: Path, value: Mapping[str, Any]) -> None:
+        FileRunStore._write_text(path, json.dumps(value, indent=2, default=str) + "\n")

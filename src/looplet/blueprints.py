@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import keyword
 import logging
+import re
 import shutil
 import uuid
 from collections.abc import Iterable, Mapping
@@ -628,9 +629,27 @@ def _comparison_payload(blueprint: AgentBlueprint, *, include_metadata: bool) ->
     return data
 
 
+_SECRET_ATTR_PATTERN = re.compile(r"(api[_-]?key|secret|token|password|credential|passwd)", re.I)
+
+
 def _object_config(component: Any) -> dict[str, Any]:
+    for method_name in ("provenance_config", "to_config"):
+        fn = getattr(component, method_name, None)
+        if callable(fn):
+            try:
+                declared = fn()
+                if isinstance(declared, Mapping):
+                    return {
+                        str(k): v
+                        for k, v in ((k, _jsonable(val)) for k, val in declared.items())
+                        if v is not None
+                    }
+            except Exception:  # noqa: BLE001
+                pass
     config: dict[str, Any] = {}
     for name, value in vars(component).items() if hasattr(component, "__dict__") else []:
+        if _SECRET_ATTR_PATTERN.search(str(name)):
+            continue
         jsonable = _jsonable(value)
         if jsonable is not None:
             config[name] = jsonable

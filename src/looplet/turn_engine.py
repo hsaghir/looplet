@@ -239,3 +239,47 @@ def build_pending_dispatch_kwargs(
         "run_status": loop_ctx.status.value,
         "run_phase": loop_ctx.phase.value,
     }
+
+
+def clear_recovery_flags(recovery_state: dict[str, Any]) -> None:
+    """Reset exhausted strategy markers after a successful reactive recovery."""
+    for strategy_name in ("budget_enforcement", "emergency_truncate", "result_clearing"):
+        recovery_state.pop(strategy_name, None)
+
+
+def commit_step_to_history(
+    *,
+    step: Any,
+    cur_step: int,
+    state: Any,
+    history: Any,
+    extract_entities: Callable[[Any], list[str]],
+    extract_step_metadata: Callable[[Any, int], tuple[list[str], list[str]]],
+    all_step_entities: list[str],
+    already_appended: bool = False,
+) -> list[str]:
+    """Atomically commit a step to state.steps, SessionLog, and Conversation.
+
+    Both sync and async drivers pass the canonical 1-based ``cur_step`` to
+    ``extract_step_metadata``. If extraction or history recording raises,
+    ``state.steps`` is rolled back so state views never diverge.
+    """
+    if not already_appended:
+        state.steps.append(step)
+    try:
+        step_entities = extract_entities(step.tool_result.data)
+        step_findings, step_highlights = extract_step_metadata(state, cur_step)
+        history.record_step(
+            step,
+            theory=step.tool_call.args.get("__theory__", ""),
+            entities=step_entities,
+            findings=step_findings,
+            highlights=step_highlights,
+            recall_key=step.tool_result.result_key or "",
+        )
+    except BaseException:
+        if state.steps and state.steps[-1] is step:
+            del state.steps[-1]
+        raise
+    all_step_entities.extend(step_entities)
+    return step_entities

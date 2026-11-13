@@ -170,6 +170,9 @@ class MCPToolAdapter:
         self._lock = threading.Lock()
         self._reader_lock = threading.Lock()
         self._reader_threads: set[threading.Thread] = set()
+        self._stderr_chunks: list[bytes] = []
+        self._stderr_bytes = 0
+        self._stderr_lock = threading.Lock()
         self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
         self._registrations: WeakKeyDictionary[BaseToolRegistry, tuple[ToolSpec, ...]] = (
@@ -297,6 +300,9 @@ class MCPToolAdapter:
             child_env = dict(os.environ)
             child_env.update(self._env)
 
+        with self._stderr_lock:
+            self._stderr_chunks.clear()
+            self._stderr_bytes = 0
         self._proc = subprocess.Popen(
             self._command,
             shell=isinstance(self._command, str),
@@ -306,6 +312,26 @@ class MCPToolAdapter:
             env=child_env,
             **process_options,
         )
+        if self._proc.stderr is not None and callable(getattr(self._proc.stderr, "read", None)):
+            stderr_pipe = self._proc.stderr
+            read1_fn = getattr(stderr_pipe, "read1", None)
+
+            def _drain_stderr() -> None:
+                try:
+                    while True:
+                        raw_chunk = read1_fn(4096) if callable(read1_fn) else stderr_pipe.read(4096)
+                        if not isinstance(raw_chunk, bytes) or not raw_chunk:
+                            break
+                        with self._stderr_lock:
+                            self._stderr_chunks.append(raw_chunk)
+                            self._stderr_bytes += len(raw_chunk)
+                            while self._stderr_bytes > 8192 and len(self._stderr_chunks) > 1:
+                                dropped = self._stderr_chunks.pop(0)
+                                self._stderr_bytes -= len(dropped)
+                except (OSError, ValueError):
+                    pass
+
+            threading.Thread(target=_drain_stderr, daemon=True, name="looplet-mcp-stderr").start()
         try:
             # Initialize the MCP session
             init_resp = self._send_request(
@@ -410,7 +436,7 @@ class MCPToolAdapter:
         try:
             self._write_message(msg, deadline=deadline)
             return self._read_message(expected_id=msg.get("id"), deadline=deadline)
-        except (OSError, MCPProtocolError, ToolCancelledError):
+        except (OSError, TimeoutError, MCPProtocolError, ToolCancelledError):
             self.close()
             raise
 
@@ -512,10 +538,16 @@ class MCPToolAdapter:
         return None
 
     def _stderr_tail_if_exited(self, proc: subprocess.Popen | None) -> str:
-        """Read one bounded stderr chunk after a child has exited."""
-        if proc is None or proc.stderr is None or proc.poll() is None:
+        """Read bounded stderr output only after a child has exited."""
+        if proc is None or proc.poll() is None:
             return ""
+        with self._stderr_lock:
+            raw = b"".join(self._stderr_chunks)[-4096:]
+        if raw:
+            return raw.decode("utf-8", errors="replace").strip()
         stderr = proc.stderr
+        if stderr is None or not callable(getattr(stderr, "read", None)):
+            return ""
         try:
             line = self._run_io_with_timeout(
                 lambda: stderr.read(4096),

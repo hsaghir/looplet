@@ -903,20 +903,20 @@ class DefaultState:
             err = getattr(tr, "error", None)
             number_int = int(raw_number) if isinstance(raw_number, int) else len(rendered) + 1
             number_label = str(raw_number) if raw_number is not None else str(number_int)
+            selected: ToolResult = (
+                projections[call_id]
+                if call_id is not None and call_id in projections
+                else step_projections.get(raw_number, tr)
+                if type(raw_number) is int
+                else tr
+            )
+            projected = project_tool_result(selected)
+            payload = payload_text(projected)
+            if projected.metadata.get("result_is_view"):
+                view_numbers.add(number_int)
             if err:
-                block = f"S{number_label} ✗ {tool_name}({args_summary}) → ERROR: {err[:200]}"
+                block = f"S{number_label} ✗ {tool_name}({args_summary}) → ERROR: {payload}"
             else:
-                selected: ToolResult = (
-                    projections[call_id]
-                    if call_id is not None and call_id in projections
-                    else step_projections.get(raw_number, tr)
-                    if type(raw_number) is int
-                    else tr
-                )
-                projected = project_tool_result(selected)
-                payload = payload_text(projected)
-                if projected.metadata.get("result_is_view"):
-                    view_numbers.add(number_int)
                 block = f"S{number_label} ✓ {tool_name}({args_summary}) → {payload}"
             rendered.append((number_int, block))
 

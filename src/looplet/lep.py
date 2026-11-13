@@ -88,6 +88,8 @@ class LEPHookAdapter:
         cartridge_id: str = "lep",
         run_envelope: RunEnvelope | None = None,
         env: dict[str, str] | None = None,
+        timeout: float = 30.0,
+        max_message_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         if on_failure not in _FAILURE_POLICIES:
             raise ValueError(f"on_failure must be one of {_FAILURE_POLICIES}, got {on_failure!r}")
@@ -98,6 +100,8 @@ class LEPHookAdapter:
         self._cartridge_id = cartridge_id
         self._run_envelope = run_envelope
         self._env = dict(env) if env is not None else None
+        self._timeout = timeout
+        self._max_message_bytes = max_message_bytes
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self._rpc_lock = threading.RLock()
@@ -133,14 +137,20 @@ class LEPHookAdapter:
             remaining = remaining_deadline(self._run_envelope)
             if remaining is not None and remaining <= 0:
                 raise LEPProtocolError("LEP call exceeded run deadline")
+            effective_timeout = (
+                min(self._timeout, remaining) if remaining is not None else self._timeout
+            )
+            payload_str = json.dumps(req) + "\n"
+            if len(payload_str.encode("utf-8")) > self._max_message_bytes:
+                raise LEPProtocolError("LEP request exceeded max_message_bytes")
 
             def exchange() -> str:
                 assert proc.stdin is not None and proc.stdout is not None
-                proc.stdin.write(json.dumps(req) + "\n")
+                proc.stdin.write(payload_str)
                 proc.stdin.flush()
-                return proc.stdout.readline() if expect_response else ""
+                return proc.stdout.readline(self._max_message_bytes + 1) if expect_response else ""
 
-            if remaining is None:
+            if effective_timeout is None:
                 line = exchange()
             else:
                 done = threading.Event()
@@ -157,7 +167,7 @@ class LEPHookAdapter:
 
                 worker = threading.Thread(target=communicate, daemon=True, name="looplet-lep-rpc")
                 worker.start()
-                if not done.wait(remaining):
+                if not done.wait(effective_timeout):
                     self._abort_process(proc)
                     worker.join(timeout=1.0)
                     if not worker.is_alive():
@@ -166,12 +176,16 @@ class LEPHookAdapter:
                                 stream.close()
                             except (OSError, ValueError):
                                 pass
-                    raise LEPProtocolError("LEP call exceeded run deadline")
+                    if remaining is not None and effective_timeout == remaining:
+                        raise LEPProtocolError("LEP call exceeded run deadline")
+                    raise LEPProtocolError("LEP call timed out")
                 if errors:
                     raise errors[0]
                 line = lines[0]
             if not expect_response:
                 return {}
+            if len(line.encode("utf-8")) > self._max_message_bytes:
+                raise LEPProtocolError("LEP response exceeded max_message_bytes")
         except (BrokenPipeError, OSError, ValueError) as exc:
             # Dead/half-closed server: surface as a protocol error so
             # callers apply ``on_failure`` instead of crashing the host.

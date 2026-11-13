@@ -3037,23 +3037,19 @@ def eval_run_batch(
 def _eval_batch_table(
     records: list[EvalRunRecord], grader_names: list[str]
 ) -> list[dict[str, Any]]:
-    all_results = [record.results for record in records]
+    indexed_runs = [{result.name: result for result in record.results} for record in records]
     summary: list[dict[str, Any]] = []
+    grader_set = set(grader_names)
     names = grader_names + sorted(
-        {result.name for results in all_results for result in results} - set(grader_names)
+        {name for run_map in indexed_runs for name in run_map} - grader_set
     )
     for name in names:
-        per_run = [
-            next(
-                (result for result in results if result.name == name),
-                EvalResult(
-                    name=name,
-                    label="error" if name in grader_names else "skipped",
-                    explanation="grader missing from run result" if name in grader_names else "",
-                ),
-            )
-            for results in all_results
-        ]
+        default_missing = EvalResult(
+            name=name,
+            label="error" if name in grader_set else "skipped",
+            explanation="grader missing from run result" if name in grader_set else "",
+        )
+        per_run = [run_map.get(name, default_missing) for run_map in indexed_runs]
         scores = [result.score for result in per_run if result.score is not None]
         entry: dict[str, Any] = {
             "name": name,

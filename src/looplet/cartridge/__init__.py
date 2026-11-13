@@ -68,6 +68,9 @@ __all__ = [
     "CartridgeSerializationError",
     "preset_to_cartridge",
     "cartridge_to_preset",
+    "ReloadHook",
+    "ReloadObservation",
+    "WorkspaceWatcher",
     "CartridgePortabilityReport",
     "ComponentReport",
     "analyse_cartridge",
@@ -119,6 +122,11 @@ from looplet.cartridge._serialise import preset_to_cartridge  # noqa: E402
 from looplet.cartridge._yaml import _dump_yaml, _load_yaml  # noqa: E402, F401
 
 # Whole-cartridge portability report (static analyser).
+from looplet.cartridge.hot_reload import (  # noqa: E402
+    ReloadHook,
+    ReloadObservation,
+    WorkspaceWatcher,
+)
 from looplet.cartridge.portability import (  # noqa: E402, F401
     CartridgePortabilityReport,
     ComponentReport,

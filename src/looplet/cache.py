@@ -237,3 +237,5 @@ class CacheBreakDetector:
     # So an instance can be registered in ``hooks=[...]`` directly
     # without wrapping. The loop calls record() itself from the
     # prompt-build path; these are just here to satisfy the protocol.
+    def pre_loop(self, state: object, session_log: object, context: object) -> None:
+        return None

@@ -69,6 +69,11 @@ from looplet.cartridge import (
     preset_to_cartridge,
     resource_ref_for,
 )
+from looplet.cartridge.hot_reload import (
+    ReloadHook,
+    ReloadObservation,
+    WorkspaceWatcher,
+)
 from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.checkpoint import (
     Checkpoint,
@@ -417,6 +422,9 @@ __all__ = [
     "CartridgeCompatibility",
     "CartridgeLayout",
     "CartridgeSerializationError",
+    "ReloadHook",
+    "ReloadObservation",
+    "WorkspaceWatcher",
     "cartridge_to_preset",
     "preset_to_cartridge",
     "scaffold_cartridge",

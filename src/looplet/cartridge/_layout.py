@@ -166,6 +166,19 @@ class CartridgeLayout:
         }
     )
 
+    OVERLAY_SLOTS: frozenset[str] = frozenset(
+        {
+            "tools",
+            "prompts",
+            "memory",
+            "resources",
+            "helpers",
+            "hooks",
+            "config",
+            "runtime",
+        }
+    )
+
     @classmethod
     def contract_tier_fields(cls) -> frozenset[str]:
         """Fields that legitimately live in ``config.yaml``.

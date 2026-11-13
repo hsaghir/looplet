@@ -317,6 +317,49 @@ files and config keys win on collision. Inheritance can be transitive, cycles
 fail, and multiple parents are deliberately unsupported. Use built-in hooks or
 shared resources for orthogonal concerns instead of diamond inheritance.
 
+## Host overlays and step-boundary reload { #overlays }
+
+Hosts can layer one or more sparse overlay directories onto a read-only base
+cartridge without editing `config.yaml` or mutating the base directory:
+
+```python
+from looplet import ReloadHook, WorkspaceWatcher, composable_loop
+
+with WorkspaceWatcher(
+  "agent.cartridge",
+  overlays=["/tmp/run-overlay"],
+  allowed_overlay_slots={"tools", "prompts", "helpers"},
+  strict=True,
+) as watcher:
+  preset = watcher.preset()
+  reload_hook = ReloadHook(watcher)
+  for step in composable_loop(
+    llm=llm,
+    tools=preset.tools,
+    state=preset.state,
+    config=preset.config,
+    hooks=[*preset.hooks, reload_hook],
+    task={"goal": "Complete the task"},
+  ):
+    print(step.pretty())
+```
+
+- **Slot and tool fences:** `allowed_overlay_slots` restricts overlays to an
+  explicit subset of `CartridgeLayout.OVERLAY_SLOTS` (`tools`, `prompts`,
+  `memory`, `resources`, `helpers`, `hooks`, `config`, `runtime`). Disallowed
+  slots, symlinks, hidden paths, `evals/`, and overrides of the terminal
+  `done_tool` or initial non-overlay tools fail closed.
+- **Step-boundary validation:** `ReloadHook` validates candidate changes with
+  `strict=True` in `pre_prompt` before tool schemas and prompt cache
+  breakpoints are computed. Invalid edits leave the last valid capabilities
+  active and record a structured `ReloadObservation` in `state.metadata["harness_reloads"]`.
+- **Origin provenance and policy:** Base tools carry `origin="cartridge"` and
+  overlay tools carry `origin="overlay"`. Combine with
+  `PermissionEngine.allow_origin` / `ask_origin` / `deny_origin` for
+  origin-scoped policy, `CheckpointParticipant.from_object("reload", "1", reload_hook)`
+  for checkpoint recovery, and `TrajectoryRecorder` (`metadata["harness_epochs"]`)
+  for epoch-level provenance.
+
 ## Built-in registries { #built-in-registries }
 
 `builtin_tools:` and `builtin_hooks:` are schema-v2 directives, but the

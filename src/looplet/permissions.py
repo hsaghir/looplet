@@ -261,6 +261,75 @@ class PermissionEngine:
         )
         return self
 
+    @staticmethod
+    def _origin_matches(actual: str | None, pattern: str) -> bool:
+        if actual is None:
+            return False
+        if pattern == "*":
+            return True
+        if pattern.endswith("*"):
+            return actual.startswith(pattern[:-1])
+        return actual == pattern
+
+    def _add_origin_rule(
+        self,
+        tools: Any,
+        origin: str,
+        decision: PermissionDecision,
+        *,
+        reason: str,
+    ) -> "PermissionEngine":
+        if not isinstance(origin, str) or not origin.strip():
+            raise ValueError("origin pattern must be a non-empty string")
+
+        def _matches(call: ToolCall) -> bool:
+            getter = getattr(tools, "get", None)
+            spec = (
+                getter(call.tool)
+                if callable(getter)
+                else getattr(tools, "_tools", {}).get(call.tool)
+            )
+            return bool(
+                spec is not None and self._origin_matches(getattr(spec, "origin", None), origin)
+            )
+
+        self.rules.append(
+            PermissionRule(
+                tool="*",
+                decision=decision,
+                call_matcher=_matches,
+                reason=reason,
+            )
+        )
+        return self
+
+    def allow_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+        """Allow tool calls whose :attr:`ToolSpec.origin` matches ``origin`` (exact or ``prefix*``)."""
+        return self._add_origin_rule(
+            tools,
+            origin,
+            PermissionDecision.ALLOW,
+            reason=reason or f"allowed tool origin {origin!r}",
+        )
+
+    def deny_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+        """Deny tool calls whose :attr:`ToolSpec.origin` matches ``origin`` (exact or ``prefix*``)."""
+        return self._add_origin_rule(
+            tools,
+            origin,
+            PermissionDecision.DENY,
+            reason=reason or f"denied tool origin {origin!r}",
+        )
+
+    def ask_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+        """Require approval for tool calls whose :attr:`ToolSpec.origin` matches ``origin``."""
+        return self._add_origin_rule(
+            tools,
+            origin,
+            PermissionDecision.ASK,
+            reason=reason or f"approval required for tool origin {origin!r}",
+        )
+
     def evaluate(self, call: ToolCall) -> PermissionOutcome:
         """Run the call through all rules; first match wins.
 

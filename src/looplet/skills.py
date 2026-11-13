@@ -246,8 +246,18 @@ class FileSkillStore:
 class SkillManager:
     """Tracks lazy skill discovery and activation for one agent run."""
 
-    def __init__(self, store: FileSkillStore) -> None:
+    _checkpoint_schema = "looplet.skill-manager.v1"
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        tools: BaseToolRegistry | None = None,
+        protected_tools: Iterable[str] = (),
+    ) -> None:
         self.store = store
+        self.tools = tools
+        self.protected_tools: frozenset[str] = frozenset(protected_tools)
         self._active: dict[str, Skill] = {}
 
     @property
@@ -262,8 +272,60 @@ class SkillManager:
     def activate(self, name: str) -> Skill:
         """Activate a skill by name and return the full skill."""
         if name not in self._active:
-            self._active[name] = self.store.load(name)
+            skill = self.store.load(name)
+            if self.tools is not None and skill.tools:
+                self.tools.sync_origin(
+                    f"skill:{skill.name}",
+                    skill.tools,
+                    protected=self.protected_tools,
+                )
+            self._active[name] = skill
         return self._active[name]
+
+    def deactivate(self, name: str) -> bool:
+        """Deactivate ``name`` and unregister any tools owned by that skill."""
+        skill = self._active.pop(name, None)
+        if skill is None:
+            return False
+        if self.tools is not None and skill.tools:
+            self.tools.sync_origin(
+                f"skill:{skill.name}",
+                (),
+                protected=self.protected_tools,
+            )
+        return True
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Return JSON-safe active skill state for :class:`CheckpointParticipant`."""
+        return {
+            "schema": self._checkpoint_schema,
+            "active_skills": list(self._active.keys()),
+        }
+
+    def validate_checkpoint_state(self, state: dict[str, Any]) -> None:
+        """Validate saved skill state without mutating active skills or tools."""
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"schema", "active_skills"}
+            or state.get("schema") != self._checkpoint_schema
+            or not isinstance(state.get("active_skills"), list)
+            or any(not isinstance(name, str) or not name.strip() for name in state["active_skills"])
+            or len(set(state["active_skills"])) != len(state["active_skills"])
+        ):
+            raise ValueError("invalid skill manager checkpoint state")
+        for name in state["active_skills"]:
+            self.store.load(name)
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        """Restore active skills and any skill-owned tools from ``state``."""
+        self.validate_checkpoint_state(state)
+        for existing in list(self._active):
+            if existing not in state["active_skills"]:
+                self.deactivate(existing)
+        reordered: dict[str, Skill] = {}
+        for name in state["active_skills"]:
+            reordered[name] = self.activate(name)
+        self._active = reordered
 
     def active_skills(self) -> list[Skill]:
         """Return full active skill payloads."""
@@ -282,8 +344,13 @@ class SkillManager:
 class SkillActivationHook:
     """Loop hook that injects only active skill instructions."""
 
-    def __init__(self, manager: SkillManager) -> None:
+    def __init__(self, manager: SkillManager, *, bind_tools: bool = False) -> None:
         self.manager = manager
+        self.bind_tools = bind_tools
+
+    def bind(self, loop_ctx: Any) -> None:
+        if self.bind_tools and self.manager.tools is None:
+            self.manager.tools = loop_ctx.tools
 
     def pre_prompt(self, state: Any, session_log: Any, context: Any, step_num: int) -> str | None:  # noqa: ARG002
         """Inject active skill instructions into the next prompt."""

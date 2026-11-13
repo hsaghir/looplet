@@ -28,6 +28,22 @@ def test_default_harness_example_grades_both_agents_and_entry_paths(tmp_path):
     assert not grade_deliverable("invoices", deliverable)["passed"]
 
 
+def test_capability_overlay_demo_recovers_reloads_graduates_and_replays(tmp_path):
+    from looplet.examples.capability_overlay_demo import EXPECTED_ACTIVE_CENTS, main
+
+    assert main(["--scripted", "--output", str(tmp_path)]) == 0
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["completed"] is True
+    assert summary["replay_completed"] is True
+    assert summary["output"] == {"total_cents": EXPECTED_ACTIVE_CENTS}
+    assert summary["replay_output"] == {"total_cents": EXPECTED_ACTIVE_CENTS}
+    assert [entry["status"] for entry in summary["reloads"]] == ["rejected", "reloaded"]
+    assert summary["cache_breaks"] == 1
+    assert len(summary["harness_epochs"]) == 2
+    assert summary["harness_epochs"][1]["added_tools"] == ["sum_active_ledger"]
+    assert "sum_active_ledger" in summary["graduated_tools"]
+
+
 @pytest.mark.parametrize(
     ("tool_name", "first_args", "second_args", "expected"),
     [

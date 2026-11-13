@@ -1598,6 +1598,12 @@ class TrajectoryRecorder:
         self._step_start_time: float = 0.0
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
         self._harness_snapshot = dict(harness_snapshot) if harness_snapshot is not None else None
+        self._loop_ctx: Any = None
+        self._harness_epochs: list[dict[str, Any]] = []
+        self._last_epoch_key: tuple[Any, ...] | None = None
+        self._last_exec_objs: dict[str, Any] = {}
+        self._exec_revisions: dict[str, int] = {}
+        self._last_tool_sigs: dict[str, tuple[Any, ...]] = {}
         # When set, every JSON document written to disk is redacted
         # through this callable. The recorder still captures the
         # un-redacted in-memory trajectory so callers that want raw
@@ -1606,6 +1612,84 @@ class TrajectoryRecorder:
         self._redact = redact
 
     # ── hook methods ────────────────────────────────────────────
+
+    def bind(self, loop_ctx: Any) -> None:
+        self._loop_ctx = loop_ctx
+
+    def _record_harness_epoch(self, step_num: int | None) -> None:
+        if self._loop_ctx is None:
+            return
+        config = getattr(self._loop_ctx, "config", None)
+        tools = getattr(self._loop_ctx, "tools", None)
+        if config is None or tools is None or not hasattr(tools, "tool_view"):
+            return
+        sys_prompt = str(getattr(config, "system_prompt", "") or "")
+        sys_sha = hashlib.sha256(sys_prompt.encode("utf-8")).hexdigest()
+        view = tools.tool_view()
+        raw_specs = getattr(tools, "tool_specs", {}) or {}
+        tool_origins = {
+            name: spec.origin
+            for name, spec in raw_specs.items()
+            if getattr(spec, "origin", None) is not None
+        }
+        curr_exec_objs: dict[str, Any] = {}
+        curr_tool_sigs: dict[str, tuple[Any, ...]] = {}
+        for name, spec in raw_specs.items():
+            exec_obj = getattr(spec, "execute", spec)
+            curr_exec_objs[name] = exec_obj
+            if name not in self._exec_revisions:
+                self._exec_revisions[name] = 0
+            elif self._last_exec_objs.get(name) is not exec_obj:
+                self._exec_revisions[name] += 1
+            schema_json = json.dumps(
+                spec.to_api_schema() if hasattr(spec, "to_api_schema") else {},
+                sort_keys=True,
+                default=str,
+            )
+            curr_tool_sigs[name] = (
+                getattr(spec, "origin", None),
+                spec.spec_text() if hasattr(spec, "spec_text") else "",
+                schema_json,
+                self._exec_revisions[name],
+            )
+        for stale_name in list(self._exec_revisions):
+            if stale_name not in curr_exec_objs:
+                self._exec_revisions.pop(stale_name, None)
+        epoch_key = (
+            sys_sha,
+            view.version,
+            tuple(sorted(curr_tool_sigs.items())),
+        )
+        if epoch_key == self._last_epoch_key:
+            self._last_exec_objs = curr_exec_objs
+            return
+        curr_tools = list(view.names)
+        entry: dict[str, Any] = {
+            "epoch": len(self._harness_epochs),
+            "step_num": step_num if step_num is not None else 1,
+            "system_prompt_sha256": sys_sha,
+            "tool_view_version": view.version,
+            "tools": curr_tools,
+        }
+        if tool_origins:
+            entry["tool_origins"] = tool_origins
+        if self._harness_epochs:
+            prev_list = self._harness_epochs[-1]["tools"]
+            prev_set = set(prev_list)
+            curr_set = set(curr_tools)
+            entry["added_tools"] = [name for name in curr_tools if name not in prev_set]
+            entry["removed_tools"] = [name for name in prev_list if name not in curr_set]
+            updated = [
+                name
+                for name in curr_tools
+                if name in prev_set and self._last_tool_sigs.get(name) != curr_tool_sigs.get(name)
+            ]
+            if updated:
+                entry["updated_tools"] = updated
+        self._harness_epochs.append(entry)
+        self._last_epoch_key = epoch_key
+        self._last_exec_objs = curr_exec_objs
+        self._last_tool_sigs = curr_tool_sigs
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
         if self._loop_span is None and self._tracer is not None:
@@ -1697,7 +1781,14 @@ class TrajectoryRecorder:
     def on_event(self, payload: Any) -> None:
         from looplet.events import LifecycleEvent  # noqa: PLC0415
 
-        if getattr(payload, "event", None) == LifecycleEvent.SUBAGENT_STOP:
+        event = getattr(payload, "event", None)
+        if event == LifecycleEvent.PRE_LLM_CALL:
+            extra = getattr(payload, "extra", None)
+            if isinstance(extra, dict) and "subagent_id" in extra:
+                return
+            self._record_harness_epoch(getattr(payload, "step_num", None))
+            return
+        if event == LifecycleEvent.SUBAGENT_STOP:
             extra = getattr(payload, "extra", None)
             extra_dict = dict(extra) if isinstance(extra, dict) else {}
             subagents = self.trajectory.metadata.setdefault("subagents", [])
@@ -1858,6 +1949,7 @@ class TrajectoryRecorder:
                 "usage_total",
                 "replay",
                 "replay_policy_override",
+                "harness_reloads",
             ):
                 value = getattr(state, key, None)
                 if value is None:
@@ -1868,6 +1960,8 @@ class TrajectoryRecorder:
                     if hasattr(value, "to_dict"):
                         value = value.to_dict()
                     self.trajectory.metadata[key] = json_snapshot(value)
+        if len(self._harness_epochs) > 1:
+            self.trajectory.metadata["harness_epochs"] = json_snapshot(self._harness_epochs)
 
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:

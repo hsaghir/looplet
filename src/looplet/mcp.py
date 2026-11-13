@@ -231,6 +231,7 @@ class MCPToolAdapter:
                     parameters=params,
                     execute=self._make_executor(name, self._extract_params(schema)),
                     capabilities=list(self._capabilities),
+                    origin="mcp",
                 )
             )
         return specs

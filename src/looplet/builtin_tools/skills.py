@@ -92,6 +92,7 @@ SEARCH_SPEC = ToolSpec(
     },
     requires=["skill_manager"],
     execute=_search_execute,
+    origin="builtin",
 )
 
 
@@ -117,4 +118,5 @@ ACTIVATE_SPEC = ToolSpec(
     },
     requires=["skill_manager"],
     execute=_activate_execute,
+    origin="builtin",
 )

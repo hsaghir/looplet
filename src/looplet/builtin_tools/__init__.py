@@ -48,15 +48,17 @@ from looplet.builtin_tools.tool_results import SPECS as _RESULT_SPECS
 from looplet.builtin_tools.tool_search import SPEC as _TOOL_SEARCH_SPEC
 from looplet.tools import ToolSpec
 
-AVAILABLE: dict[str, ToolSpec] = {
-    _SUBAGENT_SPEC.name: _SUBAGENT_SPEC,
-    _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
-    _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
-    _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
-    _RECALL_SPEC.name: _RECALL_SPEC,
-    _TOOL_SEARCH_SPEC.name: _TOOL_SEARCH_SPEC,
-    **{spec.name: spec for spec in _RESULT_SPECS},
-}
+_RAW_SPECS: tuple[ToolSpec, ...] = (
+    _SUBAGENT_SPEC,
+    _SCAFFOLD_SPEC,
+    _SEARCH_SKILLS_SPEC,
+    _ACTIVATE_SKILL_SPEC,
+    _RECALL_SPEC,
+    _TOOL_SEARCH_SPEC,
+    *_RESULT_SPECS,
+)
+
+AVAILABLE: dict[str, ToolSpec] = {spec.name: spec for spec in _RAW_SPECS}
 
 
 def get_builtin_tool(name: str) -> ToolSpec | None:

@@ -12,10 +12,11 @@ import inspect
 import json
 import time
 import types
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from functools import partial
 from typing import (
     Annotated,
@@ -536,8 +537,23 @@ class ToolSpec:
     results. Model projections must preserve a view intact or refuse it.
     """
 
+    origin: str | None = None
+    """Optional provenance tag identifying the source of this tool.
+
+    Examples include ``"cartridge"``, ``"builtin"``, ``"mcp:fs"``,
+    ``"skill:python"``, and ``"overlay"``. ``origin`` is descriptive
+    metadata for provenance, registry synchronization, and host policy
+    selectors; it does not alter dispatch semantics on its own.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
+
+    def __post_init__(self) -> None:
+        if self.origin is not None and (
+            not isinstance(self.origin, str) or not self.origin.strip()
+        ):
+            raise ValueError("ToolSpec.origin must be a non-empty string or None")
 
     def prepare_args(self, args: dict[str, Any]) -> dict[str, Any]:
         """Prepare arguments before hooks, authorization, and dispatch.
@@ -793,6 +809,7 @@ def tool(
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
+    origin: str | None = None,
 ) -> ToolSpec: ...
 
 
@@ -808,6 +825,7 @@ def tool(
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
+    origin: str | None = None,
 ) -> Callable[[Callable[..., Any]], ToolSpec]: ...
 
 
@@ -822,6 +840,7 @@ def tool(
     free: bool = False,
     timeout_s: float | None = None,
     result_is_view: bool = False,
+    origin: str | None = None,
 ) -> ToolSpec | Callable[[Callable[..., Any]], ToolSpec]:
     """Create a :class:`ToolSpec` from a Python callable.
 
@@ -859,6 +878,7 @@ def tool(
             free=free,
             timeout_s=timeout_s,
             result_is_view=result_is_view,
+            origin=origin,
         )
 
     if fn is None:
@@ -980,17 +1000,7 @@ class BaseToolRegistry:
         """
         return dict(self._resources)
 
-    def register(self, spec: ToolSpec) -> None:
-        """Register a ToolSpec by name.
-
-        Args:
-            spec: The tool specification to register.
-
-        Warns (via ``logging.getLogger(__name__).warning``) when a
-        tool with the same name is already registered - silent
-        overwrites are a common source of bugs when composing
-        multiple ``Skill`` bundles that happen to share a tool name.
-        """
+    def _validate_spec_callable(self, spec: ToolSpec) -> None:
         try:
             signature = inspect.signature(spec.execute)
         except (TypeError, ValueError):
@@ -1007,6 +1017,21 @@ class BaseToolRegistry:
                     "Use a keyword-compatible wrapper."
                 )
         spec.sync_required_parameters_from_callable()
+        if spec._accepts_ctx is None:
+            spec._accepts_ctx = _accepts_ctx(spec.execute)
+
+    def register(self, spec: ToolSpec) -> None:
+        """Register a ToolSpec by name.
+
+        Args:
+            spec: The tool specification to register.
+
+        Warns (via ``logging.getLogger(__name__).warning``) when a
+        tool with the same name is already registered - silent
+        overwrites are a common source of bugs when composing
+        multiple ``Skill`` bundles that happen to share a tool name.
+        """
+        self._validate_spec_callable(spec)
         if spec.name in self._tools:
             existing = self._tools[spec.name]
             # Suppress the warning when the "new" registration is the
@@ -1024,14 +1049,109 @@ class BaseToolRegistry:
                     "or tool bundles; give one of them a unique name.",
                     spec.name,
                 )
-        # Eagerly compute ctx-acceptance so dispatch is thread-safe.
-        if spec._accepts_ctx is None:
-            spec._accepts_ctx = _accepts_ctx(spec.execute)
         self._tools[spec.name] = spec
+
+    def get(self, name: str) -> ToolSpec | None:
+        """Return the registered :class:`ToolSpec` for ``name``, or ``None``."""
+        return self._tools.get(name)
+
+    def replace(self, spec: ToolSpec) -> ToolSpec | None:
+        """Explicitly register or overwrite ``spec`` without collision warnings."""
+        self._validate_spec_callable(spec)
+        previous = self._tools.get(spec.name)
+        self._tools[spec.name] = spec
+        return previous
 
     def unregister(self, name: str) -> ToolSpec:
         """Remove and return a registered tool. Unknown names raise ``KeyError``."""
         return self._tools.pop(name)
+
+    def clear(self) -> None:
+        """Remove all registered tools while preserving retained result stores."""
+        self._tools.clear()
+
+    def tools_for_origin(self, origin: str) -> list[ToolSpec]:
+        """Return all registered tools tagged with ``origin`` in registration order."""
+        return [spec for spec in self._tools.values() if spec.origin == origin]
+
+    def sync_origin(
+        self,
+        origin: str,
+        specs: Sequence[ToolSpec],
+        *,
+        protected: Collection[str] = (),
+        allow_override_origins: Collection[str | None] = (),
+        resources: Mapping[str, Any] | None = None,
+    ) -> dict[str, tuple[str, ...]]:
+        """Atomically synchronize all tools belonging to ``origin``.
+
+        Validates every incoming tool before mutating registry state:
+        - Rejects empty ``origin`` strings and duplicate names within ``specs``.
+        - Rejects modifications or removals of any tool name in ``protected``.
+        - Rejects overwriting a tool owned by another origin unless that
+          origin appears in ``allow_override_origins``.
+
+        Returns a summary dict with ``added``, ``updated``, and ``removed``
+        tool-name tuples.
+        """
+        if not isinstance(origin, str) or not origin.strip():
+            raise ValueError("origin must be a non-empty string")
+        protected_set = set(protected)
+        override_set = set(allow_override_origins)
+        prepared: list[ToolSpec] = []
+        seen_names: set[str] = set()
+        for raw_spec in specs:
+            if raw_spec.name in seen_names:
+                raise ValueError(f"Duplicate tool {raw_spec.name!r} in sync_origin({origin!r})")
+            seen_names.add(raw_spec.name)
+            if raw_spec.name in protected_set:
+                raise ValueError(
+                    f"Tool {raw_spec.name!r} is protected and cannot be modified by origin {origin!r}"
+                )
+            existing = self._tools.get(raw_spec.name)
+            if (
+                existing is not None
+                and existing.origin != origin
+                and existing.origin not in override_set
+            ):
+                raise ValueError(
+                    f"Tool {raw_spec.name!r} is owned by origin {existing.origin!r} "
+                    f"and cannot be overwritten by origin {origin!r}"
+                )
+            stamped = (
+                raw_spec if raw_spec.origin == origin else _dc_replace(raw_spec, origin=origin)
+            )
+            self._validate_spec_callable(stamped)
+            prepared.append(stamped)
+
+        removable = [
+            name
+            for name, existing in self._tools.items()
+            if existing.origin == origin and name not in seen_names
+        ]
+        for name in removable:
+            if name in protected_set:
+                raise ValueError(
+                    f"Tool {name!r} is protected and cannot be removed by origin {origin!r}"
+                )
+
+        added: list[str] = []
+        updated: list[str] = []
+        for name in removable:
+            self.unregister(name)
+        for spec in prepared:
+            if spec.name in self._tools:
+                updated.append(spec.name)
+            else:
+                added.append(spec.name)
+            self.replace(spec)
+        if resources is not None:
+            self._resources.update(resources)
+        return {
+            "added": tuple(added),
+            "updated": tuple(updated),
+            "removed": tuple(removable),
+        }
 
     # Backward-compat alias
     _register = register
@@ -1986,7 +2106,7 @@ def _done_tool_execute(**kwargs: Any) -> dict[str, Any]:
     return {"status": "completed", **kwargs}
 
 
-def register_think_tool(registry: BaseToolRegistry) -> None:
+def register_think_tool(registry: BaseToolRegistry, *, origin: str | None = None) -> None:
     """Register the think() reasoning tool on a tool registry.
 
     think() lets the agent reason explicitly without taking an action
@@ -2017,6 +2137,7 @@ def register_think_tool(registry: BaseToolRegistry) -> None:
             execute=_think_tool_execute,
             concurrent_safe=True,
             free=True,
+            origin=origin,
         )
     )
 
@@ -2026,6 +2147,7 @@ def register_done_tool(
     *,
     name: str = "done",
     parameters: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> None:
     """Register the done() completion-signal tool on a tool registry.
 
@@ -2047,6 +2169,7 @@ def register_done_tool(
         name: Tool name - must match ``LoopConfig.done_tool``.
         parameters: Custom parameter schema. Defaults to
             ``{"summary": "Brief summary of what was accomplished"}``.
+        origin: Optional provenance origin tag for the terminal tool.
     """
     params = parameters or {"summary": "Brief summary of what was accomplished"}
     registry.register(
@@ -2059,5 +2182,6 @@ def register_done_tool(
             ),
             parameters=params,
             execute=_done_tool_execute,
+            origin=origin,
         )
     )

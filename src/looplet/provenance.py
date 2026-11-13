@@ -45,6 +45,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from collections import deque
@@ -132,11 +133,34 @@ def _rehydrate_attempt_conversation(root: Path, req: Any, blob_cache: dict[str, 
     conv_obj["messages"] = restored_msgs
 
 
+_ATTEMPT_ID_LOCK = Lock()
+_LAST_ATTEMPT_KEY: tuple[int, int] = (0, 0)
+
+
+def _new_attempt_id() -> str:
+    """Return a 32-hex-char attempt ID monotonic in admission order."""
+    global _LAST_ATTEMPT_KEY
+    now_ms = (time.time_ns() // 1_000_000) & 0xFFFFFFFFFFFF
+    with _ATTEMPT_ID_LOCK:
+        last_ms, seq = _LAST_ATTEMPT_KEY
+        if now_ms > last_ms:
+            seq = 0
+        else:
+            now_ms = last_ms
+            seq += 1
+            if seq > 0xFFFF:
+                now_ms = (now_ms + 1) & 0xFFFFFFFFFFFF
+                seq = 0
+        _LAST_ATTEMPT_KEY = (now_ms, seq)
+    return f"{now_ms:012x}{seq:04x}{os.urandom(8).hex()}"
+
+
 def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
     """Read durable attempts independently of trajectory or manifest export.
 
     Missing outcomes remain ``None``; an intent or pre-dispatch callback does
-    not attest that a provider received a request. Records are sorted by ID.
+    not attest that a provider received a request. Records are sorted by ID
+    (monotonic in admission order for SDK-generated attempts).
     """
     grouped: dict[str, dict[str, Any]] = {}
     root = _model_attempt_root(Path(directory) / "model-attempts")
@@ -653,7 +677,7 @@ class _RecordingBase:
     ) -> str | None:
         if self._attempt_directory is None:
             return None
-        attempt_id = uuid4().hex
+        attempt_id = _new_attempt_id()
         if options:
             options = {k: v for k, v in options.items() if k not in {"on_chunk", "on_tool_call"}}
         recorded_prompt = (

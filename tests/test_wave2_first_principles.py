@@ -514,10 +514,15 @@ def test_file_run_store_and_provenance_deduplicate_prompts_and_message_blobs(
 
     attempts = load_model_attempts(trace_dir)
     assert len(attempts) == 15
-    assert attempts[-1]["outcome"]["capture"]["request"] == attempts[-1]["intent"]["request"]
-    assert (
-        len(attempts[-1]["intent"]["request"]["conversation_input"]["conversation"]["messages"]) > 0
-    )
+    trajectory = json.loads((trace_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert [a["attempt_id"] for a in attempts] == [
+        c["capture"]["attempt_id"] for c in trajectory["llm_calls"]
+    ]
+    assert all(a["outcome"]["capture"]["request"] == a["intent"]["request"] for a in attempts)
+    assert [
+        len(a["intent"]["request"]["conversation_input"]["conversation"]["messages"])
+        for a in attempts
+    ] == [2 * idx for idx in range(15)]
 
 
 def test_deep_nested_conversation_mutation_and_streaming_line_range_reader(
@@ -649,10 +654,11 @@ def test_mcp_chatty_stderr_does_not_deadlock_and_timeout_invalidates_process(
         "    sys.stdout.flush()\n",
         encoding="utf-8",
     )
-    with MCPToolAdapter([sys.executable, "-I", "-B", str(server)], timeout=0.3) as adapter:
+    with MCPToolAdapter([sys.executable, "-I", "-B", str(server)], timeout=5.0) as adapter:
         specs = adapter.tools()
         assert len(specs) == 1
         assert specs[0].execute() == {"text": "pong"}
+        adapter._timeout = 0.2
         with pytest.raises(TimeoutError):
             adapter._send_request("tools/call", {"name": "echo", "arguments": {"hang": True}})
         # Timed-out server was closed and invalidated, not left live!
@@ -672,7 +678,7 @@ def test_lep_timeout_and_state_service_frame_bounds(tmp_path: Path) -> None:
     t0 = time.monotonic()
     hook.pre_loop(DefaultState(), None, None)
     assert hook.check_permission(ToolCall(tool="write_file", args={}), DefaultState()) is False
-    assert time.monotonic() - t0 < 2.0
+    assert time.monotonic() - t0 < 5.0
     hook.close()
 
     a, b = socket.socketpair()

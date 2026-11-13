@@ -396,13 +396,20 @@ def _directory_tree_digest(directory: Path) -> str:
 
     h = _hashlib.sha256()
     for p in sorted(directory.rglob("*")):
-        if p.is_file() and "__pycache__" not in p.parts:
-            rel = p.relative_to(directory).as_posix().encode("utf-8")
+        if "__pycache__" in p.parts:
+            continue
+        rel = p.relative_to(directory).as_posix().encode("utf-8")
+        if p.is_file():
+            h.update(b"F")
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
             data = p.read_bytes()
             h.update(len(data).to_bytes(8, "big"))
             h.update(data)
+        elif p.is_dir():
+            h.update(b"D")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
     return h.hexdigest()
 
 

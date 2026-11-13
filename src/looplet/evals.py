@@ -1777,6 +1777,21 @@ def _run_case_evals(
 ) -> list["EvalRunRecord"]:
     if type(max_concurrency) is not int or max_concurrency < 1:
         raise ValueError("max_concurrency must be an integer >= 1")
+    is_llm_factory = isinstance(llm, type) or (
+        callable(llm) and not callable(getattr(llm, "generate", None))
+    )
+    if (
+        max_concurrency > 1
+        and not is_llm_factory
+        and (
+            getattr(llm, "conversation_mode", "text") == "stateful"
+            or getattr(llm, "_use_previous_response_id", False) is True
+        )
+    ):
+        raise ValueError(
+            "max_concurrency > 1 cannot share a stateful backend instance; "
+            "disable previous_response_id or pass a per-case backend factory callable"
+        )
     base_runtime = dict(runtime or {})
     selected = _select_eval_cases(overview.cases, cases, case_marks=case_marks)
     if not overview.graders:
@@ -1840,18 +1855,19 @@ def _run_case_evals(
         preset.hooks.append(hook)
 
         task = {k: v for k, v in (case.task or {}).items() if k != "files"}
+        case_llm = llm() if is_llm_factory else llm
         recorder = None
-        run_llm = llm
+        run_llm = case_llm
         if capture and run_dir is not None:
             from looplet.provenance import ProvenanceSink  # noqa: PLC0415
 
             sink = ProvenanceSink(dir=run_dir, redact=redact, redact_upstream=redact_upstream)
-            run_llm = sink.wrap_llm(llm)
+            run_llm = sink.wrap_llm(case_llm)
             recorder = sink.trajectory_hook()
         elif redact is not None:
             from looplet.provenance import RecordingLLMBackend  # noqa: PLC0415
 
-            run_llm = RecordingLLMBackend(llm, redact=redact, redact_upstream=redact_upstream)
+            run_llm = RecordingLLMBackend(case_llm, redact=redact, redact_upstream=redact_upstream)
         failed = False
         interrupted_context = None
         try:
@@ -1905,6 +1921,9 @@ def _run_case_evals(
                     )
             finally:
                 preset.close()
+                close_llm = getattr(case_llm, "close", None)
+                if is_llm_factory and callable(close_llm):
+                    close_llm()
                 if failed and run_dir is None:
                     shutil.rmtree(sandbox, ignore_errors=True)
 
@@ -1930,25 +1949,37 @@ def _run_case_evals(
             raise
         return records
 
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
     workers = min(max_concurrency, len(selected))
     ordered: list[EvalRunRecord | None] = [None] * len(selected)
+    pending_cases = iter(enumerate(selected))
+    in_flight: dict[Future[EvalRunRecord], int] = {}
+    first_error: BaseException | None = None
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [(idx, pool.submit(_execute_one_case, case)) for idx, case in enumerate(selected)]
-        first_error: BaseException | None = None
-        for idx, fut in futures:
-            try:
-                ordered[idx] = fut.result()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        if first_error is not None:
-            if output_dir is None:
-                for item in ordered:
-                    if item is not None:
-                        item.cleanup()
-            raise first_error
+        for _, (idx, case) in zip(range(workers), pending_cases, strict=False):
+            in_flight[pool.submit(_execute_one_case, case)] = idx
+        while in_flight:
+            done_futs, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for fut in done_futs:
+                idx = in_flight.pop(fut)
+                try:
+                    ordered[idx] = fut.result()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+                else:
+                    if first_error is None:
+                        next_item = next(pending_cases, None)
+                        if next_item is not None:
+                            next_idx, next_case = next_item
+                            in_flight[pool.submit(_execute_one_case, next_case)] = next_idx
+    if first_error is not None:
+        if output_dir is None:
+            for item in ordered:
+                if item is not None:
+                    item.cleanup()
+        raise first_error
     return [item for item in ordered if item is not None]
 
 

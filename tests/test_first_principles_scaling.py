@@ -401,3 +401,360 @@ def test_run_cartridge_evals_max_concurrency_preserves_order_and_runs_in_paralle
         "case_3",
     ]
     assert all(r.results[0].passed for r in records)
+
+
+def test_tracked_list_all_mutations_and_cursor_boundaries() -> None:
+    tl = TrackedList([3, 1, 2])
+    tl.insert(0, 9)
+    tl.insert(99, 8)
+    assert list(tl) == [9, 3, 1, 2, 8]
+    assert tl.pop() == 8
+    assert tl.pop(0) == 9
+    tl.sort()
+    assert list(tl) == [1, 2, 3]
+    tl.reverse()
+    assert list(tl) == [3, 2, 1]
+    tl[-1] = 10
+    tl[0:2] = [30, 20]
+    assert list(tl) == [30, 20, 10]
+    gen_before = tl._generation
+    tl[0:2] = [99]
+    assert tl._generation > gen_before
+    assert list(tl) == [99, 10]
+    tl += [7, 8]
+    del tl[1]
+    assert list(tl) == [99, 7, 8]
+    with pytest.raises(IndexError, match="out of range"):
+        with tl.changes_since((0, 0, 0), 10):
+            pass
+    tl.clear()
+    assert list(tl) == []
+
+
+def test_shared_spool_concurrent_transactions_and_deferred_gc_deletes() -> None:
+    import gc
+
+    from looplet._storage import _cleanup_active_spool
+
+    d1: DiskBackedDict[dict] = DiskBackedDict(dict, dict)
+    d2: DiskBackedDict[dict] = DiskBackedDict(dict, dict)
+    d1["seed"] = {"v": 0}
+    d2["seed"] = {"v": 0}
+
+    entered_tx = threading.Event()
+    proceed_rollback = threading.Event()
+    errors: list[BaseException] = []
+
+    def failing_writer() -> None:
+        try:
+            with pytest.raises(RuntimeError, match="abort"):
+                with d1.transaction():
+                    d1["bad"] = {"v": -1}
+                    entered_tx.set()
+                    proceed_rollback.wait(timeout=5)
+                    raise RuntimeError("abort")
+        except BaseException as exc:  # pragma: no cover
+            errors.append(exc)
+
+    def committing_writer() -> None:
+        try:
+            entered_tx.wait(timeout=5)
+            proceed_rollback.set()
+            with d2.transaction():
+                d2["good"] = {"v": 42}
+        except BaseException as exc:  # pragma: no cover
+            errors.append(exc)
+
+    t1 = threading.Thread(target=failing_writer)
+    t2 = threading.Thread(target=committing_writer)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert not errors
+    assert "bad" not in d1
+    assert d1["seed"] == {"v": 0}
+    assert d2["good"] == {"v": 42}
+    assert [k for _, k, _ in d2.items_after(0)] == ["seed", "good"]
+    del d2["seed"]
+    with pytest.raises(KeyError):
+        _ = d2["seed"]
+    with pytest.raises(KeyError):
+        del d2["missing"]
+    d2.clear()
+    assert len(d2) == 0
+
+    # Verify GC finalizer queues onto pending_deletes and drains cleanly.
+    ephemeral: DiskBackedList[dict] | None = DiskBackedList(dict, dict, [{"x": 1}])
+    spool = ephemeral._spool
+    cid = ephemeral._cid
+    ephemeral = None
+    gc.collect()
+    _ = DiskBackedList(dict, dict, [{"y": 2}])
+    with spool.lock:
+        leftover = spool.connection.execute(
+            "SELECT count(*) FROM list_records WHERE cid = ?", (cid,)
+        ).fetchone()[0]
+    assert leftover == 0
+    _cleanup_active_spool()
+    fresh = DiskBackedList(dict, dict, [{"z": 3}])
+    assert fresh[0] == {"z": 3}
+
+
+def test_in_place_mutation_at_oldest_index_invalidates_conversation_and_session_caches(
+    tmp_path: Path,
+) -> None:
+    conv = Conversation()
+    log = SessionLog()
+    for idx in range(10):
+        conv.append(
+            Message(
+                role=MessageRole.TOOL if idx == 1 else MessageRole.USER,
+                content=f"msg-{idx}",
+                tool_result=(
+                    ToolResult(tool="lookup", args_summary="", data={"v": "v1"}, call_id="c1")
+                    if idx == 1
+                    else None
+                ),
+                metadata={"step_number": idx, **({"tool_call_id": "c1"} if idx == 1 else {})},
+            )
+        )
+        log.record(step=idx + 1, theory=f"t-{idx}", tool="lookup", reasoning=f"r-{idx}")
+
+    docs = CheckpointDocuments(tmp_path)
+    docs.save({"conv": conv.serialize(), "log": log.to_list()}, {"step_number": 10})
+    assert "msg-0" in conv.continuation_context()
+    by_call, _, _, _ = conv._projection_index()
+    assert by_call["c1"].data == {"v": "v1"}
+
+    # Mutate oldest items (indices 0 and 1, well outside any 4-item tail) in-place!
+    conv.messages[0].content = "msg-0-mutated"
+    conv.messages[0].metadata["custom"] = "edited"
+    assert conv.messages[1].tool_result is not None
+    conv.messages[1].tool_result.data["v"] = "v2"
+    log.entries[0].theory = "t-0-mutated"
+    log.entries[0].findings.append("new-finding")
+
+    updated_conv = conv.serialize()
+    updated_log = log.to_list()
+    assert updated_conv["messages"][0]["content"] == "msg-0-mutated"
+    assert updated_conv["messages"][0]["metadata"]["custom"] == "edited"
+    assert updated_conv["messages"][1]["tool_result"]["data"] == {"v": "v2"}
+    assert "msg-0-mutated" in conv.continuation_context()
+    assert '"v": "v2"' in conv.continuation_context()
+    assert updated_log[0]["theory"] == "t-0-mutated"
+    assert updated_log[0]["findings"] == ["new-finding"]
+
+    root2 = docs.save({"conv": updated_conv, "log": updated_log}, {"step_number": 11})
+    loaded = docs.load(root2)
+    assert loaded["conv"]["messages"][0]["content"] == "msg-0-mutated"
+    assert loaded["log"][0]["theory"] == "t-0-mutated"
+
+
+def test_shared_stateless_backend_isolates_concurrent_conversations_and_guards_stateful(
+    tmp_path: Path,
+) -> None:
+    from looplet.backends import OpenAIResponsesBackend
+
+    cart = tmp_path / "multistep.cartridge"
+    (cart / "prompts").mkdir(parents=True)
+    (cart / "tools/echo").mkdir(parents=True)
+    (cart / "tools/done").mkdir(parents=True)
+    (cart / "evals/cases").mkdir(parents=True)
+    (cart / "cartridge.json").write_text(
+        json.dumps({"name": "multistep_eval", "schema_version": 2}), encoding="utf-8"
+    )
+    (cart / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n", encoding="utf-8")
+    (cart / "runtime.yaml").write_text("use_native_tools: true\n", encoding="utf-8")
+    (cart / "prompts/system.md").write_text("Echo token then finish.\n", encoding="utf-8")
+    (cart / "tools/echo/tool.yaml").write_text(
+        "name: echo\ndescription: Echo.\nparameters:\n  token:\n    type: string\n",
+        encoding="utf-8",
+    )
+    (cart / "tools/echo/execute.py").write_text(
+        "def execute(ctx, *, token: str) -> dict:\n    return {'echoed': token}\n",
+        encoding="utf-8",
+    )
+    (cart / "tools/done/tool.yaml").write_text(
+        "name: done\ndescription: Done.\nparameters:\n  summary:\n    type: string\n",
+        encoding="utf-8",
+    )
+    (cart / "tools/done/execute.py").write_text(
+        "def execute(ctx, *, summary: str = '') -> dict:\n    return {'summary': summary}\n",
+        encoding="utf-8",
+    )
+    for idx in range(5):
+        (cart / f"evals/cases/case_{idx}.json").write_text(
+            json.dumps(
+                {
+                    "id": f"case_{idx}",
+                    "task": {"token": f"TOK_{idx}"},
+                    "expected": {"token": f"TOK_{idx}"},
+                }
+            ),
+            encoding="utf-8",
+        )
+    (cart / "evals/eval_check.py").write_text(
+        "from looplet import eval_mark\n"
+        "@eval_mark('required')\n"
+        "def eval_tok(ctx):\n"
+        "    return ctx.final_output.get('summary') == ctx.expected['token']\n",
+        encoding="utf-8",
+    )
+
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+
+    def create_completion(**kwargs):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        try:
+            time.sleep(0.015)
+            msgs = kwargs["messages"]
+            # Find which TOK_i belongs to this conversation's initial user message
+            user_texts = [
+                m["content"] for m in msgs if m["role"] == "user" and isinstance(m["content"], str)
+            ]
+            my_tok = next(f"TOK_{i}" for i in range(5) if any(f"TOK_{i}" in t for t in user_texts))
+            # Verify NO message in this request leaked another case's token!
+            serialized = json.dumps(msgs)
+            for other in range(5):
+                other_tok = f"TOK_{other}"
+                if other_tok != my_tok:
+                    assert other_tok not in serialized
+            has_tool_reply = any(m["role"] == "tool" for m in msgs)
+            if not has_tool_reply:
+                tc = SimpleNamespace(
+                    id=f"call_{my_tok}",
+                    function=SimpleNamespace(name="echo", arguments=json.dumps({"token": my_tok})),
+                )
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[tc]))
+                    ],
+                    usage=None,
+                )
+            done_tc = SimpleNamespace(
+                id=f"done_{my_tok}",
+                function=SimpleNamespace(name="done", arguments=json.dumps({"summary": my_tok})),
+            )
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[done_tc]))
+                ],
+                usage=None,
+            )
+        finally:
+            with lock:
+                active -= 1
+
+    client = SimpleNamespace(
+        max_retries=0,
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_completion)),
+    )
+    shared_openai = OpenAIBackend(client, model="test-model")
+    records = run_cartridge_evals(cart, llm=shared_openai, max_concurrency=2)
+    assert len(records) == 5
+    assert peak_active <= 2
+    assert all(r.results[0].passed for r in records)
+    for r in records:
+        r.cleanup()
+
+    # Reject sharing stateful previous_response_id backend across max_concurrency > 1
+    stateful = OpenAIResponsesBackend(
+        SimpleNamespace(responses=None), use_previous_response_id=True
+    )
+    with pytest.raises(ValueError, match="stateful backend"):
+        run_cartridge_evals(cart, llm=stateful, max_concurrency=2)
+    with pytest.raises(ValueError, match="max_concurrency"):
+        run_cartridge_evals(cart, llm=shared_openai, max_concurrency=0)
+    with pytest.raises(ValueError, match="max_concurrency"):
+        run_cartridge_evals(cart, llm=shared_openai, max_concurrency=True)  # type: ignore[arg-type]
+
+    # Factory callable creates and closes per-case backends cleanly
+    closed_count = 0
+
+    class PerCaseBackend:
+        def generate_with_tools(self, prompt: str, **kwargs):
+            my_tok = next(f"TOK_{i}" for i in range(5) if f"TOK_{i}" in prompt)
+            return [{"type": "tool_use", "id": "d1", "name": "done", "input": {"summary": my_tok}}]
+
+        def generate(self, prompt: str, **kwargs) -> str:
+            return ""
+
+        def close(self) -> None:
+            nonlocal closed_count
+            with lock:
+                closed_count += 1
+
+    factory_records = run_cartridge_evals(cart, llm=PerCaseBackend, max_concurrency=2)
+    assert len(factory_records) == 5
+    assert closed_count == 5
+    for r in factory_records:
+        r.cleanup()
+
+
+def test_span_and_trajectory_span_serialization_roundtrip_and_replay_checkpoint_router(
+    tmp_path: Path,
+) -> None:
+    from looplet.provenance import Trajectory, TrajectoryRecorder, _ReplayLLMBackend
+    from looplet.telemetry import Span, Tracer
+    from looplet.turn_engine import restore_checkpoint_into_loop
+
+    tracer = Tracer()
+    rec = TrajectoryRecorder(tracer=tracer)
+    res = run_result(
+        MockLLMBackend([json.dumps({"tool": "done", "args": {"summary": "ok"}})]),
+        task="trace spans",
+        tools=tools_from([], include_done=True),
+        hooks=[rec],
+        config=LoopConfig(max_steps=2, use_native_tools=False, harness_profile="minimal"),
+    )
+    assert res.completed
+    rec.save(tmp_path / "span-trace")
+    saved = json.loads((tmp_path / "span-trace/trajectory.json").read_text(encoding="utf-8"))
+    assert len(saved["spans"]) == 1
+    restored_span = Span.from_dict(saved["spans"][0])
+    assert restored_span.name == "loop.run"
+    assert restored_span.duration_ms is not None
+
+    traj = Trajectory(run_id="t1", started_at=1.0, spans=[restored_span])
+    assert [Span.from_dict(s).name for s in traj.to_dict()["spans"]] == ["loop.run"]
+
+    # Verify restore_checkpoint_into_loop does NOT invoke router.select when replaying
+    router_called = False
+
+    class ForbiddenRouter:
+        def select(self, **kwargs):
+            nonlocal router_called
+            router_called = True
+            raise AssertionError("router should not be selected during replay")
+
+    restored_payloads: list[dict] = []
+    replay_llm = _ReplayLLMBackend(
+        [{"index": 0, "method": "generate", "request_id": "loop/0", "response": "ok"}],
+        source_trace="trace",
+    )
+    replay_llm.restore_checkpoint_state = restored_payloads.append  # type: ignore[attr-defined]
+    fake_ckpt = SimpleNamespace(
+        metadata={},
+        step_number=1,
+        is_terminal=False,
+    )
+    cfg = LoopConfig(max_steps=3, router=ForbiddenRouter())  # type: ignore[arg-type]
+    restore_checkpoint_into_loop(
+        fake_ckpt,
+        config=cfg,
+        llm=replay_llm,
+        state=DefaultState(max_steps=3),
+        session_log=SessionLog(),
+        active_conv=Conversation(),
+        explicit_conversation=None,
+        validate_checkpoint_identity=lambda ckpt, rid: None,
+        resume_loop_state=lambda ckpt, max_steps: {"domain_state": {"llm": {"cursor": 1}}},
+    )
+    assert not router_called
+    assert restored_payloads == [{"cursor": 1}]

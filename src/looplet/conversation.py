@@ -109,6 +109,76 @@ class Message:
         return [b for b in self.blocks if b.kind == "text"]
 
 
+def _shallow_dict_stamp(mapping: Any) -> Any:
+    if not isinstance(mapping, dict):
+        return id(mapping)
+    if len(mapping) > 64:
+        return (id(mapping), len(mapping))
+    return tuple(
+        (
+            k,
+            v
+            if isinstance(v, (str, int, float, bool, type(None)))
+            else (id(v), len(v) if isinstance(v, (dict, list, tuple, set)) else type(v)),
+        )
+        for k, v in mapping.items()
+    )
+
+
+def _message_stamp(msg: Message) -> tuple[Any, ...]:
+    content_sig: Any = (
+        msg.content
+        if isinstance(msg.content, str)
+        else tuple((b.kind, _shallow_dict_stamp(b.data)) for b in msg.content)
+    )
+    tc = msg.tool_call
+    tc_sig = (
+        (
+            tc.tool,
+            _shallow_dict_stamp(tc.args),
+            tc.reasoning,
+            tc.call_id,
+            _shallow_dict_stamp(tc.metadata),
+        )
+        if tc is not None
+        else None
+    )
+    tr = msg.tool_result
+    tr_data_sig = (
+        None
+        if tr is None
+        else tr.data
+        if isinstance(tr.data, (str, int, float, bool, type(None)))
+        else _shallow_dict_stamp(tr.data)
+        if isinstance(tr.data, dict)
+        else (
+            id(tr.data),
+            len(tr.data) if isinstance(tr.data, (list, tuple, set)) else type(tr.data),
+        )
+    )
+    tr_sig = (
+        (
+            tr.tool,
+            tr_data_sig,
+            tr.error,
+            tr.result_key,
+            tuple(tr.warnings),
+            _shallow_dict_stamp(tr.metadata),
+            tr.call_id,
+        )
+        if tr is not None
+        else None
+    )
+    return (
+        msg.role,
+        content_sig,
+        tc_sig,
+        tr_sig,
+        _shallow_dict_stamp(msg.metadata),
+        msg.timestamp,
+    )
+
+
 class Conversation:
     """Unified message thread for an agentic session.
 
@@ -123,6 +193,9 @@ class Conversation:
         from looplet._storage import TrackedList
 
         self.messages: list[Message] = TrackedList(messages) if messages else TrackedList()
+        self._stamps: list[tuple[Any, ...]] = []
+        self._stamp_identity: str = ""
+        self._stamp_generation: int = -1
         self._serialized_messages: TrackedList = TrackedList()
         self._serialized_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
         self._cont_lines: list[str | None] = []
@@ -139,6 +212,30 @@ class Conversation:
         if not isinstance(self.messages, TrackedList):
             self.messages = TrackedList(self.messages)
         return self.messages
+
+    def _sync_tracked(self) -> Any:
+        tracked = self._ensure_tracked()
+        n = len(tracked)
+        if (
+            self._stamp_identity != tracked._record_identity
+            or self._stamp_generation != tracked._generation
+            or n < len(self._stamps)
+        ):
+            self._stamps = [_message_stamp(msg) for msg in tracked]
+            self._stamp_identity = tracked._record_identity
+            self._stamp_generation = tracked._generation
+            return tracked
+        existing = len(self._stamps)
+        for pos in range(existing):
+            stamp = _message_stamp(tracked[pos])
+            if stamp != self._stamps[pos]:
+                self._stamps[pos] = stamp
+                tracked.mark_modified(pos)
+        if n > existing:
+            self._stamps.extend(_message_stamp(tracked[pos]) for pos in range(existing, n))
+        self._stamp_identity = tracked._record_identity
+        self._stamp_generation = tracked._generation
+        return tracked
 
     # ── Core operations ──────────────────────────────────────────
 
@@ -326,9 +423,20 @@ class Conversation:
     def _projection_index(
         self,
     ) -> tuple[dict[str, Any], dict[int, Any], set[str], set[int]]:
-        tracked = self._ensure_tracked()
+        tracked = self._sync_tracked()
         ident, gen, rev, length = self._proj_cursor
-        if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
+        rebuild = (
+            ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length
+        )
+        appended: list[Message] = []
+        if not rebuild:
+            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
+                for pos, msg in changed:
+                    if pos < length:
+                        rebuild = True
+                        break
+                    appended.append(msg)
+        if rebuild:
             self._proj_by_call_id = {}
             self._proj_by_step_num = {}
             self._compacted_call_ids = set()
@@ -342,16 +450,7 @@ class Conversation:
                     self._compacted_steps,
                 )
         else:
-            with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
-                for _, msg in changed:
-                    self._index_message(
-                        msg,
-                        self._proj_by_call_id,
-                        self._proj_by_step_num,
-                        self._compacted_call_ids,
-                        self._compacted_steps,
-                    )
-            for msg in tracked[max(0, len(tracked) - 4) :]:
+            for msg in appended:
                 self._index_message(
                     msg,
                     self._proj_by_call_id,
@@ -398,7 +497,7 @@ class Conversation:
         """Render logical turns without repeating generated prompts."""
         from looplet.result_projection import payload_text
 
-        tracked = self._ensure_tracked()
+        tracked = self._sync_tracked()
         ident, gen, rev, length = self._cont_cursor
         if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
             self._cont_lines = [
@@ -412,9 +511,6 @@ class Conversation:
                         self._cont_lines[pos] = rendered
                     else:
                         self._cont_lines.append(rendered)
-            tail_start = max(0, len(tracked) - 4)
-            for pos in range(tail_start, len(tracked)):
-                self._cont_lines[pos] = self._render_continuation_line(tracked[pos], payload_text)
         self._cont_cursor = (
             tracked._record_identity,
             tracked._generation,
@@ -475,28 +571,19 @@ class Conversation:
         """Serialize to a JSON-compatible dict for persistence."""
         from looplet._storage import TrackedList
 
-        tracked = self._ensure_tracked()
+        tracked = self._sync_tracked()
         ident, gen, rev, length = self._serialized_cursor
         if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
             self._serialized_messages = TrackedList(self._json_safe_message(m) for m in tracked)
         else:
-            touched: set[int] = set()
             with tracked.changes_since((gen, rev, length), len(tracked)) as (_, _, changed):
                 for pos, msg in changed:
-                    touched.add(pos)
                     encoded = self._json_safe_message(msg)
                     if pos < len(self._serialized_messages):
                         if encoded != self._serialized_messages[pos]:
                             self._serialized_messages[pos] = encoded
                     else:
                         self._serialized_messages.append(encoded)
-            tail_start = max(0, len(tracked) - 4)
-            for pos in range(tail_start, len(tracked)):
-                if pos in touched:
-                    continue
-                encoded = self._json_safe_message(tracked[pos])
-                if encoded != self._serialized_messages[pos]:
-                    self._serialized_messages[pos] = encoded
         self._serialized_cursor = (
             tracked._record_identity,
             tracked._generation,

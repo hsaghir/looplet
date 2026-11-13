@@ -91,6 +91,9 @@ class SessionLog:
         self._highlights_label = highlights_label
         self._serialized_entries: TrackedList = TrackedList()
         self._serialized_cursor: tuple[str, int, int, int] = ("", -1, -1, 0)
+        self._entry_stamps: list[tuple[Any, ...]] = []
+        self._stamp_identity: str = ""
+        self._stamp_generation: int = -1
 
     def record(
         self,
@@ -327,6 +330,19 @@ class SessionLog:
             "recall_key": e.recall_key,
         }
 
+    @staticmethod
+    def _entry_stamp(e: LogEntry) -> tuple[Any, ...]:
+        return (
+            e.step,
+            e.theory,
+            e.tool,
+            e.reasoning,
+            tuple(e.entities_seen),
+            tuple(e.findings),
+            tuple(e.highlights),
+            e.recall_key,
+        )
+
     def to_list(self) -> list[dict[str, Any]]:
         """Serialize entries for state snapshot."""
         from looplet._storage import TrackedList
@@ -334,6 +350,27 @@ class SessionLog:
         if not isinstance(self.entries, TrackedList):
             self.entries = TrackedList(self.entries)
         tracked: TrackedList = self.entries
+        n = len(tracked)
+        if (
+            self._stamp_identity != tracked._record_identity
+            or self._stamp_generation != tracked._generation
+            or n < len(self._entry_stamps)
+        ):
+            self._entry_stamps = [self._entry_stamp(e) for e in tracked]
+        else:
+            existing = len(self._entry_stamps)
+            for pos in range(existing):
+                stamp = self._entry_stamp(tracked[pos])
+                if stamp != self._entry_stamps[pos]:
+                    self._entry_stamps[pos] = stamp
+                    tracked.mark_modified(pos)
+            if n > existing:
+                self._entry_stamps.extend(
+                    self._entry_stamp(tracked[pos]) for pos in range(existing, n)
+                )
+        self._stamp_identity = tracked._record_identity
+        self._stamp_generation = tracked._generation
+
         ident, gen, rev, length = self._serialized_cursor
         if ident != tracked._record_identity or gen != tracked._generation or len(tracked) < length:
             self._serialized_entries = TrackedList(self._entry_dict(e) for e in tracked)

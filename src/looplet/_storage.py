@@ -10,6 +10,7 @@ import pickle
 import sqlite3
 import tempfile
 import weakref
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableMapping, MutableSequence, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,7 +32,7 @@ class _SharedTempSpool:
             self.db_path, isolation_level=None, check_same_thread=False
         )
         self.connection.execute("PRAGMA cache_size = -4096")
-        self.connection.execute("PRAGMA journal_mode = OFF")
+        self.connection.execute("PRAGMA journal_mode = MEMORY")
         self.connection.execute("PRAGMA synchronous = OFF")
         self.connection.execute("PRAGMA temp_store = MEMORY")
         self.connection.execute(
@@ -49,19 +50,35 @@ class _SharedTempSpool:
             "key TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE (cid, key))"
         )
         self.lock = RLock()
+        self.pending_deletes: deque[tuple[str, int]] = deque()
         self._next_cid = 0
+        self._savepoint_seq = 0
         self.closed = False
+
+    def drain_pending_deletes(self) -> None:
+        """Delete finalized container rows safely under ``self.lock``."""
+        while self.pending_deletes:
+            table, cid = self.pending_deletes.popleft()
+            if not self.closed:
+                self.connection.execute(f"DELETE FROM {table} WHERE cid = ?", (cid,))
 
     def alloc_cid(self) -> int:
         with self.lock:
+            self.drain_pending_deletes()
             self._next_cid += 1
             return self._next_cid
+
+    def next_savepoint(self) -> str:
+        with self.lock:
+            self._savepoint_seq += 1
+            return f"catalog_update_{self._savepoint_seq}"
 
     def close(self) -> None:
         with self.lock:
             if self.closed:
                 return
             self.closed = True
+            self.pending_deletes.clear()
             try:
                 self.connection.close()
             finally:
@@ -99,14 +116,8 @@ def _get_temp_spool() -> _SharedTempSpool:
 
 
 def _release_spool_rows(spool: _SharedTempSpool, table: str, cid: int) -> None:
-    if spool.closed or spool.pid != os.getpid():
-        return
-    try:
-        with spool.lock:
-            if not spool.closed:
-                spool.connection.execute(f"DELETE FROM {table} WHERE cid = ?", (cid,))
-    except Exception:
-        pass
+    if not spool.closed and spool.pid == os.getpid():
+        spool.pending_deletes.append((table, cid))
 
 
 class TrackedList(list):
@@ -550,20 +561,17 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
                 preserve_python=self._preserve_python,
                 weight=self._weight,
             )
-            if self._spool is records._spool:
-                with self._spool.lock:
-                    self._spool.connection.execute(
-                        "INSERT INTO list_records (cid, position, payload, weight, revision) "
-                        "SELECT ?, position, payload, weight, revision "
-                        "FROM list_records WHERE cid = ?",
-                        (records._cid, self._cid),
-                    )
-                records._length = self._length
-                records._total_weight = self._total_weight
-                records._generation = self._generation
-                records._revision = self._revision
-            else:
-                records.extend(self)
+            with self._spool.lock:
+                self._spool.connection.execute(
+                    "INSERT INTO list_records (cid, position, payload, weight, revision) "
+                    "SELECT ?, position, payload, weight, revision "
+                    "FROM list_records WHERE cid = ?",
+                    (records._cid, self._cid),
+                )
+            records._length = self._length
+            records._total_weight = self._total_weight
+            records._generation = self._generation
+            records._revision = self._revision
             return records
 
     def snapshot(self) -> DiskBackedSequence[Record]:
@@ -633,6 +641,8 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
     def _db(self) -> Iterator[sqlite3.Connection]:
         if self._spool is not None:
             with self._spool.lock:
+                if self._spool.pending_deletes:
+                    self._spool.drain_pending_deletes()
                 yield self._spool.connection
         else:
             yield self._connection
@@ -761,10 +771,15 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        with self._lock:
+        from contextlib import nullcontext
+
+        spool_guard = self._spool.lock if self._spool is not None else nullcontext()
+        with self._lock, spool_guard:
             self.flush()
             self._cache = None
-            savepoint = f"catalog_update_{self._cid or 0}"
+            savepoint = (
+                self._spool.next_savepoint() if self._spool is not None else "catalog_update_file"
+            )
             with self._db() as conn:
                 conn.execute(f"SAVEPOINT {savepoint}")
             try:

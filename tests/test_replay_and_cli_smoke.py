@@ -488,7 +488,123 @@ class TestReplayLoopSmoke:
         assert budget.remaining == 1
 
     @pytest.mark.parametrize("asynchronous", [False, True])
-    async def test_redaction_preserves_request_identity_across_manifest_and_trajectory(
+    async def test_redaction_preserves_request_identity_across_evidence(
+        self, tmp_path, asynchronous
+    ):
+        import re
+
+        from looplet.provenance import (
+            AsyncRecordingLLMBackend,
+            RecordingLLMBackend,
+            TrajectoryRecorder,
+            load_model_attempts,
+        )
+
+        def redact(value):
+            return re.sub(r"\b\d{2,}\b", "[redacted]", value)
+
+        class Backend:
+            last_request = {
+                "request_id": "provider request 1234",
+                "capture": {"attempt_id": "provider attempt 5678"},
+            }
+            last_response = {"replay_source": {"request_id": "provider response 1234"}}
+
+            def generate(self, prompt, **kwargs):
+                return "response 1234"
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = recorder_type(
+            AsyncBackend() if asynchronous else Backend(),
+            redact=redact,
+            attempt_directory=tmp_path / "model-attempts",
+        )
+        hook = TrajectoryRecorder(recording_llm=recorder, redact=redact)
+        for _ in range(12):
+            if asynchronous:
+                await recorder.generate("prompt 1234")
+            else:
+                recorder.generate("prompt 1234")
+        expected = [f"loop/{ordinal}" for ordinal in range(12)]
+
+        assert [call.capture["request_id"] for call in recorder.calls] == expected
+
+        hook.on_loop_end(None, None, None, recorder)
+        hook.save(tmp_path)
+        calls = _load_trace_calls(tmp_path)
+        trajectory = json.loads((tmp_path / "trajectory.json").read_text())
+        assert [call["request_id"] for call in calls] == expected
+        assert [call["capture"]["request_id"] for call in trajectory["llm_calls"]] == expected
+        assert [call["capture"]["attempt_id"] for call in trajectory["llm_calls"]] == [
+            call["attempt_id"] for call in calls
+        ]
+        assert all(call["request"]["prompt"] == "prompt [redacted]" for call in calls)
+        assert all(call["response"] == "response [redacted]" for call in calls)
+        assert all(
+            call["provider_request"]["request_id"] == "provider request [redacted]"
+            and call["provider_request"]["capture"]["attempt_id"] == "provider attempt [redacted]"
+            and call["provider_response"]["replay_source"]["request_id"]
+            == "provider response [redacted]"
+            for call in calls
+        )
+        assert all(
+            call["capture"]["provider_request"]["request_id"] == "provider request [redacted]"
+            and call["capture"]["provider_request"]["capture"]["attempt_id"]
+            == "provider attempt [redacted]"
+            and call["capture"]["provider_response"]["replay_source"]["request_id"]
+            == "provider response [redacted]"
+            for call in trajectory["llm_calls"]
+        )
+        attempts = load_model_attempts(tmp_path)
+        assert {attempt["intent"]["request_id"] for attempt in attempts} == set(expected)
+        assert {attempt["outcome"]["capture"]["request_id"] for attempt in attempts} == set(
+            expected
+        )
+        replay_trace = tmp_path / "replay"
+        replay = recorder_type(
+            _ReplayLLMBackend(calls, source_trace=str(tmp_path)),
+            redact=redact,
+            attempt_directory=replay_trace / "model-attempts",
+        )
+        replay_hook = TrajectoryRecorder(recording_llm=replay, redact=redact)
+        for _ in calls:
+            response = (
+                await replay.generate("fresh prompt")
+                if asynchronous
+                else replay.generate("fresh prompt")
+            )
+            assert response == "response [redacted]"
+        replay_hook.on_loop_end(None, None, None, replay)
+        replay_hook.save(replay_trace)
+        replay_calls = _load_trace_calls(replay_trace)
+        replay_trajectory = json.loads((replay_trace / "trajectory.json").read_text())
+        assert [call["request_id"] for call in replay_calls] == expected
+        assert [
+            call["capture"]["request_id"] for call in replay_trajectory["llm_calls"]
+        ] == expected
+        for original, replayed, embedded in zip(
+            calls, replay_calls, replay_trajectory["llm_calls"], strict=True
+        ):
+            expected_source = {
+                "trace": redact(str(tmp_path)),
+                "call_index": original["index"],
+                "request_id": original["request_id"],
+                "attempt_id": original["attempt_id"],
+            }
+            assert replayed["replay_source"] == expected_source
+            assert embedded["capture"]["replay_source"] == expected_source
+        replay_attempts = load_model_attempts(replay_trace)
+        assert {
+            attempt["outcome"]["capture"]["replay_source"]["request_id"]
+            for attempt in replay_attempts
+        } == set(expected)
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_single_pass_redaction_preserves_request_identity_in_live_loop(
         self, tmp_path, asynchronous
     ):
         import re
@@ -575,30 +691,29 @@ class TestReplayLoopSmoke:
     @pytest.mark.parametrize("native", [False, True])
     @pytest.mark.parametrize("concurrent_dispatch", [False, True])
     @pytest.mark.parametrize("same_turn_done", [False, True])
-    async def test_concurrent_helper_calls_attribute_to_owning_steps(
+    async def test_trajectory_attributes_helper_calls_to_owning_steps(
         self, tmp_path, asynchronous, native, concurrent_dispatch, same_turn_done
     ):
         import asyncio
         from dataclasses import replace
         from threading import Event
 
-        from looplet import LoopConfig, ToolContext, run_result, run_result_async, tools_from
-        from looplet.provenance import ProvenanceSink
+        from looplet import ToolContext, run_result, run_result_async
 
         entered = Event()
         finished = Event()
-        first_batch = [
-            {"type": "tool_use", "id": "alpha", "name": "helper", "input": {"label": "alpha"}},
-            {"type": "tool_use", "id": "beta", "name": "helper", "input": {"label": "beta"}},
+        helper_blocks = [
+            {"type": "tool_use", "id": label, "name": "helper", "input": {"label": label}}
+            for label in ("alpha", "beta")
         ]
         done_block = {
             "type": "tool_use",
             "id": "finish",
             "name": "done",
-            "input": {"summary": "ok"},
+            "input": {"summary": "Finished."},
         }
         decisions = iter(
-            [first_batch + [done_block]] if same_turn_done else [first_batch, [done_block]]
+            [[*helper_blocks, done_block]] if same_turn_done else [helper_blocks, [done_block]]
         )
 
         class Backend:
@@ -764,6 +879,126 @@ class TestReplayLoopSmoke:
         assert (
             replayed.diagnostics()["usage"] is None and replayed.diagnostics()["cost_usd"] is None
         )
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("child_profile", ["minimal", "execution-v1"])
+    async def test_nested_subagent_tool_calls_preserve_outer_to_inner_scope_and_step(
+        self, tmp_path, asynchronous, child_profile
+    ):
+        from looplet import RunResult, ToolContext, async_replay_loop, run_result, run_result_async
+        from looplet.subagent import (
+            ChildRunPolicy,
+            SharedModelBudget,
+            run_sub_loop,
+            run_sub_loop_async,
+        )
+
+        responses = iter(
+            [
+                json.dumps(
+                    {
+                        "tools": [
+                            {"tool": "noop", "args": {}},
+                            {"tool": "delegate", "args": {}},
+                        ]
+                    }
+                ),
+                json.dumps({"tool": "child_helper", "args": {}}),
+                "leaf_answer",
+                json.dumps({"tool": "done", "args": {"summary": "child_done"}}),
+                json.dumps({"tool": "done", "args": {"summary": "parent_done"}}),
+            ]
+        )
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                return next(responses)
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        def make_tools():
+            def noop():
+                return {"ok": True}
+
+            if asynchronous:
+
+                async def child_helper(ctx: ToolContext):
+                    return {"leaf": await ctx.async_llm.generate("leaf_prompt")}
+
+                async def delegate(ctx: ToolContext):
+                    budget = SharedModelBudget(5)
+                    return await run_sub_loop_async(
+                        ctx.async_llm,
+                        task={"goal": "child"},
+                        tools=tools_from([child_helper], include_done=True),
+                        config=LoopConfig(
+                            max_steps=2,
+                            use_native_tools=False,
+                            harness_profile=child_profile,
+                            run_dir=str(tmp_path / f"child-{budget.remaining}"),
+                        ),
+                        policy=ChildRunPolicy(parent_id="parent", model_budget=budget),
+                    )
+            else:
+
+                def child_helper(ctx: ToolContext):
+                    return {"leaf": ctx.llm.generate("leaf_prompt")}
+
+                def delegate(ctx: ToolContext):
+                    budget = SharedModelBudget(5)
+                    return run_sub_loop(
+                        ctx.llm,
+                        task={"goal": "child"},
+                        tools=tools_from([child_helper], include_done=True),
+                        config=LoopConfig(
+                            max_steps=2,
+                            use_native_tools=False,
+                            harness_profile=child_profile,
+                            run_dir=str(tmp_path / f"child-{budget.remaining}"),
+                        ),
+                        policy=ChildRunPolicy(parent_id="parent", model_budget=budget),
+                    )
+
+            return tools_from([noop, delegate], include_done=True)
+
+        sink = ProvenanceSink(tmp_path / "parent")
+        cfg = LoopConfig(max_steps=3, use_native_tools=False, harness_profile="minimal")
+        args = {
+            "llm": sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+            "tools": make_tools(),
+            "hooks": [sink.trajectory_hook()],
+            "config": cfg,
+        }
+        original = await run_result_async(**args) if asynchronous else run_result(**args)
+        assert original.completed and original.output["summary"] == "parent_done"
+        trace = sink.flush()
+        trajectory = json.loads((trace / "trajectory.json").read_text())
+        request_ids = [call["capture"]["request_id"] for call in trajectory["llm_calls"]]
+        assert request_ids == [
+            "loop/0",
+            "loop/tool:delegate:2/0",
+            "loop/tool:delegate:2/tool:child_helper:1/0",
+            "loop/tool:delegate:2/1",
+            "loop/1",
+        ]
+        leaf_call = trajectory["llm_calls"][2]
+        assert leaf_call["scope"] == "tool:delegate"
+        assert leaf_call["step_num"] == 2
+        steps_by_num = {step["step_num"]: step for step in trajectory["steps"]}
+        assert steps_by_num[1]["llm_call_indices"] == [0]
+        assert steps_by_num[2]["llm_call_indices"] == [0, 1, 2, 3]
+        assert steps_by_num[3]["llm_call_indices"] == [4]
+
+        replay_state = DefaultState(max_steps=3)
+        replay_args = {"tools": make_tools(), "state": replay_state, "config": cfg}
+        if asynchronous:
+            _ = [step async for step in async_replay_loop(trace, **replay_args)]
+        else:
+            _ = list(replay_loop(trace, **replay_args))
+        replayed = RunResult.from_state(replay_state)
+        assert replayed.completed and replayed.output == original.output
 
     @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("method", ["generate", "generate_with_tools", "stream"])
@@ -995,6 +1230,8 @@ class TestReplayLoopSmoke:
         assert result.metadata["replay"]["source_trace"] == str(trace)
         diagnostics = result.diagnostics()
         assert diagnostics["usage"] is None and diagnostics["usage_known"] is False
+        assert diagnostics["usage_complete"] is False
+        assert diagnostics["usage_calls"] is None and diagnostics["missing_usage_calls"] is None
         assert diagnostics["cost_usd"] is None
         assert diagnostics["usage_origin"] == "captured"
         assert diagnostics["captured_usage"] == usage
@@ -1011,6 +1248,231 @@ class TestReplayLoopSmoke:
         attempt = load_model_attempts(replay_trace)[0]
         assert attempt["attempt_id"] != source_call["attempt_id"]
         assert attempt["outcome"]["capture"]["replay_source"] == expected_source
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("subagent", [False, True])
+    async def test_replay_ignores_configured_router_without_mutating_config(
+        self, tmp_path, asynchronous, subagent
+    ):
+        from dataclasses import replace
+
+        from looplet import RunResult, ToolContext, async_replay_loop, run_result, run_result_async
+        from looplet.subagent import run_sub_loop, run_sub_loop_async
+
+        per_call_usage = {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "total_tokens": 12,
+            "cost_usd": 0.1,
+        }
+        source_decisions = iter(
+            [
+                json.dumps({"tool": "delegate", "args": {}}),
+                json.dumps({"tool": "done", "args": {"summary": "child captured"}}),
+                json.dumps({"tool": "done", "args": {"summary": "captured answer"}}),
+            ]
+            if subagent
+            else [json.dumps({"tool": "done", "args": {"summary": "captured answer"}})]
+        )
+
+        class SourceBackend:
+            last_usage = per_call_usage
+
+            def generate(self, prompt, **kwargs):
+                return next(source_decisions)
+
+        class AsyncSourceBackend(SourceBackend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        source_backend = AsyncSourceBackend() if asynchronous else SourceBackend()
+
+        class SourceRouter:
+            def select(self, *, purpose):
+                return source_backend
+
+        fresh_requests = []
+        live_selections = []
+
+        class LiveBackend:
+            last_usage = {
+                "input_tokens": 100,
+                "output_tokens": 9,
+                "total_tokens": 109,
+                "cost_usd": 3.0,
+            }
+
+            def generate(self, prompt, **kwargs):
+                fresh_requests.append(prompt)
+                return json.dumps({"tool": "done", "args": {"summary": "fresh answer"}})
+
+        class AsyncLiveBackend(LiveBackend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        live_backend = AsyncLiveBackend() if asynchronous else LiveBackend()
+
+        class LiveRouter:
+            def select(self, *, purpose):
+                live_selections.append(purpose)
+                return live_backend
+
+        def make_tools(active_router):
+            if not subagent:
+                return tools_from([], include_done=True)
+            child_config = LoopConfig(
+                max_steps=1,
+                use_native_tools=False,
+                harness_profile="minimal",
+                router=active_router,
+            )
+            if asynchronous:
+
+                async def delegate(ctx):
+                    return await run_sub_loop_async(
+                        ctx.async_llm,
+                        task={"goal": "child"},
+                        tools=tools_from([], include_done=True),
+                        config=child_config,
+                    )
+            else:
+
+                def delegate(ctx):
+                    return run_sub_loop(
+                        ctx.llm,
+                        task={"goal": "child"},
+                        tools=tools_from([], include_done=True),
+                        config=child_config,
+                    )
+
+            return tools_from([delegate], include_done=True)
+
+        source_router = SourceRouter()
+        source_sink = ProvenanceSink(tmp_path / "source")
+        source_config = LoopConfig(
+            max_steps=2 if subagent else 1,
+            use_native_tools=False,
+            harness_profile="minimal",
+            router=source_router,
+        )
+        source_args = {
+            "llm": source_sink.wrap_llm(source_backend),
+            "tools": make_tools(source_router),
+            "hooks": [source_sink.trajectory_hook()],
+            "config": source_config,
+        }
+        source_result = (
+            await run_result_async(**source_args) if asynchronous else run_result(**source_args)
+        )
+        assert source_result.completed
+        trace = source_sink.flush()
+
+        live_router = LiveRouter()
+        replay_config = LoopConfig(
+            max_steps=2 if subagent else 1,
+            use_native_tools=False,
+            harness_profile="minimal",
+            router=live_router,
+        )
+        replay_sink = ProvenanceSink(tmp_path / "replay")
+        state = DefaultState(max_steps=replay_config.max_steps)
+        replay_args = {
+            "tools": make_tools(live_router),
+            "state": state,
+            "config": replay_config,
+            "recording_sink": replay_sink,
+        }
+        if asynchronous:
+            steps = [step async for step in async_replay_loop(trace, **replay_args)]
+        else:
+            steps = list(replay_loop(trace, **replay_args))
+
+        result = RunResult.from_state(state)
+        assert result.completed
+        assert result.output["summary"] == "captured answer"
+        if subagent:
+            assert steps[0].tool_result.data["output"]["summary"] == "child captured"
+        assert fresh_requests == []
+        assert live_selections == []
+        assert replay_config.router is live_router
+        diagnostics = result.diagnostics()
+        expected_calls = 3 if subagent else 1
+        expected_outer_usage = {
+            key: value * (2 if subagent else 1) for key, value in per_call_usage.items()
+        }
+        assert diagnostics["usage_origin"] == "captured"
+        assert diagnostics["usage"] is None and diagnostics["cost_usd"] is None
+        assert diagnostics["usage_known"] is False and diagnostics["usage_complete"] is False
+        assert diagnostics["usage_calls"] is None and diagnostics["missing_usage_calls"] is None
+        assert diagnostics["captured_usage"] == expected_outer_usage
+        replay_calls = _load_trace_calls(replay_sink.flush())
+        assert len(replay_calls) == expected_calls
+        assert all(call.get("replay_source") is not None for call in replay_calls)
+
+    def test_cli_replay_ignores_factory_router_and_labels_captured_usage(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from looplet import run_result
+
+        usage = {"input_tokens": 9, "output_tokens": 3, "total_tokens": 12, "cost_usd": 0.05}
+
+        class SourceBackend:
+            last_usage = usage
+
+            def generate(self, prompt, **kwargs):
+                return '{"tool":"done","args":{"summary":"captured cli"}}'
+
+        sink = ProvenanceSink(tmp_path / "source")
+        source_result = run_result(
+            llm=sink.wrap_llm(SourceBackend()),
+            tools=tools_from([], include_done=True),
+            hooks=[sink.trajectory_hook()],
+            task={"goal": "Finish"},
+            config=LoopConfig(max_steps=1, use_native_tools=False, harness_profile="minimal"),
+        )
+        assert source_result.completed
+        trace = sink.flush()
+        capsys.readouterr()
+
+        (tmp_path / "routed_factory.py").write_text(
+            "from looplet import AgentPreset, DefaultState, LoopConfig, tools_from\n"
+            "class ForbiddenRouter:\n"
+            "    def select(self, *, purpose):\n"
+            "        raise AssertionError('live router called during CLI replay')\n"
+            "def make_preset(project_root=None):\n"
+            "    return AgentPreset(\n"
+            "        tools=tools_from([], include_done=True),\n"
+            "        config=LoopConfig(max_steps=1, use_native_tools=False, router=ForbiddenRouter()),\n"
+            "        hooks=[],\n"
+            "        state=DefaultState(max_steps=1),\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        exit_code = cli_main(
+            [
+                "replay",
+                str(trace),
+                "--factory",
+                "routed_factory:make_preset",
+                "--workspace",
+                str(tmp_path / "workspace"),
+                "--json",
+            ]
+        )
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["result"]["summary"] == "captured cli"
+        from looplet.evals import EvalContext
+
+        diagnostics = EvalContext.from_trajectory_dir(payload["trace_dir"]).diagnostics()
+        assert diagnostics["usage_origin"] == "captured"
+        assert diagnostics["usage"] is None and diagnostics["cost_usd"] is None
+        assert diagnostics["usage_known"] is False and diagnostics["usage_complete"] is False
+        assert diagnostics["usage_calls"] is None and diagnostics["missing_usage_calls"] is None
+        assert diagnostics["captured_usage"] == usage
+        replayed_calls = _load_trace_calls(Path(payload["trace_dir"]))
+        assert replayed_calls[0]["replay_source"]["trace"] == str(trace.resolve())
 
     @pytest.mark.parametrize("asynchronous", [False, True])
     async def test_replay_loads_evidence_once_and_binds_on_caller(

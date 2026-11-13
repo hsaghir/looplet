@@ -259,6 +259,12 @@ def _recorded_json(value: Any, redact: Callable[[str], str] | None) -> str:
     return json.dumps(value, indent=2, default=str)
 
 
+def _recorded_model_json(value: dict[str, Any], redact: Callable[[str], str] | None) -> str:
+    if redact is not None:
+        value = _redact_model_record(value, redact)
+    return json.dumps(value, indent=2, default=str)
+
+
 def _redact_model_record(
     value: dict[str, Any], redact: Callable[[str], str] | None
 ) -> dict[str, Any]:
@@ -284,24 +290,6 @@ def _redact_model_record(
     return redacted
 
 
-def _is_replay_backend(backend: Any) -> bool:
-    for _ in range(8):
-        if isinstance(backend, _ReplayLLMBackend):
-            return True
-        attributes = getattr(backend, "__dict__", {})
-        backend = next(
-            (
-                attributes[name]
-                for name in ("backend", "_backend", "_inner")
-                if attributes.get(name) is not None
-            ),
-            None,
-        )
-        if backend is None:
-            break
-    return False
-
-
 def _recording_backend(backend: Any) -> _RecordingBase | None:
     for _ in range(8):
         if isinstance(backend, _RecordingBase):
@@ -318,6 +306,24 @@ def _recording_backend(backend: Any) -> _RecordingBase | None:
         if backend is None:
             break
     return None
+
+
+def _has_replay_backend(backend: Any) -> bool:
+    for _ in range(8):
+        if isinstance(backend, _ReplayLLMBackend):
+            return True
+        attributes = getattr(backend, "__dict__", {})
+        backend = next(
+            (
+                attributes[name]
+                for name in ("backend", "_backend", "_inner")
+                if attributes.get(name) is not None
+            ),
+            None,
+        )
+        if backend is None:
+            break
+    return False
 
 
 class _PreparedRequestCallbacks:
@@ -444,11 +450,8 @@ class _RecordingBase:
     @contextmanager
     def _scope_calls(self, scope: str, *, step_num: int | None = None) -> Iterator[None]:
         token = self._call_scope.set(self._call_scope.get() or scope)
-        step_token = (
-            self._scoped_step_num.set(step_num)
-            if step_num is not None and self._scoped_step_num.get() is None
-            else None
-        )
+        outer_step = self._scoped_step_num.get()
+        step_token = self._scoped_step_num.set(outer_step if outer_step is not None else step_num)
         try:
             with self._call_identity.scope(scope, step_num):
                 nested_scope: Callable[..., Any] | None = getattr(
@@ -460,8 +463,7 @@ class _RecordingBase:
                 else:
                     yield
         finally:
-            if step_token is not None:
-                self._scoped_step_num.reset(step_token)
+            self._scoped_step_num.reset(step_token)
             self._call_scope.reset(token)
 
     def _upstream(self, s: str) -> str:
@@ -712,9 +714,8 @@ class _RecordingBase:
                 getattr(self._backend, "last_stop_reason", None) if error is None else None
             )
             usage = getattr(self._backend, "last_usage", {}) if error is None else {}
-        effective_step_num = self._scoped_step_num.get()
-        if effective_step_num is None:
-            effective_step_num = self.current_step_num
+        scoped_step = self._scoped_step_num.get()
+        effective_step_num = scoped_step if scoped_step is not None else self.current_step_num
         redacted_prompt = (
             prompt if self._redact_upstream or self._redact is None else self._redact(prompt)
         )
@@ -893,6 +894,7 @@ class _RecordingBase:
         self.calls.clear()
         self._call_identity.reset()
         self.current_step_num = None
+        self._scoped_step_num.set(None)
         self._conversation_input.set(None)
 
 
@@ -1853,6 +1855,8 @@ class TrajectoryRecorder:
                 "run_envelope",
                 "policy_decisions",
                 "looplet_assistant_turns",
+                "usage_total",
+                "replay",
                 "replay_policy_override",
             ):
                 value = getattr(state, key, None)
@@ -1863,7 +1867,7 @@ class TrajectoryRecorder:
                 if value is not None:
                     if hasattr(value, "to_dict"):
                         value = value.to_dict()
-                    self.trajectory.metadata[key] = value
+                    self.trajectory.metadata[key] = json_snapshot(value)
 
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:
@@ -1945,9 +1949,9 @@ class TrajectoryRecorder:
                         if shared_redactor:
                             if self._redact is not None and entry["metadata"]:
                                 entry["metadata"] = _redact_value(entry["metadata"], self._redact)
+                            stream.write(json.dumps(entry, indent=2, default=str))
                         else:
-                            entry = _redact_model_record(entry, self._redact)
-                        stream.write(json.dumps(entry, indent=2, default=str))
+                            stream.write(_recorded_model_json(entry, self._redact))
                     else:
                         stream.write(_recorded_json(record.to_dict(), self._redact))
                 stream.write("],\n" if name == "steps" else "]\n")
@@ -2783,10 +2787,12 @@ def _prepare_replay(
             **turn_config,
         )
     replay_config: LoopConfig = config
-    if max_steps is not None:
-        replay_config = replace(replay_config, max_steps=max_steps)
-    if replay_config.router is not None:
-        replay_config = replace(replay_config, router=None)
+    if max_steps is not None or replay_config.router is not None:
+        replay_config = replace(
+            replay_config,
+            max_steps=replay_config.max_steps if max_steps is None else max_steps,
+            router=None,
+        )
     if task is None:
         recorded_task = trajectory.get("task")
         if recorded_task is not None and not isinstance(recorded_task, dict):

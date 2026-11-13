@@ -28,19 +28,21 @@ def resolve_turn_llm(
     config: Any,
     turns: Any,
     loop_ctx: Any,
+    *,
+    replaying: bool | None = None,
 ) -> Any:
     """Select the effective turn backend while preserving replay and recording scopes."""
     from looplet.loop import _ScopedLLMProxy
-    from looplet.provenance import _is_replay_backend, _RecordingBase
+    from looplet.provenance import _has_replay_backend, _recording_backend
 
-    if config is not None and config.router is not None and not _is_replay_backend(llm):
+    is_replay = _has_replay_backend(llm) if replaying is None else replaying
+    if config is not None and config.router is not None and not is_replay:
         selected = config.router.select(purpose="reasoning")
-        if isinstance(llm, _RecordingBase):
-            selected = llm.for_backend(selected)
-        elif isinstance(llm, _ScopedLLMProxy):
-            rec = llm._recording
-            routed = rec.for_backend(selected) if isinstance(rec, _RecordingBase) else selected
-            selected = _ScopedLLMProxy(routed, rec, llm._scope, llm._step_num)
+        recorder = _recording_backend(llm)
+        if recorder is not None:
+            selected = recorder.for_backend(selected)
+            if isinstance(llm, _ScopedLLMProxy):
+                selected = llm.for_backend(selected)
     else:
         selected = llm
     effective = turns.wrap(selected) if turns is not None else selected
@@ -97,21 +99,26 @@ def restore_checkpoint_into_loop(
     explicit_conversation: Any,
     validate_checkpoint_identity: Callable[[Any, str | None], None],
     resume_loop_state: Callable[..., dict[str, Any]],
+    replaying: bool | None = None,
 ) -> tuple[LoopConfig, int, Any, dict[str, Any] | None]:
     """Validate and apply an initial checkpoint before entering the turn loop."""
     if saved_checkpoint is None:
         return config, 0, active_conv, None
 
     from looplet.assistant_turns import TURN_STATE_KEY, restore_assistant_checkpoint
+    from looplet.provenance import _has_replay_backend
     from looplet.types import RunEnvelope
 
+    is_replay = _has_replay_backend(llm) if replaying is None else replaying
     validate_checkpoint_identity(
         saved_checkpoint,
         config.run_envelope.run_id if config.run_envelope is not None else None,
     )
     resumed = resume_loop_state(saved_checkpoint, max_steps=config.max_steps)
     restore_backend = (
-        config.router.select(purpose="reasoning") if config.router is not None else llm
+        config.router.select(purpose="reasoning")
+        if config.router is not None and not is_replay
+        else llm
     )
     restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
     if callable(restore_backend_state):

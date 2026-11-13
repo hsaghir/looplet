@@ -17,6 +17,29 @@ from looplet.types import ErrorKind, RunEnvelope, RunPhase, RunResult, RunStatus
 
 __all__ = ["ArtifactRef", "RunEvent", "RunRecord", "event_from_payload", "run_diagnostics"]
 
+USAGE_METRIC_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cost_usd",
+)
+
+
+def _valid_usage_number(value: Any) -> int | float | None:
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and value >= 0 and math.isfinite(value):
+        return value
+    return None
+
+
+def _has_diagnostic_usage(usage: Any) -> bool:
+    return isinstance(usage, Mapping) and any(
+        _valid_usage_number(usage.get(name)) is not None for name in USAGE_METRIC_KEYS
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class ArtifactRef:
@@ -132,31 +155,37 @@ def run_diagnostics(
         steps = ()
 
     def number(value: Any) -> int | float | None:
-        if type(value) is int and value >= 0:
-            return value
-        if type(value) is float and value >= 0 and math.isfinite(value):
-            return value
-        return None
+        return _valid_usage_number(value)
+
+    def int_count(value: Any) -> int | None:
+        return value if type(value) is int and value >= 0 else None
 
     raw_usage = metadata.get("usage_total")
     stats = metadata.get("looplet_run_stats")
     if type(stats) is not dict:
-        stats = {}
+        raw_run_stats = metadata.get("run_stats")
+        stats = raw_run_stats if type(raw_run_stats) is dict else {}
     usage = {
         name: number(raw_usage.get(name))
-        for name in (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "cost_usd",
-        )
+        for name in USAGE_METRIC_KEYS
         if type(raw_usage) is dict and number(raw_usage.get(name)) is not None
     }
     replay = metadata.get("replay")
     replayed = type(replay) is dict and replay.get("schema") == "looplet.replay.v1"
     observed_usage = {} if replayed else usage
+    call_count = int_count(stats.get("llm_calls", metadata.get("llm_calls")))
+    raw_usage_calls = int_count(stats.get("usage_calls", metadata.get("usage_calls")))
+    usage_calls: int | None = None
+    missing_usage_calls: int | None = None
+    if (
+        not replayed
+        and call_count is not None
+        and raw_usage_calls is not None
+        and raw_usage_calls <= call_count
+        and (raw_usage_calls > 0) == bool(observed_usage)
+    ):
+        usage_calls = raw_usage_calls
+        missing_usage_calls = call_count - raw_usage_calls
     tool_errors: Counter[str] = Counter()
     for step in steps:
         if type(step) is Step:
@@ -231,6 +260,11 @@ def run_diagnostics(
         "duration_ms": number(metadata.get("runtime_duration_ms", stats.get("duration_ms"))),
         "usage": observed_usage or None,
         "usage_known": bool(observed_usage),
+        "usage_complete": bool(
+            observed_usage and usage_calls is not None and missing_usage_calls == 0
+        ),
+        "usage_calls": usage_calls,
+        "missing_usage_calls": missing_usage_calls,
         "cost_usd": observed_usage.get("cost_usd"),
         "usage_origin": "captured" if replayed else "backend_reported" if usage else None,
         "captured_usage": usage or None if replayed else None,

@@ -59,10 +59,12 @@ from looplet.loop import (
     LoopContext,
     RunPhase,
     RunStatus,
+    _accumulate_step_usage,
     _bind_loop_context_async,
     _build_tool_ctx,
     _call_check_done_async,
     _completion_gate_warning,
+    _count_usage_calls,
     _deadline_expired,
     _default_build_briefing,
     _default_extract_entities,
@@ -668,6 +670,14 @@ async def async_llm_call(
                 result = llm.generate(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
+            raw_usage = getattr(llm, "last_usage", None)
+            first_usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+            text_calls = [{"usage": first_usage}]
+            text_usage: dict[str, Any] = {
+                key: value
+                for key, value in first_usage.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
             stop = getattr(llm, "last_stop_reason", None)
             continuation_count = 0
             accumulated = result if isinstance(result, str) else ""
@@ -691,6 +701,12 @@ async def async_llm_call(
                     more = await more
                 if not isinstance(more, str):
                     break
+                cont_raw = getattr(llm, "last_usage", None)
+                cont_usage = dict(cont_raw) if isinstance(cont_raw, dict) else {}
+                text_calls.append({"usage": cont_usage})
+                for key, value in cont_usage.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        text_usage[key] = text_usage.get(key, 0) + value
                 accumulated += more
                 stop = getattr(llm, "last_stop_reason", None)
                 continuation_count += 1
@@ -702,6 +718,8 @@ async def async_llm_call(
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
                 native_succeeded=False,
+                usage=text_usage or None,
+                model_calls=text_calls,
             )
 
         except Exception as e:
@@ -1018,6 +1036,7 @@ async def _async_composable_loop_impl(
 
     from looplet.assistant_turns import _AssistantTurns
     from looplet.loop import _get_persist_threshold
+    from looplet.provenance import _has_replay_backend
     from looplet.turn_engine import (
         bind_state_attributes,
         build_pending_dispatch_kwargs,
@@ -1027,6 +1046,7 @@ async def _async_composable_loop_impl(
         restore_checkpoint_into_loop,
     )
 
+    _replaying = _has_replay_backend(llm)
     _ckpt_store = _checkpoint_store
     saved_checkpoint = _initial_checkpoint
     config, _step_offset, _conv, resumed = restore_checkpoint_into_loop(
@@ -1039,6 +1059,7 @@ async def _async_composable_loop_impl(
         explicit_conversation=conversation,
         validate_checkpoint_identity=_validate_checkpoint_identity,
         resume_loop_state=_resume_loop_state,
+        replaying=_replaying,
     )
     bind_state_attributes(state, task=task, conversation=_conv, run_envelope=config.run_envelope)
 
@@ -1152,6 +1173,7 @@ async def _async_composable_loop_impl(
     stop_reason = "budget_exhausted"
     llm_failed = False
     llm_calls = 0
+    usage_calls = 0
     _loop_t0 = time.perf_counter()
     consecutive_parse_failures = 0
     native_policy = NativeToolPolicy(enabled=config.use_native_tools)
@@ -1161,7 +1183,7 @@ async def _async_composable_loop_impl(
     _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop(), requests=_nested_requests)
 
     def _get_llm() -> Any:
-        return resolve_turn_llm(llm, config, _turns, loop_ctx)
+        return resolve_turn_llm(llm, config, _turns, loop_ctx, replaying=_replaying)
 
     def _get_async_tool_llm() -> Any:
         backend = _get_llm()
@@ -1529,7 +1551,9 @@ async def _async_composable_loop_impl(
         llm_calls += llm_result.calls + (
             0 if llm_result.native_attempted else llm_result.continuations
         )
-        _record_run_stats(state, llm_calls=llm_calls, config=config)
+        turn_usage_calls = _count_usage_calls(llm_result)
+        usage_calls += turn_usage_calls
+        _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
         if _deadline_expired(loop_ctx) and _turns is None:
             stop_reason = "deadline_exceeded"
             done = True
@@ -1606,7 +1630,8 @@ async def _async_composable_loop_impl(
                 compact_service=_compact_service,
             )
             llm_calls += recovery_calls
-            _record_run_stats(state, llm_calls=llm_calls)
+            usage_calls += _count_usage_calls(llm_result) - turn_usage_calls
+            _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
             raw_response = llm_result.text
         if _turns is not None:
             llm_calls = _turns.data["model_calls"]
@@ -1617,7 +1642,7 @@ async def _async_composable_loop_impl(
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         measured_usage[name] = measured_usage.get(name, 0) + value
             llm_result.usage = measured_usage or None
-            _record_run_stats(state, llm_calls=llm_calls)
+            _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
         _history.record_llm_turn(
             prompt=prompt,
             response=raw_response,
@@ -1636,19 +1661,7 @@ async def _async_composable_loop_impl(
             getattr(effective_llm, "last_usage", None) if llm_result.ok else None
         )
         if _step_usage and _turns is None:
-            try:
-                _meta = getattr(state, "metadata", None)
-                if isinstance(_meta, dict):
-                    _meta["last_usage"] = dict(_step_usage)
-                    _totals = _meta.get("usage_total")
-                    if not isinstance(_totals, dict):
-                        _totals = {}
-                    for _k, _v in _step_usage.items():
-                        if isinstance(_v, (int, float)) and not isinstance(_v, bool):
-                            _totals[_k] = _totals.get(_k, 0) + _v
-                    _meta["usage_total"] = _totals
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("usage surfacing failed", exc_info=True)
+            _accumulate_step_usage(state, _step_usage)
 
         _post_llm_decisions = await emit_event_async(
             hooks,
@@ -1856,7 +1869,18 @@ async def _async_composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
-                _record_run_stats(state, llm_calls=llm_calls)
+                usage_calls += _count_usage_calls(recovery_result)
+                if _turns is None:
+                    _accumulate_step_usage(
+                        state,
+                        recovery_result.usage
+                        or (
+                            getattr(effective_llm, "last_usage", None)
+                            if recovery_result.ok
+                            else None
+                        ),
+                    )
+                _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
             if not tool_calls:
@@ -2396,7 +2420,7 @@ async def _async_composable_loop_impl(
         llm_calls = _turns.data["model_calls"]
         if _turns.async_checkpoint is not None:
             await _turns.async_checkpoint()
-    _record_run_stats(state, llm_calls=llm_calls)
+    _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
 
     finalizer.mark_stop_emitted()
     await emit_event_async(
@@ -2414,10 +2438,13 @@ async def _async_composable_loop_impl(
         llm_calls = _turns.call_total(llm_calls)
         if _turns.async_checkpoint is not None:
             await _turns.async_checkpoint()
-    _record_run_stats(state, llm_calls=llm_calls)
+    _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls)
 
     _record_run_stats(
-        state, llm_calls=llm_calls, duration_ms=(time.perf_counter() - _loop_t0) * 1000
+        state,
+        llm_calls=llm_calls,
+        usage_calls=usage_calls,
+        duration_ms=(time.perf_counter() - _loop_t0) * 1000,
     )
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
         stream.emit(

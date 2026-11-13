@@ -1881,6 +1881,7 @@ def _run_case_evals(
                             "termination_reason",
                             "llm_calls",
                             "usage_total",
+                            "replay",
                             "looplet_run_stats",
                         ):
                             if key in state_metadata:

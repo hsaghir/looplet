@@ -21,6 +21,8 @@ import inspect
 import logging
 import shutil
 import sys
+from collections.abc import Collection, Sequence
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -285,6 +287,9 @@ def _validate_supported_manifest(root: Path) -> None:
 def cartridge_to_preset(
     workspace_dir: str | Path,
     *,
+    overlays: Sequence[str | Path] = (),
+    allowed_overlay_slots: Collection[str] | None = None,
+    protected_tools: Collection[str] = (),
     state_factory: Callable[[int], Any] | None = None,
     strict: bool = False,
     runtime: dict[str, Any] | None = None,
@@ -294,6 +299,19 @@ def cartridge_to_preset(
     Args:
         workspace_dir: Path to the cartridge root. The parameter name is
             retained for API compatibility.
+        overlays: Optional sequence of sparse overlay directories layered
+            onto ``workspace_dir`` in order without mutating the base
+            directory.
+        allowed_overlay_slots: Optional allowlist of cartridge slots that
+            ``overlays`` may populate (subset of
+            :attr:`CartridgeLayout.OVERLAY_SLOTS`: ``tools``, ``prompts``,
+            ``memory``, ``resources``, ``helpers``, ``hooks``, ``config``,
+            ``runtime``). Disallowed overlay files fail closed with
+            :class:`CartridgeSerializationError`.
+        protected_tools: Tool names that ``overlays`` cannot add or
+            override. When ``allowed_overlay_slots`` excludes ``"config"``,
+            the base cartridge's configured ``done_tool`` is protected
+            automatically.
         state_factory: Builds the runtime ``state`` from ``max_steps``.
             Defaults to ``DefaultState(max_steps=...)``.
         strict: When ``True``, raise :class:`CartridgeSerializationError`
@@ -317,6 +335,12 @@ def cartridge_to_preset(
     resources without forcing every cartridge to register an
     import shim.
     """
+    allowed_slots_set = _normalize_overlay_slots(allowed_overlay_slots)
+    protected_tools_set = _normalize_string_collection(protected_tools, label="protected_tools")
+    if isinstance(overlays, (str, bytes)):
+        raise TypeError("overlays must be a sequence of paths, not a bare string")
+    overlay_paths = [Path(item) for item in overlays]
+
     root = Path(workspace_dir)
     # Accept canonical ``cartridge.json`` and the historical
     # ``workspace.json`` filename. The canonical filename wins.
@@ -338,6 +362,18 @@ def cartridge_to_preset(
                 )
             root = extended_root
 
+        overlay_tool_entries: frozenset[str] = frozenset()
+        effective_protected_tools = set(protected_tools_set)
+        if overlay_paths:
+            if allowed_slots_set is not None and "config" not in allowed_slots_set:
+                effective_protected_tools.add(_read_declared_done_tool(root))
+            root, overlay_tool_entries = _apply_overlays(
+                root,
+                overlay_paths,
+                allowed_slots=allowed_slots_set,
+                protected_tools=frozenset(effective_protected_tools),
+            )
+
     runtime_dict = dict(runtime or {})
     runtime_dict.setdefault("cartridge_root", str(root))
     load_resources = _LoadResourceTracker()
@@ -349,6 +385,8 @@ def cartridge_to_preset(
                 state_factory=state_factory,
                 strict=strict,
                 load_resources=load_resources,
+                overlay_tool_entries=overlay_tool_entries,
+                protected_tools=frozenset(effective_protected_tools),
             )
             setattr(preset, "_cartridge_namespace", namespace)
             _stamp_preset_origin(preset, root)
@@ -364,7 +402,6 @@ import threading as _threading  # noqa: E402, PLC0415
 _CARTRIDGE_LOAD_LOCK = _threading.RLock()
 _EXTENDS_TEMPDIRS: list[Path] = []
 _EXTENDS_CACHE: dict[str, Path] = {}
-_CARTRIDGE_HELPER_MODULES: set[str] = set()
 
 
 def _directory_tree_digest(directory: Path) -> str:
@@ -372,10 +409,14 @@ def _directory_tree_digest(directory: Path) -> str:
 
     h = _hashlib.sha256()
     for p in sorted(directory.rglob("*")):
-        if "__pycache__" in p.parts:
+        if "__pycache__" in p.parts or p.suffix in {".pyc", ".pyo"}:
             continue
         rel = p.relative_to(directory).as_posix().encode("utf-8")
-        if p.is_file():
+        if p.is_symlink():
+            h.update(b"L")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
+        elif p.is_file():
             h.update(b"F")
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
@@ -386,39 +427,17 @@ def _directory_tree_digest(directory: Path) -> str:
             h.update(b"D")
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
+        else:
+            h.update(b"S")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
     return h.hexdigest()
-
-
-def _purge_cartridge_helper_modules() -> None:
-    """Remove ordinary helper modules left by the previous cartridge load."""
-    import sys as _sys  # noqa: PLC0415
-
-    for module_name in _CARTRIDGE_HELPER_MODULES:
-        _sys.modules.pop(module_name, None)
-    _CARTRIDGE_HELPER_MODULES.clear()
-
-
-def _remember_cartridge_helper_modules(root: Path) -> None:
-    """Track non-synthetic modules imported from ``root`` for next load."""
-    import sys as _sys  # noqa: PLC0415
-
-    resolved_root = root.resolve()
-    for module_name, module in list(_sys.modules.items()):
-        if module_name.startswith("_chw_"):
-            continue
-        module_file = getattr(module, "__file__", None)
-        if not module_file:
-            continue
-        try:
-            Path(module_file).resolve().relative_to(resolved_root)
-        except (OSError, ValueError):
-            continue
-        _CARTRIDGE_HELPER_MODULES.add(module_name)
 
 
 def _cleanup_extends_tempdirs() -> None:
     """Best-effort rmtree of every merged-extends tempdir at exit."""
     _EXTENDS_CACHE.clear()
+    _OVERLAY_TOOLS_CACHE.clear()
     while _EXTENDS_TEMPDIRS:
         d = _EXTENDS_TEMPDIRS.pop()
         shutil.rmtree(d, ignore_errors=True)
@@ -427,6 +446,265 @@ def _cleanup_extends_tempdirs() -> None:
 import atexit as _atexit  # noqa: E402, PLC0415
 
 _atexit.register(_cleanup_extends_tempdirs)
+
+_OVERLAY_TOOLS_CACHE: dict[str, frozenset[str]] = {}
+
+
+def _normalize_string_collection(values: Collection[str], *, label: str) -> frozenset[str]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{label} must be a collection of strings, not a bare string")
+    result: set[str] = set()
+    for item in values:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{label} entries must be non-empty strings")
+        result.add(item)
+    return frozenset(result)
+
+
+def _normalize_overlay_slots(
+    allowed_overlay_slots: Collection[str] | None,
+) -> frozenset[str] | None:
+    if allowed_overlay_slots is None:
+        return None
+    normalized = _normalize_string_collection(allowed_overlay_slots, label="allowed_overlay_slots")
+    unknown = sorted(normalized - CartridgeLayout.OVERLAY_SLOTS)
+    if unknown:
+        raise ValueError(
+            f"unknown overlay slot(s) {unknown}; expected subset of "
+            f"{sorted(CartridgeLayout.OVERLAY_SLOTS)}"
+        )
+    return normalized
+
+
+def _read_declared_done_tool(root: Path) -> str:
+    cfg_path = root / CartridgeLayout.CONFIG_YAML
+    if not cfg_path.is_file():
+        return "done"
+    cfg = _load_yaml(cfg_path.read_text(encoding="utf-8"), source_path=cfg_path) or {}
+    declared = cfg.get("done_tool")
+    return str(declared) if isinstance(declared, str) and declared.strip() else "done"
+
+
+def _classify_overlay_entry(rel: Path, entry: Path) -> tuple[str | None, tuple[str, str] | None]:
+    """Return ``(slot, tool_entry)`` for an overlay path, or ``(None, None)`` for container dirs."""
+    posix = rel.as_posix()
+    parts = rel.parts
+    if any(part.startswith(".") for part in parts):
+        raise CartridgeSerializationError(f"overlay contains hidden path {posix!r}")
+    if parts[0] == "evals":
+        raise CartridgeSerializationError(
+            "overlay cannot modify evals/; keep evaluation oracles host-owned"
+        )
+    if posix == CartridgeLayout.SETUP_PY:
+        raise CartridgeSerializationError("overlay cannot define root setup.py")
+    if posix in {CartridgeLayout.CARTRIDGE_JSON, CartridgeLayout.WORKSPACE_JSON}:
+        return "config", None
+    if posix == CartridgeLayout.CONFIG_YAML:
+        if entry.is_dir():
+            raise CartridgeSerializationError(f"overlay {posix!r} must be a regular file")
+        return "config", None
+    if posix == "runtime.yaml":
+        if entry.is_dir():
+            raise CartridgeSerializationError("overlay 'runtime.yaml' must be a regular file")
+        return "runtime", None
+    top = parts[0]
+    if top == CartridgeLayout.TOOLS_DIR:
+        if len(parts) == 1:
+            if not entry.is_dir():
+                raise CartridgeSerializationError("overlay 'tools' must be a directory")
+            return None, None
+        if len(parts) == 2 and entry.is_file():
+            if rel.suffix != ".py":
+                raise CartridgeSerializationError(
+                    f"overlay single-file tool {posix!r} must end with .py"
+                )
+            if rel.name.startswith("_"):
+                return "tools", None
+            return "tools", (rel.stem, "single")
+        tool_dir_name = parts[1]
+        return "tools", (tool_dir_name, "multi")
+    if top == CartridgeLayout.PROMPTS_DIR:
+        return (None, None) if len(parts) == 1 and entry.is_dir() else ("prompts", None)
+    if top == CartridgeLayout.HOOKS_DIR:
+        return (None, None) if len(parts) == 1 and entry.is_dir() else ("hooks", None)
+    if top == CartridgeLayout.MEMORY_DIR:
+        return (None, None) if len(parts) == 1 and entry.is_dir() else ("memory", None)
+    if top == CartridgeLayout.RESOURCES_DIR:
+        return (None, None) if len(parts) == 1 and entry.is_dir() else ("resources", None)
+    if len(parts) == 1 and entry.is_file() and rel.suffix == ".py":
+        return "helpers", None
+    raise CartridgeSerializationError(f"unrecognized overlay path {posix!r}")
+
+
+def _apply_overlays(
+    base_root: Path,
+    overlays: list[Path],
+    *,
+    allowed_slots: frozenset[str] | None,
+    protected_tools: frozenset[str],
+) -> tuple[Path, frozenset[str]]:
+    """Validate and layer ``overlays`` onto ``base_root`` without mutating ``base_root``."""
+    import hashlib as _hashlib  # noqa: PLC0415
+    import tempfile as _tempfile  # noqa: PLC0415
+
+    per_overlay_tools: list[dict[str, str]] = []
+    digest_parts = [_directory_tree_digest(base_root)]
+
+    for overlay_path in overlays:
+        if overlay_path.is_symlink():
+            raise CartridgeSerializationError(f"overlay root must not be a symlink: {overlay_path}")
+        if not overlay_path.exists():
+            raise FileNotFoundError(f"overlay directory does not exist: {overlay_path}")
+        if not overlay_path.is_dir():
+            raise CartridgeSerializationError(f"overlay path is not a directory: {overlay_path}")
+        if _manifest_present(overlay_path):
+            _validate_supported_manifest(overlay_path)
+
+        tool_forms: dict[str, str] = {}
+        for entry in sorted(overlay_path.rglob("*")):
+            if entry.is_symlink():
+                raise CartridgeSerializationError(f"overlay contains a symlink: {entry}")
+            rel = entry.relative_to(overlay_path)
+            if "__pycache__" in rel.parts or entry.suffix in {".pyc", ".pyo"}:
+                continue
+            if not entry.is_dir() and not entry.is_file():
+                raise CartridgeSerializationError(
+                    f"overlay contains unsupported special file {rel.as_posix()!r}"
+                )
+            slot, tool_info = _classify_overlay_entry(rel, entry)
+            if slot is not None and allowed_slots is not None and slot not in allowed_slots:
+                raise CartridgeSerializationError(
+                    f"overlay path {rel.as_posix()!r} uses disallowed slot {slot!r}; "
+                    f"allowed slots: {sorted(allowed_slots)}"
+                )
+            if tool_info is not None:
+                tool_name, form = tool_info
+                if tool_name in protected_tools:
+                    raise CartridgeSerializationError(
+                        f"overlay cannot modify protected tool {tool_name!r}"
+                    )
+                prev_form = tool_forms.get(tool_name)
+                if prev_form is not None and prev_form != form:
+                    raise CartridgeSerializationError(
+                        f"overlay defines both single-file and multi-file forms for tool {tool_name!r}"
+                    )
+                tool_forms[tool_name] = form
+
+        overlay_cfg_path = overlay_path / CartridgeLayout.CONFIG_YAML
+        if overlay_cfg_path.is_file():
+            overlay_cfg = (
+                _load_yaml(
+                    overlay_cfg_path.read_text(encoding="utf-8"),
+                    source_path=overlay_cfg_path,
+                )
+                or {}
+            )
+            if overlay_cfg.get("extends"):
+                raise CartridgeSerializationError(
+                    f"overlay config.yaml at {overlay_cfg_path} cannot declare 'extends'"
+                )
+            if (
+                "done_tool" in overlay_cfg
+                and protected_tools
+                and str(overlay_cfg.get("done_tool")) != _read_declared_done_tool(base_root)
+            ):
+                raise CartridgeSerializationError(
+                    f"overlay config.yaml at {overlay_cfg_path} cannot retarget protected done_tool"
+                )
+
+        per_overlay_tools.append(tool_forms)
+        digest_parts.append(_directory_tree_digest(overlay_path))
+
+    cache_payload = "|".join(
+        [
+            *digest_parts,
+            ",".join(sorted(allowed_slots)) if allowed_slots is not None else "*",
+            ",".join(sorted(protected_tools)),
+        ]
+    )
+    cache_key = "overlay:" + _hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
+    cached = _EXTENDS_CACHE.get(cache_key)
+    cached_tools = _OVERLAY_TOOLS_CACHE.get(cache_key)
+    if cached is not None and cached.is_dir() and cached_tools is not None:
+        return cached, cached_tools
+
+    merged = Path(_tempfile.mkdtemp(prefix=f"looplet_overlay_{base_root.name}_"))
+    _EXTENDS_TEMPDIRS.append(merged)
+    shutil.copytree(base_root, merged, dirs_exist_ok=True, symlinks=False)
+
+    merged_cfg_path = merged / CartridgeLayout.CONFIG_YAML
+    merged_cfg = (
+        _load_yaml(merged_cfg_path.read_text(encoding="utf-8"), source_path=merged_cfg_path)
+        if merged_cfg_path.is_file()
+        else None
+    ) or {}
+    merged_rt_path = merged / "runtime.yaml"
+    merged_rt = (
+        _load_yaml(merged_rt_path.read_text(encoding="utf-8"), source_path=merged_rt_path)
+        if merged_rt_path.is_file()
+        else None
+    ) or {}
+    cfg_modified = False
+    rt_modified = False
+    all_overlay_tools: set[str] = set()
+
+    for overlay_path, tool_forms in zip(overlays, per_overlay_tools):
+        # Clear superseded base tool layout before copying overlay tool files.
+        for tool_name, form in tool_forms.items():
+            all_overlay_tools.add(tool_name)
+            if form == "single":
+                stale_dir = merged / CartridgeLayout.TOOLS_DIR / tool_name
+                if stale_dir.is_dir():
+                    shutil.rmtree(stale_dir)
+            else:
+                stale_file = merged / CartridgeLayout.TOOLS_DIR / f"{tool_name}.py"
+                if stale_file.is_file():
+                    stale_file.unlink()
+                stale_dir = merged / CartridgeLayout.TOOLS_DIR / tool_name
+                if stale_dir.is_dir():
+                    shutil.rmtree(stale_dir)
+
+        for entry in sorted(overlay_path.rglob("*")):
+            rel = entry.relative_to(overlay_path)
+            if "__pycache__" in rel.parts or entry.suffix in {".pyc", ".pyo"}:
+                continue
+            if rel.as_posix() in {
+                CartridgeLayout.CARTRIDGE_JSON,
+                CartridgeLayout.WORKSPACE_JSON,
+                CartridgeLayout.CONFIG_YAML,
+                "runtime.yaml",
+            }:
+                continue
+            target = merged / rel
+            if entry.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif entry.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(entry, target)
+
+        ov_cfg_path = overlay_path / CartridgeLayout.CONFIG_YAML
+        if ov_cfg_path.is_file():
+            ov_cfg = (
+                _load_yaml(ov_cfg_path.read_text(encoding="utf-8"), source_path=ov_cfg_path) or {}
+            )
+            merged_cfg = _shallow_merge_config(merged_cfg, ov_cfg)
+            cfg_modified = True
+
+        ov_rt_path = overlay_path / "runtime.yaml"
+        if ov_rt_path.is_file():
+            ov_rt = _load_yaml(ov_rt_path.read_text(encoding="utf-8"), source_path=ov_rt_path) or {}
+            merged_rt = _shallow_merge_config(merged_rt, ov_rt)
+            rt_modified = True
+
+    if cfg_modified:
+        merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
+    if rt_modified:
+        merged_rt_path.write_text(_dump_yaml(merged_rt) + "\n", encoding="utf-8")
+
+    frozen_tools = frozenset(all_overlay_tools)
+    _EXTENDS_CACHE[cache_key] = merged
+    _OVERLAY_TOOLS_CACHE[cache_key] = frozen_tools
+    return merged, frozen_tools
 
 
 def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
@@ -711,6 +989,8 @@ def _workspace_to_preset_inner(
     state_factory: Callable[[int], Any] | None,
     strict: bool,
     load_resources: _LoadResourceTracker,
+    overlay_tool_entries: frozenset[str] = frozenset(),
+    protected_tools: frozenset[str] = frozenset(),
 ) -> "AgentPreset":
     """Inner cartridge loader. Assumes ``sys.path`` already includes
     the cartridge root so co-located ``lib.py`` modules import cleanly.
@@ -1083,7 +1363,9 @@ def _workspace_to_preset_inner(
     config.validate_assistant_turns(require_binding=False)
 
     # Tools
-    registry = BaseToolRegistry()
+    from looplet.validation import ValidatingToolRegistry  # noqa: PLC0415
+
+    registry: BaseToolRegistry = ValidatingToolRegistry()
     argument_schemas: dict[str, Any] = {}
     tools_dir = root / CartridgeLayout.TOOLS_DIR
     if tools_dir.is_dir():
@@ -1135,6 +1417,14 @@ def _workspace_to_preset_inner(
         ):
             spec = _load_single_file_tool(tool_file, strict=strict, is_v2=is_v2)
             if spec is not None:
+                is_overlay_tool = (
+                    tool_file.stem in overlay_tool_entries or spec.name in overlay_tool_entries
+                )
+                if is_overlay_tool and spec.name in protected_tools:
+                    raise CartridgeSerializationError(
+                        f"overlay tool {tool_file.name!r} cannot override protected tool {spec.name!r}"
+                    )
+                spec = _dc_replace(spec, origin="overlay" if is_overlay_tool else "cartridge")
                 registry.register(spec)
 
         # ── multi-file tool form (existing) ───────────────────
@@ -1163,6 +1453,14 @@ def _workspace_to_preset_inner(
                 )
                 or {}
             )
+            declared_tool_name = str(yaml_payload.get("name", tool_dir.name))
+            is_overlay_multi = (
+                tool_dir.name in overlay_tool_entries or declared_tool_name in overlay_tool_entries
+            )
+            if is_overlay_multi and declared_tool_name in protected_tools:
+                raise CartridgeSerializationError(
+                    f"overlay tool {tool_dir.name!r} cannot override protected tool {declared_tool_name!r}"
+                )
             argument_schema = None
             if "argument_validation" in yaml_payload:
                 from looplet.validation import _schema_from_payload
@@ -1244,7 +1542,17 @@ def _workspace_to_preset_inner(
                 capabilities=list(yaml_payload.get("capabilities", []) or []),
                 tags=list(yaml_payload.get("tags", []) or []),
                 render=dict(yaml_payload.get("render", {}) or {}),
+                origin=(
+                    "overlay"
+                    if tool_dir.name in overlay_tool_entries
+                    or str(yaml_payload.get("name", tool_dir.name)) in overlay_tool_entries
+                    else "cartridge"
+                ),
             )
+            if spec.origin == "overlay" and spec.name in protected_tools:
+                raise CartridgeSerializationError(
+                    f"overlay tool {tool_dir.name!r} cannot override protected tool {spec.name!r}"
+                )
             # Surface tool name ↔ directory name mismatches. The agent's
             # system prompt and tool catalog use ``spec.name``, but
             # users debug via the directory layout. A typo in
@@ -1432,7 +1740,7 @@ def _workspace_to_preset_inner(
                     _register_mcp_tools(
                         registry,
                         [
-                            _spec
+                            _dc_replace(_spec, origin=f"mcp:{_srv_name}")
                             for _spec in _adapter.tools()
                             if _allow_set is None or _spec.name in _allow_set
                         ],
@@ -1448,17 +1756,10 @@ def _workspace_to_preset_inner(
                 logger.warning("%s; skipping server", msg)
 
     if argument_schemas:
-        from looplet.validation import ValidatingToolRegistry
-
-        validated = ValidatingToolRegistry()
-        for tool_spec in registry._tools.values():
-            if argument_schemas.get(tool_spec.name) == "parameters":
-                validated.register_typed(tool_spec)
-            elif tool_spec.name in argument_schemas:
-                validated.register_with_schema(tool_spec, argument_schemas[tool_spec.name])
-            else:
-                validated.register(tool_spec)
-        registry = validated
+        assert isinstance(registry, ValidatingToolRegistry)
+        for tool_name, schema in argument_schemas.items():
+            if tool_name in registry._tools:
+                registry._schemas[tool_name] = schema
 
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live
@@ -1802,19 +2103,21 @@ def _workspace_to_preset_inner(
             # handler via ``runtime={"ask_handler": <callable>}``; the
             # callable receives ``(ToolCall, PermissionRule)`` and must
             # return ``PermissionDecision.ALLOW`` or ``DENY``.
-            asking_tools = sorted(
+            asking_rules = sorted(
                 {
-                    rule.tool
+                    f"origin:{rule.origin}"
+                    if rule.origin is not None and rule.tool == "*"
+                    else rule.tool
                     for rule in permission_hook.engine.rules
                     if rule.decision == PermissionDecision.ASK
                 }
             )
-            if asking_tools:
+            if asking_rules:
                 ask_handler = (runtime_dict or {}).get("ask_handler")
                 if ask_handler is None:
                     msg = (
                         f"cartridge {cfg_path} declares permissions.ask rules for "
-                        f"{asking_tools!r} but no ``ask_handler`` was supplied. "
+                        f"{asking_rules!r} but no ``ask_handler`` was supplied. "
                         f"Pass one via ``cartridge_to_preset(path, runtime="
                         f"{{'ask_handler': callable}})``. The handler receives "
                         f"``(ToolCall, PermissionRule)`` and must return "
@@ -1828,6 +2131,7 @@ def _workspace_to_preset_inner(
                         f"runtime['ask_handler'] must be callable, got {type(ask_handler).__name__}"
                     )
                 permission_hook.engine.ask_handler = ask_handler  # type: ignore[assignment]
+            permission_hook._tools = registry  # noqa: SLF001
             preset.hooks.append(permission_hook)
 
     # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;

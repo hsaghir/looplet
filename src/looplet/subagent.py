@@ -402,7 +402,12 @@ def _prepare_child_recovery(run: _ChildRun) -> None:
             "run_envelope": config.run_envelope.to_dict(),
         },
         "tools": [
-            {"name": name, "parameters": spec.parameters, "capabilities": list(spec.capabilities)}
+            {
+                "name": name,
+                "parameters": spec.parameters,
+                "capabilities": list(spec.capabilities),
+                **({"origin": spec.origin} if spec.origin is not None else {}),
+            }
             for name, spec in sorted(run.inputs["tools"].tool_specs.items())
         ],
         "execution": {
@@ -418,7 +423,13 @@ def _prepare_child_recovery(run: _ChildRun) -> None:
                 "version": engine.policy_version,
                 "default": engine.default.value,
                 "rules": [
-                    (rule.tool, rule.decision.value, rule.reason, rule.arg_matcher is not None)
+                    (
+                        rule.tool,
+                        rule.decision.value,
+                        rule.reason,
+                        rule.arg_matcher is not None,
+                        *([rule.origin] if rule.origin is not None else []),
+                    )
                     for rule in engine.rules
                 ],
             }
@@ -758,7 +769,12 @@ def _prepare_sub_loop(
         sub_tools = clone_tools_excluding(tools, exclude)
         terminal_name = config.done_tool if config is not None else "done"
         if terminal_name not in sub_tools._tools:
-            register_done_tool(sub_tools, name=terminal_name)
+            parent_terminal = getattr(tools, "_tools", {}).get(terminal_name)
+            raw_origin = getattr(parent_terminal, "origin", None)
+            terminal_origin = (
+                raw_origin if isinstance(raw_origin, str) and raw_origin.strip() else "builtin"
+            )
+            register_done_tool(sub_tools, name=terminal_name, origin=terminal_origin)
     if policy is not None and policy.allowed_tools is not None:
         sub_tools = _restrict_tools(sub_tools, policy.allowed_tools)
 
@@ -1223,14 +1239,19 @@ class _ChildBudgetStopHook:
 
 def _restrict_tools(registry: Any, allowed: frozenset[str]) -> Any:
     from looplet.tools import BaseToolRegistry  # noqa: PLC0415
+    from looplet.validation import ValidatingToolRegistry  # noqa: PLC0415
 
     if not isinstance(registry, BaseToolRegistry):
         raise TypeError("child tool attenuation requires a BaseToolRegistry")
-    restricted = BaseToolRegistry()
+    is_validating = isinstance(registry, ValidatingToolRegistry)
+    restricted: BaseToolRegistry = ValidatingToolRegistry() if is_validating else BaseToolRegistry()
     restricted.set_resources(registry._resources)
     for name, spec in registry._tools.items():
         if name in allowed:
             restricted.register(replace(spec))
+            if is_validating and name in registry._schemas:
+                assert isinstance(restricted, ValidatingToolRegistry)
+                restricted._schemas[name] = registry._schemas[name]
     return restricted
 
 
@@ -1349,6 +1370,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     the sub-agent without any signal.
     """
     from looplet.tools import BaseToolRegistry
+    from looplet.validation import ValidatingToolRegistry
 
     parent_names = set(parent_tools._tools.keys())
     missing = [name for name in exclude if name not in parent_names]
@@ -1360,7 +1382,10 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
             sorted(parent_names),
         )
 
-    sub = BaseToolRegistry()
+    is_validating = isinstance(parent_tools, ValidatingToolRegistry)
+    sub: BaseToolRegistry = ValidatingToolRegistry() if is_validating else BaseToolRegistry()
+    if hasattr(parent_tools, "_resources"):
+        sub.set_resources(parent_tools._resources)
     for name, spec in parent_tools._tools.items():
         if name in exclude:
             continue
@@ -1370,4 +1395,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
         cloned.render = dict(getattr(spec, "render", {}))
         cloned.capabilities = list(getattr(spec, "capabilities", ()))
         sub.register(cloned)
+        if is_validating and name in parent_tools._schemas:
+            assert isinstance(sub, ValidatingToolRegistry)
+            sub._schemas[name] = parent_tools._schemas[name]
     return sub

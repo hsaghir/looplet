@@ -214,6 +214,7 @@ SPEC = ToolSpec(
     concurrent_safe=True,
     read_only=True,
     free=True,
+    origin="builtin",
 )
 
 
@@ -231,4 +232,5 @@ def make_tool_search_tool(hook: DeferredToolViewHook) -> ToolSpec:
         concurrent_safe=True,
         read_only=True,
         free=True,
+        origin="builtin",
     )

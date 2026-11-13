@@ -76,6 +76,11 @@ if TYPE_CHECKING:
         preset_to_cartridge,
         resource_ref_for,
     )
+    from looplet.cartridge.hot_reload import (
+        ReloadHook,
+        ReloadObservation,
+        WorkspaceWatcher,
+    )
     from looplet.cartridge.scaffold import scaffold_cartridge
     from looplet.checkpoint import (
         Checkpoint,
@@ -342,6 +347,11 @@ _EXPORT_MODULES: dict[str, tuple[str, ...]] = {
         "cartridge_to_preset",
         "preset_to_cartridge",
         "resource_ref_for",
+    ),
+    "looplet.cartridge.hot_reload": (
+        "ReloadHook",
+        "ReloadObservation",
+        "WorkspaceWatcher",
     ),
     "looplet.cartridge.scaffold": ("scaffold_cartridge",),
     "looplet.checkpoint": (
@@ -704,6 +714,9 @@ __all__ = [
     "CartridgeCompatibility",
     "CartridgeLayout",
     "CartridgeSerializationError",
+    "ReloadHook",
+    "ReloadObservation",
+    "WorkspaceWatcher",
     "cartridge_to_preset",
     "preset_to_cartridge",
     "scaffold_cartridge",

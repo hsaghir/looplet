@@ -1194,3 +1194,116 @@ def test_permission_hook_subagent_event_ignore_and_cross_cartridge_resource_roun
         pa.close()
         pb.close()
     _ = RunEnvelope(run_id="ok")
+
+
+def test_capability_overlays_compose_with_lazy_exports_run_store_and_blob_provenance(
+    tmp_path: Path,
+) -> None:
+    import looplet as _lp
+    from looplet import (
+        AgentRuntime,
+        FileRunStore,
+        ReloadHook,
+        ReloadObservation,
+        WorkspaceWatcher,
+        scaffold_cartridge,
+    )
+    from looplet.backends import _ConversationBackend
+
+    assert ReloadHook is not None and ReloadObservation is not None and WorkspaceWatcher is not None
+    assert "ReloadHook" in _lp.__all__ and "WorkspaceWatcher" in _lp.__all__
+
+    base = tmp_path / "base.cartridge"
+    scaffold_cartridge(base, name="overlay_w2", tools=["read_seed"])
+    (base / "tools/read_seed/tool.yaml").write_text(
+        "name: read_seed\ndescription: Read seed.\nparameters: {}\n", encoding="utf-8"
+    )
+    (base / "tools/read_seed/execute.py").write_text(
+        "def execute(ctx) -> dict:\n    return {'seed': 21}\n", encoding="utf-8"
+    )
+    overlay = tmp_path / "overlay"
+
+    with WorkspaceWatcher(
+        base, overlays=[overlay], allowed_overlay_slots={"tools"}, strict=True
+    ) as watcher:
+        preset = watcher.preset()
+        preset.config.max_steps = 5
+        preset.state.max_steps = 5
+
+        @tool(origin="host")
+        def write_doubler() -> dict[str, str]:
+            tdir = overlay / "tools" / "double_seed"
+            tdir.mkdir(parents=True, exist_ok=True)
+            (tdir / "tool.yaml").write_text(
+                "name: double_seed\ndescription: Double seed.\nparameters:\n  v:\n    type: integer\n",
+                encoding="utf-8",
+            )
+            (tdir / "execute.py").write_text(
+                "def execute(ctx, *, v: int) -> dict:\n    return {'doubled': v * 2}\n",
+                encoding="utf-8",
+            )
+            return {"written": "double_seed"}
+
+        preset.tools.register(write_doubler)
+        asked: list[str] = []
+        perm_engine = (
+            PermissionEngine(
+                default=PermissionDecision.DENY,
+                ask_handler=lambda tc, _r: (asked.append(tc.tool), PermissionDecision.ALLOW)[1],
+            )
+            .allow_origin("cartridge")
+            .allow_origin("host")
+            .ask_origin("overlay")
+        )
+        preset.hooks.extend([ReloadHook(watcher), PermissionHook(perm_engine)])
+        preset.config.run_dir = str(tmp_path / "evidence")
+
+        turns = [
+            [{"type": "tool_use", "id": "t1", "name": "read_seed", "input": {}}],
+            [{"type": "tool_use", "id": "t2", "name": "write_doubler", "input": {}}],
+            [{"type": "tool_use", "id": "t3", "name": "double_seed", "input": {"v": 21}}],
+            [{"type": "tool_use", "id": "t4", "name": "done", "input": {"summary": "42"}}],
+        ]
+
+        class ScriptedConvBackend(_ConversationBackend):
+            _provider = "openai"
+            _native_blocks = False
+
+            def __init__(self) -> None:
+                self.configure_request_options(None)
+                self._model = "m"
+                self._idx = 0
+
+            def generate(self, prompt: str, **_kw: Any) -> str:
+                return ""
+
+            def generate_with_tools(
+                self, prompt: str, *, tools: list[dict[str, Any]], **_kw: Any
+            ) -> list[dict[str, Any]]:
+                del prompt, tools
+                out = turns[self._idx]
+                self._idx += 1
+                return out
+
+        run_store = FileRunStore(tmp_path / "run_store")
+        with AgentRuntime(preset, store=run_store) as rt:
+            result = rt.run(ScriptedConvBackend(), task={"goal": "Combine #307 and #308"})
+
+    assert result.completed and result.output["summary"] == "42"
+    assert asked == ["double_seed"]
+    assert result.run_envelope is not None
+    run_id = result.run_envelope.run_id
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "run_store" / run_id / "events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert all("prompt" not in ev["payload"] for ev in events)
+    trace_dir = next((tmp_path / "evidence" / "traces").iterdir())
+    traj = json.loads((trace_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert len(traj["metadata"]["harness_epochs"]) == 2
+    assert traj["metadata"]["harness_epochs"][1]["added_tools"] == ["double_seed"]
+    blobs = list((trace_dir / "model-attempts" / "blobs").glob("*.json"))
+    assert len(blobs) >= 1
+    attempts = load_model_attempts(trace_dir)
+    assert len(attempts) == 4 and all(a["outcome"] is not None for a in attempts)

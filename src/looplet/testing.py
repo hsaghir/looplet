@@ -115,6 +115,7 @@ class MockLLMBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float | None = None,
+        **_kwargs: Any,
     ) -> str:
         self.calls += 1
         self.last_prompt = prompt
@@ -139,6 +140,7 @@ class MockLLMBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float | None = None,
+        **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         return _scripted_native_blocks(
             self.generate(
@@ -184,6 +186,7 @@ class AsyncMockLLMBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float | None = None,
+        **_kwargs: Any,
     ) -> str:
         self.calls += 1
         self.last_prompt = prompt
@@ -208,6 +211,7 @@ class AsyncMockLLMBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float | None = None,
+        **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         return _scripted_native_blocks(
             await self.generate(

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from looplet.tools import BaseToolRegistry, _summarize_args_dict
+from looplet.tools import BaseToolRegistry, ToolSpec, _summarize_args_dict
 from looplet.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
 
 if TYPE_CHECKING:
@@ -255,6 +256,57 @@ class ValidatingToolRegistry(BaseToolRegistry):
         """Validate top-level JSON types and enums from a tool's parameter schema."""
         self.register(spec)
         self._schemas[spec.name] = "parameters"
+
+    def replace(self, spec: ToolSpec) -> ToolSpec | None:
+        """Replace ``spec`` and clear any stale explicit schema for that name."""
+        previous = super().replace(spec)
+        self._schemas.pop(spec.name, None)
+        return previous
+
+    def unregister(self, name: str) -> ToolSpec:
+        """Remove ``name`` along with any registered validation schema."""
+        removed = super().unregister(name)
+        self._schemas.pop(name, None)
+        return removed
+
+    def clear(self) -> None:
+        """Clear all registered tools and validation schemas."""
+        super().clear()
+        self._schemas.clear()
+
+    def sync_origin(
+        self,
+        origin: str,
+        specs: Sequence[ToolSpec],
+        *,
+        protected: Collection[str] = (),
+        allow_override_origins: Collection[str | None] = (),
+        resources: Mapping[str, Any] | None = None,
+        argument_schemas: Mapping[str, OutputSchema | Literal["parameters"]] | None = None,
+    ) -> dict[str, tuple[str, ...]]:
+        """Synchronize ``origin`` tools and keep validation schemas aligned."""
+        validated_schemas: dict[str, OutputSchema | Literal["parameters"]] = {}
+        if argument_schemas is not None:
+            if not isinstance(argument_schemas, Mapping):
+                raise TypeError("argument_schemas must be a mapping or None")
+            for spec in specs:
+                if spec.name in argument_schemas:
+                    schema = argument_schemas[spec.name]
+                    if schema != "parameters" and not isinstance(schema, OutputSchema):
+                        raise TypeError(
+                            f"argument_schemas[{spec.name!r}] must be OutputSchema or 'parameters'"
+                        )
+                    validated_schemas[spec.name] = schema
+        summary = super().sync_origin(
+            origin,
+            specs,
+            protected=protected,
+            allow_override_origins=allow_override_origins,
+            resources=resources,
+        )
+        for name, schema in validated_schemas.items():
+            self._schemas[name] = schema
+        return summary
 
     @staticmethod
     def _typed_schema(parameter_schema: dict[str, Any]) -> OutputSchema:

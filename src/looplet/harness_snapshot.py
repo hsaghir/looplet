@@ -163,6 +163,9 @@ def serialize_harness(
             execute = getattr(spec, "execute", None)
             if execute is not None:
                 description["implementation"] = _component_name(execute)
+            origin = getattr(spec, "origin", None)
+            if origin is not None:
+                description["origin"] = origin
             snapshot["tools"].append(description)
 
     if hooks is not None:

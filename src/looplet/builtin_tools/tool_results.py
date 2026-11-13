@@ -244,6 +244,7 @@ SPECS = (
         concurrent_safe=True,
         read_only=True,
         result_is_view=True,
+        origin="builtin",
     ),
     ToolSpec(
         name="read_tool_result",
@@ -271,6 +272,7 @@ SPECS = (
         concurrent_safe=True,
         read_only=True,
         result_is_view=True,
+        origin="builtin",
     ),
     ToolSpec(
         name="search_tool_result",
@@ -287,6 +289,7 @@ SPECS = (
         concurrent_safe=True,
         read_only=True,
         result_is_view=True,
+        origin="builtin",
     ),
 )
 
@@ -299,4 +302,5 @@ RECALL_SPEC = ToolSpec(
     concurrent_safe=True,
     read_only=True,
     result_is_view=True,
+    origin="builtin",
 )

@@ -286,4 +286,5 @@ SPEC = ToolSpec(
         "required": ["workspace", "task"],
     },
     execute=_execute,
+    origin="builtin",
 )

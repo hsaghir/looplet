@@ -118,4 +118,5 @@ SPEC = ToolSpec(
     },
     requires=["workspace_config"],
     execute=_execute,
+    origin="builtin",
 )

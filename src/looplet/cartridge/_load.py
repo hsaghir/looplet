@@ -23,7 +23,6 @@ import shutil
 import sys
 from collections.abc import Collection, Sequence
 from dataclasses import replace as _dc_replace
-from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -31,7 +30,11 @@ if TYPE_CHECKING:
     from looplet.memory import PersistentMemorySource
     from looplet.presets import AgentPreset
 
-from looplet.cartridge._imports import _CartridgeSourceFinder, _import_module_from_path
+from looplet.cartridge._imports import (
+    _cartridge_import_scope,
+    _CartridgeSourceFinder,  # noqa: F401
+    _import_module_from_path,
+)
 from looplet.cartridge._layout import (
     CartridgeLayout,
     CartridgeSerializationError,
@@ -371,54 +374,27 @@ def cartridge_to_preset(
                 protected_tools=frozenset(effective_protected_tools),
             )
 
-        _purge_cartridge_helper_modules()
-
-        runtime_dict = dict(runtime or {})
-        runtime_dict.setdefault("cartridge_root", str(root))
-
-        root_str = str(root)
-        resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
-        source_finder = _CartridgeSourceFinder(root)
-        pushed_paths: list[str] = []
-        for p in (root_str, resources_dir_str):
-            if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-                    pushed_paths.append(p)
-        load_resources = _LoadResourceTracker()
-        finder_index = (
-            sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
-        )
-        sys.meta_path.insert(finder_index, source_finder)
+    runtime_dict = dict(runtime or {})
+    runtime_dict.setdefault("cartridge_root", str(root))
+    load_resources = _LoadResourceTracker()
+    with _cartridge_import_scope(root) as namespace:
         try:
-            try:
-                preset = _workspace_to_preset_inner(
-                    root,
-                    runtime_dict,
-                    state_factory=state_factory,
-                    strict=strict,
-                    load_resources=load_resources,
-                    overlay_tool_entries=overlay_tool_entries,
-                    protected_tools=frozenset(effective_protected_tools),
-                )
-                _remember_cartridge_helper_modules(root)
-                _stamp_preset_origin(preset, root)
-            except BaseException:
-                _remember_cartridge_helper_modules(root)
-                load_resources.close()
-                raise
-            load_resources.disarm()
-            return preset
-        finally:
-            try:
-                sys.meta_path.remove(source_finder)
-            except ValueError:
-                pass
-            for p in pushed_paths:
-                try:
-                    sys.path.remove(p)
-                except ValueError:
-                    pass
+            preset = _workspace_to_preset_inner(
+                root,
+                runtime_dict,
+                state_factory=state_factory,
+                strict=strict,
+                load_resources=load_resources,
+                overlay_tool_entries=overlay_tool_entries,
+                protected_tools=frozenset(effective_protected_tools),
+            )
+            setattr(preset, "_cartridge_namespace", namespace)
+            _stamp_preset_origin(preset, root)
+        except BaseException:
+            load_resources.close()
+            raise
+        load_resources.disarm()
+        return preset
 
 
 import threading as _threading  # noqa: E402, PLC0415
@@ -426,7 +402,6 @@ import threading as _threading  # noqa: E402, PLC0415
 _CARTRIDGE_LOAD_LOCK = _threading.RLock()
 _EXTENDS_TEMPDIRS: list[Path] = []
 _EXTENDS_CACHE: dict[str, Path] = {}
-_CARTRIDGE_HELPER_MODULES: set[str] = set()
 
 
 def _directory_tree_digest(directory: Path) -> str:
@@ -457,33 +432,6 @@ def _directory_tree_digest(directory: Path) -> str:
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
     return h.hexdigest()
-
-
-def _purge_cartridge_helper_modules() -> None:
-    """Remove ordinary helper modules left by the previous cartridge load."""
-    import sys as _sys  # noqa: PLC0415
-
-    for module_name in _CARTRIDGE_HELPER_MODULES:
-        _sys.modules.pop(module_name, None)
-    _CARTRIDGE_HELPER_MODULES.clear()
-
-
-def _remember_cartridge_helper_modules(root: Path) -> None:
-    """Track non-synthetic modules imported from ``root`` for next load."""
-    import sys as _sys  # noqa: PLC0415
-
-    resolved_root = root.resolve()
-    for module_name, module in list(_sys.modules.items()):
-        if module_name.startswith("_chw_"):
-            continue
-        module_file = getattr(module, "__file__", None)
-        if not module_file:
-            continue
-        try:
-            Path(module_file).resolve().relative_to(resolved_root)
-        except (OSError, ValueError):
-            continue
-        _CARTRIDGE_HELPER_MODULES.add(module_name)
 
 
 def _cleanup_extends_tempdirs() -> None:
@@ -1415,7 +1363,9 @@ def _workspace_to_preset_inner(
     config.validate_assistant_turns(require_binding=False)
 
     # Tools
-    registry = BaseToolRegistry()
+    from looplet.validation import ValidatingToolRegistry  # noqa: PLC0415
+
+    registry: BaseToolRegistry = ValidatingToolRegistry()
     argument_schemas: dict[str, Any] = {}
     tools_dir = root / CartridgeLayout.TOOLS_DIR
     if tools_dir.is_dir():
@@ -1806,17 +1756,10 @@ def _workspace_to_preset_inner(
                 logger.warning("%s; skipping server", msg)
 
     if argument_schemas:
-        from looplet.validation import ValidatingToolRegistry
-
-        validated = ValidatingToolRegistry()
-        for tool_spec in registry._tools.values():
-            if argument_schemas.get(tool_spec.name) == "parameters":
-                validated.register_typed(tool_spec)
-            elif tool_spec.name in argument_schemas:
-                validated.register_with_schema(tool_spec, argument_schemas[tool_spec.name])
-            else:
-                validated.register(tool_spec)
-        registry = validated
+        assert isinstance(registry, ValidatingToolRegistry)
+        for tool_name, schema in argument_schemas.items():
+            if tool_name in registry._tools:
+                registry._schemas[tool_name] = schema
 
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live

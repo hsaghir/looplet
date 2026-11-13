@@ -2106,7 +2106,7 @@ def _done_tool_execute(**kwargs: Any) -> dict[str, Any]:
     return {"status": "completed", **kwargs}
 
 
-def register_think_tool(registry: BaseToolRegistry) -> None:
+def register_think_tool(registry: BaseToolRegistry, *, origin: str | None = None) -> None:
     """Register the think() reasoning tool on a tool registry.
 
     think() lets the agent reason explicitly without taking an action
@@ -2137,6 +2137,7 @@ def register_think_tool(registry: BaseToolRegistry) -> None:
             execute=_think_tool_execute,
             concurrent_safe=True,
             free=True,
+            origin=origin,
         )
     )
 
@@ -2146,6 +2147,7 @@ def register_done_tool(
     *,
     name: str = "done",
     parameters: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> None:
     """Register the done() completion-signal tool on a tool registry.
 
@@ -2167,6 +2169,7 @@ def register_done_tool(
         name: Tool name - must match ``LoopConfig.done_tool``.
         parameters: Custom parameter schema. Defaults to
             ``{"summary": "Brief summary of what was accomplished"}``.
+        origin: Optional provenance origin tag for the terminal tool.
     """
     params = parameters or {"summary": "Brief summary of what was accomplished"}
     registry.register(
@@ -2179,5 +2182,6 @@ def register_done_tool(
             ),
             parameters=params,
             execute=_done_tool_execute,
+            origin=origin,
         )
     )

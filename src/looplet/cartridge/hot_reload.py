@@ -66,6 +66,7 @@ def fingerprint_workspace(root: str | Path) -> dict[str, str]:
             stat = p.stat()
             data = p.read_bytes()
         except OSError:
+            fp[rel.as_posix()] = "unreadable_file"
             continue
         digest = hashlib.blake2b(data, digest_size=8).hexdigest()
         fp[rel.as_posix()] = f"{stat.st_mtime_ns}:{stat.st_size}:{digest}"
@@ -86,7 +87,7 @@ def _fingerprint_overlay_layer(root: Path) -> dict[str, str]:
         return {}
     if not root.is_dir():
         return {"__root__": "non_directory"}
-    fp: dict[str, str] = {}
+    fp: dict[str, str] = {"__root__": "dir"}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root)
         if "__pycache__" in rel.parts or p.suffix in {".pyc", ".pyo"}:
@@ -293,6 +294,7 @@ class WorkspaceWatcher:
     _fp: dict[str, str] = field(default_factory=dict, init=False)
     _preset: Any = field(default=None, init=False)
     _deferred_presets: list[Any] = field(default_factory=list, init=False)
+    _closing: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.overlays, (str, bytes)):
@@ -402,7 +404,17 @@ class WorkspaceWatcher:
         """Return the current preset, loading it on first call."""
         if self._preset is None:
             fp = self.fingerprint()
-            self._preset = self._load_preset()
+            loaded = self._load_preset()
+            orig_close = loaded.close
+
+            def _close_with_watcher() -> Any:
+                report = orig_close()
+                if not self._closing and any(item is loaded for item in self._deferred_presets):
+                    self.close()
+                return report
+
+            loaded.close = _close_with_watcher  # type: ignore[method-assign]
+            self._preset = loaded
             self._fp = fp
         return self._preset
 
@@ -428,16 +440,22 @@ class WorkspaceWatcher:
 
     def close(self) -> None:
         """Close the currently loaded preset and any deferred presets."""
-        preset, self._preset = self._preset, None
-        deferred, self._deferred_presets = list(self._deferred_presets), []
-        self._fp = {}
-        seen_ids: set[int] = set()
-        for item in (preset, *reversed(deferred)):
-            if item is None or id(item) in seen_ids:
-                continue
-            seen_ids.add(id(item))
-            if not getattr(item, "_closed", False):
-                item.close()
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            preset, self._preset = self._preset, None
+            deferred, self._deferred_presets = list(self._deferred_presets), []
+            self._fp = {}
+            seen_ids: set[int] = set()
+            for item in (preset, *reversed(deferred)):
+                if item is None or id(item) in seen_ids:
+                    continue
+                seen_ids.add(id(item))
+                if not getattr(item, "_closed", False):
+                    item.close()
+        finally:
+            self._closing = False
 
     def __enter__(self) -> "WorkspaceWatcher":
         return self
@@ -487,6 +505,7 @@ class ReloadHook:
         self._cartridge_resource_keys: set[str] = set()
         self._resource_digests: dict[str, str] = {}
         self._active_fingerprint: dict[str, str] = {}
+        self._last_attempted_fingerprint: dict[str, str] = {}
         self._active_digest: str = ""
         self._last_attempted_digest: str = ""
         self.reload_count: int = 0
@@ -510,32 +529,53 @@ class ReloadHook:
 
     def bind(self, loop_ctx: Any) -> None:
         self._loop_ctx = loop_ctx
-        initial = self.watcher.preset()
-        self._initial_run_preset = initial
-        self._protected_tools = set(self.watcher.protected_tools) | set(
-            self._explicit_protected_tools
-        )
-        done_tool = getattr(loop_ctx.config, "done_tool", "done")
-        if isinstance(done_tool, str) and done_tool:
-            self._protected_tools.add(done_tool)
-        for secondary in getattr(loop_ctx.config, "done_tools", ()) or ():
-            if isinstance(secondary, str) and secondary:
-                self._protected_tools.add(secondary)
-        if self.protect_initial_tools:
-            for name, spec in loop_ctx.tools.tool_specs.items():
-                if spec.origin != "overlay":
-                    self._protected_tools.add(name)
-        initial_mem_ids = {id(src) for src in initial.config.memory_sources}
-        self._host_memory_sources = [
-            src
-            for src in getattr(loop_ctx.config, "memory_sources", ()) or ()
-            if id(src) not in initial_mem_ids
-        ]
-        self._cartridge_resource_keys = set(initial.resources.keys())
-        self._resource_digests = _resource_digests_for_preset(initial)
-        self._active_fingerprint = dict(self.watcher._fp)
-        self._active_digest = self.watcher.digest()
-        self._last_attempted_digest = self._active_digest
+        fallback_base: Any = None
+        try:
+            initial = self.watcher.preset()
+            active_fp = dict(self.watcher._fp)
+            active_digest = self.watcher.digest()
+        except Exception:
+            # When resuming from a base preset while an unapplied overlay on disk
+            # holds a broken edit, defer overlay rejection to pre_prompt rather
+            # than crashing hook binding before checkpoint validation/recovery.
+            fallback_base = cartridge_to_preset(
+                self.watcher.root,
+                strict=self.watcher.strict,
+                runtime=self.watcher.runtime,
+            )
+            initial = fallback_base
+            active_fp = {}
+            active_digest = WorkspaceWatcher(self.watcher.root).digest()
+        try:
+            self._initial_run_preset = initial if fallback_base is None else None
+            self._protected_tools = set(self.watcher.protected_tools) | set(
+                self._explicit_protected_tools
+            )
+            done_tool = getattr(loop_ctx.config, "done_tool", "done")
+            if isinstance(done_tool, str) and done_tool:
+                self._protected_tools.add(done_tool)
+            for secondary in getattr(loop_ctx.config, "done_tools", ()) or ():
+                if isinstance(secondary, str) and secondary:
+                    self._protected_tools.add(secondary)
+            if self.protect_initial_tools:
+                for name, spec in loop_ctx.tools.tool_specs.items():
+                    if spec.origin != "overlay":
+                        self._protected_tools.add(name)
+            initial_mem_ids = {id(src) for src in initial.config.memory_sources}
+            self._host_memory_sources = [
+                src
+                for src in getattr(loop_ctx.config, "memory_sources", ()) or ()
+                if id(src) not in initial_mem_ids
+            ]
+            self._cartridge_resource_keys = set(initial.resources.keys())
+            self._resource_digests = _resource_digests_for_preset(initial)
+            self._active_fingerprint = active_fp
+            self._last_attempted_fingerprint = dict(active_fp)
+            self._active_digest = active_digest
+            self._last_attempted_digest = active_digest
+        finally:
+            if fallback_base is not None:
+                fallback_base.close()
 
     @staticmethod
     def _record_on_state(state: Any, observation: ReloadObservation) -> None:
@@ -581,6 +621,17 @@ class ReloadHook:
             else:
                 effective_cartridge[key] = cand_val
 
+        kept_ids = {id(val) for val in effective_cartridge.values()}
+        if isinstance(prev_owned, list):
+            superseded = [item for item in prev_owned if id(item) not in kept_ids]
+            if superseded:
+                prev_owned[:] = [item for item in prev_owned if id(item) in kept_ids]
+                for stale in reversed(superseded):
+                    try:
+                        stale.close()
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        pass
+
         candidate.resources.clear()
         candidate.resources.update(effective_cartridge)
         merged_resources = {**host_resources, **effective_cartridge}
@@ -611,7 +662,6 @@ class ReloadHook:
                     "overlay",
                     overlay_specs,
                     protected=self._protected_tools,
-                    resources=merged_resources,
                     argument_schemas=argument_schemas,
                 )
             else:
@@ -619,29 +669,47 @@ class ReloadHook:
                     "overlay",
                     overlay_specs,
                     protected=self._protected_tools,
-                    resources=merged_resources,
                 )
         else:
-            # Full-cartridge developer hot-reload: sync both base cartridge
-            # tools and overlay tools while preserving host-registered tools.
+            # Full-cartridge developer hot-reload: atomically sync both base
+            # cartridge tools and overlay tools while preserving host-registered tools.
             base_specs = candidate.tools.tools_for_origin("cartridge")
             overlay_specs = candidate.tools.tools_for_origin("overlay")
             if self.tool_transform is not None:
                 base_specs = [self.tool_transform(spec) for spec in base_specs]
                 overlay_specs = [self.tool_transform(spec) for spec in overlay_specs]
+            before_specs = dict(tools._tools)
+            before_schemas = (
+                dict(tools._schemas) if isinstance(tools, ValidatingToolRegistry) else None
+            )
             sync_kwargs: dict[str, Any] = {
                 "protected": self._explicit_protected_tools,
                 "allow_override_origins": ("cartridge", "overlay"),
-                "resources": merged_resources,
             }
             if isinstance(tools, ValidatingToolRegistry):
                 sync_kwargs["argument_schemas"] = argument_schemas
-            base_diff = tools.sync_origin("cartridge", base_specs, **sync_kwargs)
-            ov_diff = tools.sync_origin("overlay", overlay_specs, **sync_kwargs)
+            try:
+                tools.sync_origin("cartridge", base_specs, **sync_kwargs)
+                tools.sync_origin("overlay", overlay_specs, **sync_kwargs)
+            except BaseException:
+                tools._tools.clear()
+                tools._tools.update(before_specs)
+                if before_schemas is not None and isinstance(tools, ValidatingToolRegistry):
+                    tools._schemas.clear()
+                    tools._schemas.update(before_schemas)
+                raise
+            after_names = set(tools._tools)
+            before_names = set(before_specs)
+            seen_synced: set[str] = set()
+            ordered_synced: list[str] = []
+            for synced_spec in (*base_specs, *overlay_specs):
+                if synced_spec.name not in seen_synced:
+                    seen_synced.add(synced_spec.name)
+                    ordered_synced.append(synced_spec.name)
             diff = {
-                "added": (*base_diff["added"], *ov_diff["added"]),
-                "updated": (*base_diff["updated"], *ov_diff["updated"]),
-                "removed": (*base_diff["removed"], *ov_diff["removed"]),
+                "added": tuple(name for name in ordered_synced if name not in before_names),
+                "updated": tuple(name for name in ordered_synced if name in before_names),
+                "removed": tuple(name for name in before_specs if name not in after_names),
             }
 
         tools.set_resources(merged_resources)
@@ -683,20 +751,42 @@ class ReloadHook:
         if self._loop_ctx is None:
             return None
         current_fp = self.watcher.fingerprint()
+        if current_fp == self._active_fingerprint:
+            if self._last_attempted_digest != self._active_digest:
+                self._last_attempted_digest = self._active_digest
+                self._last_attempted_fingerprint = dict(current_fp)
+                self.last_error = None
+            return None
+        if (
+            self._last_attempted_digest != self._active_digest
+            and current_fp == self._last_attempted_fingerprint
+        ):
+            return None
         current_digest = self.watcher.digest()
         if current_digest == self._active_digest:
+            self._active_fingerprint = current_fp
+            self._last_attempted_fingerprint = dict(current_fp)
             if self._last_attempted_digest != self._active_digest:
                 self._last_attempted_digest = self._active_digest
                 self.last_error = None
             return None
         if current_digest == self._last_attempted_digest:
+            self._last_attempted_fingerprint = dict(current_fp)
             return None
+
+        live_protected = set(self._protected_tools)
+        for tool_name, tool_spec in self._loop_ctx.tools.tool_specs.items():
+            if tool_spec.origin == "overlay":
+                continue
+            if not self.protect_initial_tools and tool_spec.origin == "cartridge":
+                continue
+            live_protected.add(tool_name)
 
         candidate: Any = None
         try:
             candidate = self.watcher._load_preset(
                 strict=True,
-                extra_protected_tools=self._protected_tools,
+                extra_protected_tools=live_protected,
             )
             diff, prompt_changed, memory_changed = self._apply_candidate(candidate)
             self.watcher._commit_preset(
@@ -708,6 +798,7 @@ class ReloadHook:
         except Exception as exc:
             if candidate is not None:
                 candidate.close()
+            self._last_attempted_fingerprint = dict(current_fp)
             self._last_attempted_digest = current_digest
             error_text = f"{type(exc).__name__}: {exc}"
             self.last_error = error_text
@@ -726,6 +817,7 @@ class ReloadHook:
             return None
 
         self._active_fingerprint = current_fp
+        self._last_attempted_fingerprint = dict(current_fp)
         self._active_digest = current_digest
         self._last_attempted_digest = current_digest
         self.last_error = None
@@ -819,8 +911,17 @@ class ReloadHook:
                 if candidate is not None:
                     candidate.close()
             self._active_fingerprint = current_fp
+            self._last_attempted_fingerprint = dict(current_fp)
             self._active_digest = state["active_digest"]
             self._last_attempted_digest = state["last_attempted_digest"]
         else:
-            self._active_digest = state["active_digest"]
-            self._last_attempted_digest = state["last_attempted_digest"]
+            # Keep _active_digest bound to the capabilities actually loaded in
+            # memory; only carry last_attempted_digest when memory already
+            # matches the checkpointed active_digest.
+            if self._active_digest == state["active_digest"]:
+                self._last_attempted_digest = state["last_attempted_digest"]
+                if state["last_attempted_digest"] == state["disk_digest"]:
+                    self._last_attempted_fingerprint = self.watcher.fingerprint()
+            else:
+                self._last_attempted_digest = self._active_digest
+                self._last_attempted_fingerprint = dict(self._active_fingerprint)

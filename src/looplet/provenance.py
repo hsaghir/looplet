@@ -1601,7 +1601,9 @@ class TrajectoryRecorder:
         self._loop_ctx: Any = None
         self._harness_epochs: list[dict[str, Any]] = []
         self._last_epoch_key: tuple[Any, ...] | None = None
-        self._last_exec_ids: dict[str, int] = {}
+        self._last_exec_objs: dict[str, Any] = {}
+        self._exec_revisions: dict[str, int] = {}
+        self._last_tool_sigs: dict[str, tuple[Any, ...]] = {}
         # When set, every JSON document written to disk is redacted
         # through this callable. The recorder still captures the
         # un-redacted in-memory trajectory so callers that want raw
@@ -1630,16 +1632,36 @@ class TrajectoryRecorder:
             for name, spec in raw_specs.items()
             if getattr(spec, "origin", None) is not None
         }
-        curr_exec_ids = {
-            name: id(getattr(spec, "execute", spec)) for name, spec in raw_specs.items()
-        }
+        curr_exec_objs: dict[str, Any] = {}
+        curr_tool_sigs: dict[str, tuple[Any, ...]] = {}
+        for name, spec in raw_specs.items():
+            exec_obj = getattr(spec, "execute", spec)
+            curr_exec_objs[name] = exec_obj
+            if name not in self._exec_revisions:
+                self._exec_revisions[name] = 0
+            elif self._last_exec_objs.get(name) is not exec_obj:
+                self._exec_revisions[name] += 1
+            schema_json = json.dumps(
+                spec.to_api_schema() if hasattr(spec, "to_api_schema") else {},
+                sort_keys=True,
+                default=str,
+            )
+            curr_tool_sigs[name] = (
+                getattr(spec, "origin", None),
+                spec.spec_text() if hasattr(spec, "spec_text") else "",
+                schema_json,
+                self._exec_revisions[name],
+            )
+        for stale_name in list(self._exec_revisions):
+            if stale_name not in curr_exec_objs:
+                self._exec_revisions.pop(stale_name, None)
         epoch_key = (
             sys_sha,
             view.version,
-            tuple(sorted(tool_origins.items())),
-            tuple(sorted(curr_exec_ids.items())),
+            tuple(sorted(curr_tool_sigs.items())),
         )
         if epoch_key == self._last_epoch_key:
+            self._last_exec_objs = curr_exec_objs
             return
         curr_tools = list(view.names)
         entry: dict[str, Any] = {
@@ -1660,13 +1682,14 @@ class TrajectoryRecorder:
             updated = [
                 name
                 for name in curr_tools
-                if name in prev_set and self._last_exec_ids.get(name) != curr_exec_ids.get(name)
+                if name in prev_set and self._last_tool_sigs.get(name) != curr_tool_sigs.get(name)
             ]
             if updated:
                 entry["updated_tools"] = updated
         self._harness_epochs.append(entry)
         self._last_epoch_key = epoch_key
-        self._last_exec_ids = curr_exec_ids
+        self._last_exec_objs = curr_exec_objs
+        self._last_tool_sigs = curr_tool_sigs
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
         if self._loop_span is None and self._tracer is not None:
@@ -1760,6 +1783,9 @@ class TrajectoryRecorder:
 
         event = getattr(payload, "event", None)
         if event == LifecycleEvent.PRE_LLM_CALL:
+            extra = getattr(payload, "extra", None)
+            if isinstance(extra, dict) and "subagent_id" in extra:
+                return
             self._record_harness_epoch(getattr(payload, "step_num", None))
             return
         if event == LifecycleEvent.SUBAGENT_STOP:

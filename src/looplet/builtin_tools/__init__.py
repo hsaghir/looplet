@@ -35,8 +35,6 @@ Adding a new built-in: write a small module exposing a ``SPEC``
 
 from __future__ import annotations
 
-from dataclasses import replace as _dc_replace
-
 from looplet.builtin_tools.scaffold_cartridge import SPEC as _SCAFFOLD_SPEC
 from looplet.builtin_tools.skills import (
     ACTIVATE_SPEC as _ACTIVATE_SKILL_SPEC,
@@ -60,10 +58,7 @@ _RAW_SPECS: tuple[ToolSpec, ...] = (
     *_RESULT_SPECS,
 )
 
-AVAILABLE: dict[str, ToolSpec] = {
-    spec.name: (spec if spec.origin == "builtin" else _dc_replace(spec, origin="builtin"))
-    for spec in _RAW_SPECS
-}
+AVAILABLE: dict[str, ToolSpec] = {spec.name: spec for spec in _RAW_SPECS}
 
 
 def get_builtin_tool(name: str) -> ToolSpec | None:

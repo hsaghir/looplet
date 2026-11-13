@@ -18,6 +18,9 @@ while staying domain-agnostic.
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
@@ -516,11 +519,65 @@ class PermissionHook:
 
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
-        self._tools: Any = None
-        self._approved: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None = None
+        self._lock = threading.RLock()
+        self._default_tools: Any = None
+        self._tools_by_state_id: OrderedDict[int, tuple[Any, Any]] = OrderedDict()
+        self._bound_tools_var: ContextVar[Any] = ContextVar(
+            f"looplet_perm_tools_{id(self)}", default=None
+        )
+        self._approved_by_key: OrderedDict[
+            Any, tuple[ToolCall, tuple[int, str, str, dict[str, Any], tuple[Any, ...]]]
+        ] = OrderedDict()
+        self._approved_var: ContextVar[
+            tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None
+        ] = ContextVar(f"looplet_perm_approved_{id(self)}", default=None)
+
+    @property
+    def _tools(self) -> Any:
+        ctx_tools = self._bound_tools_var.get()
+        return ctx_tools if ctx_tools is not None else self._default_tools
+
+    @_tools.setter
+    def _tools(self, value: Any) -> None:
+        with self._lock:
+            self._default_tools = value
+        self._bound_tools_var.set(value)
+
+    @property
+    def _approved(self) -> tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None:
+        return self._approved_var.get()
+
+    @_approved.setter
+    def _approved(
+        self, value: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None
+    ) -> None:
+        self._approved_var.set(value)
+
+    @staticmethod
+    def _approval_key(tool_call: ToolCall) -> Any:
+        return ("cid", tool_call.call_id) if tool_call.call_id else ("obj", id(tool_call))
+
+    def _resolve_tools(self, state: Any) -> Any:
+        if state is not None:
+            with self._lock:
+                entry = self._tools_by_state_id.get(id(state))
+                if entry is not None and entry[0] is state:
+                    return entry[1]
+        return self._tools
 
     def bind(self, loop_ctx: Any) -> None:
-        self._tools = getattr(loop_ctx, "tools", None)
+        tools = getattr(loop_ctx, "tools", None)
+        state = getattr(loop_ctx, "state", None)
+        self._bound_tools_var.set(tools)
+        with self._lock:
+            if self._default_tools is None and tools is not None:
+                self._default_tools = tools
+            if state is not None and tools is not None:
+                sid = id(state)
+                self._tools_by_state_id.pop(sid, None)
+                self._tools_by_state_id[sid] = (state, tools)
+                while len(self._tools_by_state_id) > 128:
+                    self._tools_by_state_id.popitem(last=False)
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``engine`` as an ``@ref`` so the
@@ -544,12 +601,27 @@ class PermissionHook:
         from looplet.events import LifecycleEvent  # noqa: PLC0415
         from looplet.hook_decision import Allow, Deny  # noqa: PLC0415
 
+        extra = getattr(payload, "extra", None)
+        if isinstance(extra, dict) and "subagent_id" in extra:
+            return None
+        if payload.event == LifecycleEvent.STOP:
+            state = getattr(payload, "state", None)
+            if state is not None:
+                with self._lock:
+                    entry = self._tools_by_state_id.get(id(state))
+                    if entry is not None and entry[0] is state:
+                        self._tools_by_state_id.pop(id(state), None)
+            return None
         if payload.event != LifecycleEvent.PRE_TOOL_USE:
             return None
         if payload.tool_call is None:
             return None
+        key = self._approval_key(payload.tool_call)
+        with self._lock:
+            self._approved_by_key.pop(key, None)
         self._approved = None
-        outcome = self.engine.evaluate(payload.tool_call, tools=self._tools)
+        tools = self._resolve_tools(getattr(payload, "state", None))
+        outcome = self.engine.evaluate(payload.tool_call, tools=tools)
         audit = PolicyDecision(
             decision=outcome.decision.value,
             tool=payload.tool_call.tool,
@@ -566,13 +638,19 @@ class PermissionHook:
         )
         if outcome.allowed:
             if outcome.rule is not None and outcome.rule.decision == PermissionDecision.ASK:
-                self._approved = (
+                stamp = (
                     id(payload.tool_call),
                     payload.tool_call.call_id,
                     payload.tool_call.tool,
                     deepcopy(payload.tool_call.args),
                     self.engine._policy_snapshot(),
                 )
+                with self._lock:
+                    self._approved_by_key.pop(key, None)
+                    self._approved_by_key[key] = (payload.tool_call, stamp)
+                    while len(self._approved_by_key) > 128:
+                        self._approved_by_key.popitem(last=False)
+                self._approved = stamp
             return Allow(policy_decision=audit)
         if outcome.denied:
             return Deny(
@@ -586,8 +664,16 @@ class PermissionHook:
     # this hook behaves correctly even if someone calls the per-method
     # surface directly (e.g. in tests).
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
-        approved = self._approved
+        key = self._approval_key(tool_call)
+        approved = None
+        with self._lock:
+            saved = self._approved_by_key.pop(key, None)
+            if saved is not None and (tool_call.call_id or saved[0] is tool_call):
+                approved = saved[1]
+        ctx_approved = self._approved
         self._approved = None
+        if approved is None:
+            approved = ctx_approved
         if approved is not None:
             if _same_action_value(
                 approved,
@@ -602,5 +688,5 @@ class PermissionHook:
                 return True
             self.engine._record_denial(tool_call, None, "Approved action or policy changed")
             return False
-        outcome = self.engine.evaluate(tool_call, tools=self._tools)
+        outcome = self.engine.evaluate(tool_call, tools=self._resolve_tools(state))
         return not outcome.denied

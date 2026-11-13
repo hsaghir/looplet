@@ -404,6 +404,7 @@ def make_skill_tools(
             execute=search_skills,
             concurrent_safe=True,
             free=True,
+            origin="builtin",
         ),
         ToolSpec(
             name=activate_tool_name,
@@ -412,6 +413,7 @@ def make_skill_tools(
             execute=activate_skill,
             concurrent_safe=False,
             free=True,
+            origin="builtin",
         ),
     ]
 

@@ -1084,3 +1084,416 @@ def test_pre_import_protected_tool_rejection_and_updated_epoch_provenance(tmp_pa
     epochs = traj["metadata"]["harness_epochs"]
     assert len(epochs) == 2
     assert epochs[1]["updated_tools"] == ["calc"]
+
+
+def test_builtin_tool_spec_singleton_origins_and_subagent_origin_isolation(tmp_path: Path):
+    from looplet import ChildRunPolicy, DeferredToolViewHook, run_sub_loop
+    from looplet.builtin_tools import get_builtin_tool
+    from looplet.builtin_tools.subagent import SPEC as SUBAGENT_SPEC
+    from looplet.builtin_tools.tool_results import SPECS as RESULT_SPECS
+    from looplet.builtin_tools.tool_search import SPEC as SEARCH_SPEC
+    from looplet.subagent import ChildRecoveryError
+
+    assert SUBAGENT_SPEC.origin == "builtin"
+    assert SUBAGENT_SPEC is get_builtin_tool("subagent")
+    assert SEARCH_SPEC.origin == "builtin"
+    assert SEARCH_SPEC is get_builtin_tool("search_tools")
+    assert all(s.origin == "builtin" and get_builtin_tool(s.name) is s for s in RESULT_SPECS)
+
+    # tools_from(include_result_tools=True) + DeferredToolViewHook work under allow_origin("builtin")
+    @tool(origin="cartridge")
+    def read_item(*, key: str, ctx: Any) -> dict[str, str]:
+        return {"val": ctx.resources["store_map"][key]}
+
+    @tool(origin="host")
+    def host_only_admin() -> dict[str, str]:
+        return {"admin": "ok"}
+
+    parent_registry = ValidatingToolRegistry()
+    parent_registry.set_resources({"store_map": {"k1": "v1"}})
+    parent_registry.register_with_schema(
+        read_item,
+        OutputSchema(fields={"key": FieldSpec(name="key", field_type="str")}, strict=True),
+    )
+    parent_registry.register(host_only_admin)
+    for rspec in RESULT_SPECS:
+        parent_registry.register(rspec)
+    from looplet import register_done_tool
+
+    register_done_tool(parent_registry, origin="cartridge")
+    deferred = DeferredToolViewHook(parent_registry, pinned=("read_item",))
+    assert parent_registry.get("search_tools") is SEARCH_SPEC
+
+    ask_calls: list[str] = []
+    engine = (
+        PermissionEngine(
+            default=PermissionDecision.DENY,
+            ask_handler=lambda call, _r: (ask_calls.append(call.tool), PermissionDecision.ALLOW)[1],
+        )
+        .ask("read_item")
+        .allow_origin("cartridge")
+        .allow_origin("builtin")
+        .allow_origin("host")
+    )
+    perm_hook = PermissionHook(engine)
+    sink = ProvenanceSink(tmp_path / "parent_trace")
+    traj_hook = sink.trajectory_hook()
+
+    @tool(origin="builtin")
+    def delegate_child(ctx: Any) -> dict[str, Any]:
+        child_turns = [
+            [{"type": "tool_use", "id": "ch1", "name": "read_item", "input": {"key": "k1"}}],
+            [{"type": "tool_use", "id": "ch2", "name": "done", "input": {"summary": "v1"}}],
+        ]
+        return run_sub_loop(
+            _ScriptedNativeBackend(child_turns),
+            task={"goal": "child lookup"},
+            tools=parent_registry,
+            state_mutating_tools=["done", "host_only_admin"],
+            parent_hooks=ctx.parent_hooks,
+            subagent_id="child_a",
+            config=LoopConfig(max_steps=4, use_native_tools=True, harness_profile="minimal"),
+            policy=ChildRunPolicy(
+                parent_id="p1",
+                recovery_dir=str(tmp_path / "child_rec"),
+                recovery_version="v1",
+            ),
+        )
+
+    parent_registry.register(delegate_child)
+    parent_turns = [
+        [{"type": "tool_use", "id": "p1", "name": "delegate_child", "input": {}}],
+        # After child exits (which lacked host_only_admin), parent must STILL resolve host_only_admin!
+        [{"type": "tool_use", "id": "p2", "name": "host_only_admin", "input": {}}],
+        [{"type": "tool_use", "id": "p3", "name": "done", "input": {"summary": "all_ok"}}],
+    ]
+    parent_cfg = LoopConfig(max_steps=5, use_native_tools=True, harness_profile="minimal")
+    parent_state = DefaultState(max_steps=5)
+    with closing(
+        composable_loop(
+            llm=sink.wrap_llm(_ScriptedNativeBackend(parent_turns)),
+            tools=parent_registry,
+            state=parent_state,
+            config=parent_cfg,
+            hooks=[perm_hook, traj_hook],
+            task={"goal": "parent with subagent"},
+        )
+    ) as steps:
+        p_steps = list(steps)
+    sink.flush()
+
+    assert p_steps[0].tool_result.error is None
+    assert p_steps[0].tool_result.data["completed"] is True
+    assert p_steps[0].tool_result.data["output"] == {"status": "completed", "summary": "v1"}
+    # ask_handler was invoked ONCE for child read_item (not double-invoked by _ParentHookForwarder!)
+    assert ask_calls == ["read_item"]
+    assert p_steps[1].tool_result.data == {"admin": "ok"}
+    # Child PRE_LLM_CALL did not create spurious parent harness_epochs
+    traj = json.loads((tmp_path / "parent_trace" / "trajectory.json").read_text(encoding="utf-8"))
+    assert "harness_epochs" not in traj["metadata"]
+
+    # Changing origin permission rule invalidates child recovery binding
+    stricter = PermissionEngine(default=PermissionDecision.DENY).deny_origin("cartridge")
+    with pytest.raises(ChildRecoveryError, match="does not match"):
+        run_sub_loop(
+            _ScriptedNativeBackend([]),
+            task={"goal": "child lookup"},
+            tools=parent_registry,
+            state_mutating_tools=["done", "host_only_admin"],
+            parent_hooks=[PermissionHook(stricter)],
+            subagent_id="child_a",
+            config=LoopConfig(max_steps=4, use_native_tools=True, harness_profile="minimal"),
+            policy=ChildRunPolicy(
+                parent_id="p1",
+                recovery_dir=str(tmp_path / "child_rec"),
+                recovery_version="v1",
+            ),
+        )
+
+
+def test_reload_hook_single_pass_steady_state_validation_schemas_and_namespace_isolation(
+    tmp_path: Path,
+):
+    base = _make_base_cartridge(tmp_path / "base.cartridge")
+    (base / "helper_mod.py").write_text("SCALE = 4\n", encoding="utf-8")
+    _write_multi_file_tool(
+        base,
+        "lazy_scale",
+        "def execute(ctx, *, value: int) -> dict:\n"
+        "    import helper_mod\n"
+        "    return {'scaled': value * helper_mod.SCALE}\n",
+    )
+    (base / "memory").mkdir(exist_ok=True)
+    (base / "memory" / "00_dyn.py").write_text(
+        "def load(state):\n    return 'dynamic memory v1'\n",
+        encoding="utf-8",
+    )
+    overlay = tmp_path / "overlay"
+
+    # Empty overlay dir vs absent overlay dir has distinct fingerprint & digest
+    watcher = WorkspaceWatcher(
+        base,
+        overlays=[overlay],
+        allowed_overlay_slots={"tools", "helpers"},
+        strict=True,
+    )
+    fp_absent = watcher.fingerprint()
+    dig_absent = watcher.digest()
+    overlay.mkdir()
+    assert watcher.fingerprint() != fp_absent
+    assert watcher.digest() != dig_absent
+
+    digest_calls = 0
+    orig_digest = watcher.digest
+
+    def counted_digest() -> str:
+        nonlocal digest_calls
+        digest_calls += 1
+        return orig_digest()
+
+    watcher.digest = counted_digest  # type: ignore[method-assign]
+    preset = watcher.preset()
+    preset.config.max_steps = 6
+    preset.state.max_steps = 6
+
+    # Round-trip cartridge with memory/*.py works in strict=True
+    rt_dir = tmp_path / "roundtripped.cartridge"
+    preset_to_cartridge(preset, rt_dir, strict=True)
+    cartridge_to_preset(rt_dir, strict=True).close()
+
+    @tool(origin="host")
+    def stage_edit(*, phase: str) -> dict[str, str]:
+        if phase == "poison_attempt":
+            # Rejected reload modifies helper_mod.py AND has a broken tool: must NOT poison base lazy_scale!
+            (overlay / "helper_mod.py").write_text("SCALE = 999\n", encoding="utf-8")
+            _write_multi_file_tool(overlay, "broken", "def execute(ctx -> dict:\n")
+        elif phase == "validated_tool":
+            (overlay / "helper_mod.py").unlink(missing_ok=True)
+            for p in (overlay / "tools" / "broken").glob("*"):
+                p.unlink()
+            (overlay / "tools" / "broken").rmdir()
+            _write_multi_file_tool(
+                overlay,
+                "strict_echo",
+                "def execute(ctx, *, code: str) -> dict:\n    return {'code': code}\n",
+                parameters_yaml="  code:\n    type: string\n    enum: [ALPHA, BETA]\n",
+                yaml_extra="argument_validation:\n  source: parameters\n",
+            )
+        return {"phase": phase}
+
+    preset.tools.register(stage_edit)
+    reload_hook = ReloadHook(watcher)
+    digest_calls = 0
+
+    turns = [
+        # Step 1: unchanged -> digest() must NOT be called!
+        [
+            {
+                "type": "tool_use",
+                "id": "s1",
+                "name": "stage_edit",
+                "input": {"phase": "poison_attempt"},
+            }
+        ],
+        # Step 2: rejected staging reload -> base lazy_scale must STILL see SCALE=4, not 999!
+        [{"type": "tool_use", "id": "s2", "name": "lazy_scale", "input": {"value": 5}}],
+        [
+            {
+                "type": "tool_use",
+                "id": "s3",
+                "name": "stage_edit",
+                "input": {"phase": "validated_tool"},
+            }
+        ],
+        # Step 4: strict_echo has argument_validation even though base had none -> invalid enum rejected!
+        [{"type": "tool_use", "id": "s4", "name": "strict_echo", "input": {"code": "INVALID"}}],
+        [{"type": "tool_use", "id": "s5", "name": "strict_echo", "input": {"code": "ALPHA"}}],
+        [{"type": "tool_use", "id": "s6", "name": "done", "input": {"summary": "ok"}}],
+    ]
+    with preset:  # Close via preset.close() directly without `with watcher:`!
+        with closing(
+            composable_loop(
+                llm=_ScriptedNativeBackend(turns),
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=[reload_hook],
+                task={"goal": "Verify isolation, validation, and steady-state fast path."},
+            )
+        ) as steps:
+            out_steps = list(steps)
+
+    # Only 1 bind() + 2 disk-change steps called watcher.digest() across 6 turns (0 on all 4 unchanged steps)!
+    assert digest_calls == 3
+    assert out_steps[1].tool_result.data == {"scaled": 20}
+    assert out_steps[3].tool_result.error is not None
+    assert "Validation failed" in out_steps[3].tool_result.error
+    assert out_steps[4].tool_result.data == {"code": "ALPHA"}
+    assert watcher._preset is None
+
+
+def test_reload_hook_full_mode_atomic_rollback_and_checkpoint_revert_recovery(tmp_path: Path):
+    base = _make_base_cartridge(tmp_path / "base.cartridge")
+    overlay = tmp_path / "overlay"
+    ckpt_dir = tmp_path / "ckpts"
+    store = FileCheckpointStore(ckpt_dir)
+
+    # 1. protect_initial_tools=False reports base->overlay override in updated_tools and rolls back atomically
+    _write_multi_file_tool(
+        overlay,
+        "echo_base",
+        "def execute(ctx, *, text: str) -> dict:\n    return {'echo': text, 'source': 'overlay'}\n",
+        parameters_yaml="  text:\n    type: string\n    description: Text.\n",
+    )
+    with WorkspaceWatcher(base, overlays=[overlay], strict=True) as w_dev:
+        p_dev = cartridge_to_preset(base, strict=True)
+
+        @tool(origin="host")
+        def host_guard() -> dict[str, str]:
+            return {"ok": "host"}
+
+        p_dev.tools.register(host_guard)
+        rh_dev = ReloadHook(w_dev, protect_initial_tools=False)
+        rh_dev.bind(
+            type(
+                "LCtx",
+                (),
+                {"tools": p_dev.tools, "config": p_dev.config, "resources": p_dev.resources},
+            )()
+        )
+        # Force active digest to base so pre_prompt applies the overlay override of echo_base
+        rh_dev._active_digest = "base_init"
+        rh_dev._active_fingerprint = {}
+        rh_dev._last_attempted_digest = "base_init"
+        rh_dev.pre_prompt(p_dev.state, None, None, 1)
+        assert rh_dev.observations[-1].status == "reloaded"
+        assert "echo_base" in rh_dev.observations[-1].updated_tools
+        assert rh_dev.observations[-1].added_tools == ()
+        assert rh_dev.observations[-1].removed_tools == ()
+
+        # Attempting to spoof host_guard in overlay fails and leaves echo_base intact
+        _write_multi_file_tool(
+            overlay,
+            "host_guard",
+            "def execute(ctx) -> dict:\n    return {'ok': 'hijacked'}\n",
+            parameters_yaml="{}\n",
+        )
+        rh_dev.pre_prompt(p_dev.state, None, None, 2)
+        assert rh_dev.observations[-1].status == "rejected"
+        assert p_dev.tools.get("host_guard") is host_guard
+        assert p_dev.tools.dispatch(ToolCall(tool="echo_base", args={"text": "x"})).data == {
+            "echo": "x",
+            "source": "overlay",
+        }
+
+    # 2. Checkpoint captured while disk holds a rejected edit still reloads when disk reverts to valid v1
+    ov2 = tmp_path / "ov2"
+
+    @tool(origin="host")
+    def edit_ov2(*, step_action: str) -> dict[str, str]:
+        if step_action == "install_v1":
+            _write_multi_file_tool(
+                ov2,
+                "tripler",
+                "def execute(ctx, *, value: int) -> dict:\n    return {'v': value * 3}\n",
+            )
+        elif step_action == "break_v2":
+            _write_multi_file_tool(ov2, "tripler", "def execute(ctx, *, value: int -> dict:\n")
+        return {"action": step_action}
+
+    with WorkspaceWatcher(base, overlays=[ov2], allowed_overlay_slots={"tools"}, strict=True) as w1:
+        p1 = w1.preset()
+        p1.tools.register(edit_ov2)
+        rh1 = ReloadHook(w1)
+        parts1 = CheckpointParticipants(
+            [CheckpointParticipant.from_object("reload", "1", rh1)], identity="rev-run"
+        )
+        p1.config.max_steps = 2
+        p1.config.run_envelope = RunEnvelope(run_id="run-rev")
+        p1.config.checkpoint_dir = str(ckpt_dir)
+        p1.config.checkpoint_state = parts1.capture
+        p1.config.restore_checkpoint_state = parts1.restore
+        t_part1 = [
+            [
+                {
+                    "type": "tool_use",
+                    "id": "e1",
+                    "name": "edit_ov2",
+                    "input": {"step_action": "install_v1"},
+                }
+            ],
+            [
+                {
+                    "type": "tool_use",
+                    "id": "e2",
+                    "name": "edit_ov2",
+                    "input": {"step_action": "break_v2"},
+                }
+            ],
+        ]
+        with closing(
+            composable_loop(
+                llm=_ScriptedNativeBackend(t_part1),
+                tools=p1.tools,
+                state=DefaultState(max_steps=2),
+                config=p1.config,
+                hooks=[rh1],
+                task={"goal": "Install then break before checkpoint."},
+            )
+        ) as st1:
+            list(st1)
+
+    saved_ckpt = store.load("step_2", run_id="run-rev")
+    assert saved_ckpt is not None
+
+    @tool(name="edit_ov2", origin="host")
+    def edit_ov2_resume(*, step_action: str) -> dict[str, str]:
+        if step_action == "revert_v1":
+            _write_multi_file_tool(
+                ov2,
+                "tripler",
+                "def execute(ctx, *, value: int) -> dict:\n    return {'v': value * 3}\n",
+            )
+        return {"action": step_action}
+
+    with WorkspaceWatcher(base, overlays=[ov2], allowed_overlay_slots={"tools"}, strict=True) as w2:
+        p2 = cartridge_to_preset(base, strict=True)
+        p2.tools.register(edit_ov2_resume)
+        rh2 = ReloadHook(w2)
+        parts2 = CheckpointParticipants(
+            [CheckpointParticipant.from_object("reload", "1", rh2)], identity="rev-run"
+        )
+        p2.config.max_steps = 5
+        p2.config.run_envelope = RunEnvelope(run_id="run-rev")
+        p2.config.initial_checkpoint = saved_ckpt
+        p2.config.checkpoint_state = parts2.capture
+        p2.config.restore_checkpoint_state = parts2.restore
+        t_part2 = [
+            # Step 3 rejects break_v2; agent reverts disk back to v1!
+            [
+                {
+                    "type": "tool_use",
+                    "id": "e3",
+                    "name": "edit_ov2",
+                    "input": {"step_action": "revert_v1"},
+                }
+            ],
+            # Step 4 MUST reload tripler (because p2 started from base without tripler)!
+            [{"type": "tool_use", "id": "e4", "name": "tripler", "input": {"value": 8}}],
+            [{"type": "tool_use", "id": "e5", "name": "done", "input": {"summary": "24"}}],
+        ]
+        st2 = DefaultState(max_steps=5)
+        with closing(
+            composable_loop(
+                llm=_ScriptedNativeBackend(t_part2),
+                tools=p2.tools,
+                state=st2,
+                config=p2.config,
+                hooks=[rh2],
+                task={"goal": "Install then break before checkpoint."},
+            )
+        ) as steps2:
+            res_steps = list(steps2)
+
+    assert res_steps[1].tool_result.data == {"v": 24}
+    assert RunResult.from_state(st2).status == "completed"

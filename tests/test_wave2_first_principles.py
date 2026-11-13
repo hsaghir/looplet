@@ -824,3 +824,373 @@ def test_lazy_root_import_loads_only_package_root() -> None:
     parsed = json.loads(out)
     assert parsed["mods"] == ["looplet"]
     assert parsed["version"] == "0.5.0.dev0"
+    import looplet as _lp
+
+    assert set(_lp._LAZY_EXPORTS) | {"__version__"} == set(_lp.__all__)
+    assert _lp.backends is not None
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_anthropic_stream_overlaps_on_content_block_stop_and_openai_retains_usage_chunk(
+    asynchronous: bool,
+) -> None:
+    from looplet.backends import AnthropicStreamingBackend, AsyncAnthropicBackend
+
+    # 1. OpenAI stream retains usage from an earlier chunk when trailing keepalive chunk has usage=None
+    def make_oai_stream():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop", delta=SimpleNamespace(content="hi"))],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=42, completion_tokens=10, total_tokens=52),
+        )
+        # Trailing empty keepalive chunk with usage=None -> must NOT wipe usage!
+        yield SimpleNamespace(choices=[], usage=None)
+
+    # 2. Anthropic stream_with_tools emits on_tool_call on explicit content_block_stop BEFORE stream ends
+    anth_events: list[str] = []
+    anth_raw = [
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="text_delta", text="Thinking..."),
+        ),
+        SimpleNamespace(
+            type="content_block_stop",
+            content_block=SimpleNamespace(type="tool_use", id="tu_1", name="op_a", input={"v": 1}),
+        ),
+    ]
+    final_anth = SimpleNamespace(
+        model="claude",
+        stop_reason="tool_use",
+        content=[
+            SimpleNamespace(type="text", text="Thinking..."),
+            SimpleNamespace(type="tool_use", id="tu_1", name="op_a", input={"v": 1}),
+        ],
+        usage=SimpleNamespace(input_tokens=15, output_tokens=5),
+    )
+
+    if asynchronous:
+
+        async def create_async(**_kw: Any):
+            async def agen():
+                for ch in make_oai_stream():
+                    yield ch
+
+            return agen()
+
+        b_oa = AsyncOpenAIStreamingBackend(
+            SimpleNamespace(
+                max_retries=0,
+                chat=SimpleNamespace(completions=SimpleNamespace(create=create_async)),
+            ),
+            model="m",
+        )
+        _ = "".join([c async for c in b_oa.stream("go")])
+        usage = b_oa.last_usage
+        stop = b_oa.last_stop_reason
+
+        class AsyncAnthStream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_e):
+                return False
+
+            def __aiter__(self):
+                async def gen():
+                    yield anth_raw[0]
+                    yield anth_raw[1]
+                    anth_events.append("after_block_stop")
+
+                return gen()
+
+            async def get_final_message(self):
+                return final_anth
+
+        b_aa = AsyncAnthropicBackend(
+            SimpleNamespace(
+                max_retries=0, messages=SimpleNamespace(stream=lambda **_kw: AsyncAnthStream())
+            ),
+            model="claude",
+        )
+        b_aa.stream_in_loop = True
+        blocks = await b_aa.generate_with_tools(
+            "go",
+            tools=[{"name": "op_a", "input_schema": {"type": "object"}}],
+            on_chunk=lambda t, i: anth_events.append(f"chunk:{i}:{t}"),
+            on_tool_call=lambda b: anth_events.append(f"tool:{b['id']}"),
+        )
+    else:
+        b_os = OpenAIStreamingBackend(
+            SimpleNamespace(
+                max_retries=0,
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=lambda **_kw: make_oai_stream())
+                ),
+            ),
+            model="m",
+        )
+        _ = "".join(list(b_os.stream("go")))
+        usage = b_os.last_usage
+        stop = b_os.last_stop_reason
+
+        class SyncAnthStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_e):
+                return False
+
+            def __iter__(self):
+                yield anth_raw[0]
+                yield anth_raw[1]
+                anth_events.append("after_block_stop")
+
+            def get_final_message(self):
+                return final_anth
+
+        b_as = AnthropicStreamingBackend(
+            SimpleNamespace(
+                max_retries=0, messages=SimpleNamespace(stream=lambda **_kw: SyncAnthStream())
+            ),
+            model="claude",
+        )
+        blocks = b_as.generate_with_tools(
+            "go",
+            tools=[{"name": "op_a", "input_schema": {"type": "object"}}],
+            on_chunk=lambda t, i: anth_events.append(f"chunk:{i}:{t}"),
+            on_tool_call=lambda b: anth_events.append(f"tool:{b['id']}"),
+        )
+
+    assert stop == "stop"
+    assert usage["input"] == 42 and usage["output"] == 10
+    assert anth_events == ["chunk:0:Thinking...", "tool:tu_1", "after_block_stop"]
+    assert blocks == [
+        {"type": "text", "text": "Thinking..."},
+        {"type": "tool_use", "id": "tu_1", "name": "op_a", "input": {"v": 1}},
+    ]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_unmatched_speculative_stream_calls_drain_and_record_receipts_on_ok_turn(
+    asynchronous: bool, tmp_path: Path
+) -> None:
+    ran: list[str] = []
+
+    @tool(concurrent_safe=True)
+    def fast_probe() -> dict[str, str]:
+        ran.append("fast_probe")
+        return {"probe": "executed"}
+
+    class MismatchedStreamBackend:
+        stream_in_loop = True
+
+        def generate(self, prompt: str, **_kw: Any) -> str:
+            return ""
+
+        def generate_with_tools(
+            self,
+            prompt: str,
+            *,
+            tools: list[dict[str, Any]],
+            on_tool_call: Any = None,
+            **_kw: Any,
+        ) -> list[dict[str, Any]]:
+            del prompt, tools
+            if on_tool_call is not None:
+                on_tool_call(
+                    {
+                        "type": "tool_use",
+                        "id": "spec_1",
+                        "name": "fast_probe",
+                        "input": {},
+                        "index": 0,
+                    }
+                )
+            # Final returned blocks go straight to done() without spec_1!
+            return [
+                {"type": "tool_use", "id": "done_1", "name": "done", "input": {"summary": "ok"}}
+            ]
+
+    class AsyncMismatchedStreamBackend(MismatchedStreamBackend):
+        async def generate_with_tools(  # type: ignore[override]
+            self,
+            prompt: str,
+            *,
+            tools: list[dict[str, Any]],
+            on_tool_call: Any = None,
+            **_kw: Any,
+        ) -> list[dict[str, Any]]:
+            return super().generate_with_tools(prompt, tools=tools, on_tool_call=on_tool_call)
+
+    sink = ProvenanceSink(tmp_path / f"trace_{asynchronous}")
+    cfg = LoopConfig(
+        max_steps=3,
+        use_native_tools=True,
+        streaming_tool_execution=True,
+        disabled_defaults=("persistence", "compaction", "stagnation", "tool_budget"),
+    )
+    reg = tools_from([fast_probe], include_done=True)
+    state = DefaultState(max_steps=3)
+    if asynchronous:
+        res = await run_result_async(
+            sink.wrap_llm(AsyncMismatchedStreamBackend(), async_=True),
+            task="go",
+            tools=reg,
+            state=state,
+            config=cfg,
+        )
+    else:
+        res = run_result(
+            sink.wrap_llm(MismatchedStreamBackend()),
+            task="go",
+            tools=reg,
+            state=state,
+            config=cfg,
+        )
+    sink.flush()
+
+    assert res.completed and ran == ["fast_probe"]
+    receipts = state.metadata.get("speculative_tool_receipts", [])
+    assert len(receipts) == 1
+    assert receipts[0]["tool"] == "fast_probe"
+    # Verify ProvenanceSink intent options stripped on_tool_call so rehydrated request matches!
+    attempts = load_model_attempts(tmp_path / f"trace_{asynchronous}")
+    assert len(attempts) == 1
+    rehydrated_opts = attempts[0]["outcome"]["capture"]["request"]["options"]
+    assert "on_tool_call" not in rehydrated_opts and "on_chunk" not in rehydrated_opts
+
+
+def test_result_store_chunked_line_bounds_and_run_store_bounded_header_cache(
+    tmp_path: Path,
+) -> None:
+    from looplet import FileRunStore, RunEnvelope
+    from looplet.builtin_tools.tool_results import read_result
+    from looplet.result_store import FileToolResultStore
+
+    # 1. Test \r\n across 65536-byte boundary + start_line > total_lines parity with read_result
+    prefix = "a" * 65535 + "\r\nsecond_line\nthird_line"
+    rs = FileToolResultStore(tmp_path / "results")
+    key = rs.store_result(prefix)
+    page_store = rs.read_result(key, start_line=2, end_line=3, limit=100)
+    page_mem = read_result(prefix, result_key=key, start_line=2, end_line=3, limit=100)
+    assert page_store == page_mem
+
+    with pytest.raises(ValueError, match="end_line must be an integer >= start_line"):
+        rs.read_result(key, start_line=10)
+
+    # 2. FileRunStore._header_cache stays bounded <= 64 across 80 runs
+    fstore = FileRunStore(tmp_path / "runs")
+    for idx in range(80):
+        fstore.create(RunEnvelope(run_id=f"run_{idx:03d}"))
+    assert len(fstore._header_cache) <= 64
+    loaded_first = fstore.load("run_000")
+    assert loaded_first is not None and loaded_first.run_id == "run_000"
+
+
+def test_permission_hook_subagent_event_ignore_and_cross_cartridge_resource_roundtrip(
+    tmp_path: Path,
+) -> None:
+    from looplet import RunEnvelope, cartridge_to_preset, preset_to_cartridge
+    from looplet.cartridge._imports import _import_module_from_path
+
+    # 1. PermissionHook ignores forwarded subagent PRE_TOOL_USE observer events and clears on STOP
+    asks = 0
+
+    def ask_fn(_tc: ToolCall, _rule: Any) -> PermissionDecision:
+        nonlocal asks
+        asks += 1
+        return PermissionDecision.ALLOW
+
+    eng = PermissionEngine(default=PermissionDecision.ALLOW, ask_handler=ask_fn).ask("danger")
+    ph = PermissionHook(eng)
+    c_sub = ToolCall(tool="danger", args={}, call_id="sub_1")
+    assert (
+        ph.on_event(
+            EventPayload(
+                event=LifecycleEvent.PRE_TOOL_USE,
+                tool_call=c_sub,
+                extra={"subagent_id": "child_1"},
+            )
+        )
+        is None
+    )
+    assert asks == 0
+    c_main = ToolCall(tool="danger", args={}, call_id="")
+    ph.on_event(EventPayload(event=LifecycleEvent.PRE_TOOL_USE, tool_call=c_main))
+    assert asks == 1 and len(ph._approved_by_key) == 1
+    ph.on_event(EventPayload(event=LifecycleEvent.STOP))
+    assert len(ph._approved_by_key) == 0
+
+    # 2. _import_module_from_path restores previous module in sys.modules on exec error
+    good_py = tmp_path / "good.py"
+    bad_py = tmp_path / "bad.py"
+    good_py.write_text("VAL = 1\n", encoding="utf-8")
+    bad_py.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+    prev_mod = _import_module_from_path(good_py, "_chw_test_restore")
+    with pytest.raises(RuntimeError, match="boom"):
+        _import_module_from_path(bad_py, "_chw_test_restore")
+    assert sys.modules.get("_chw_test_restore") is prev_mod
+    sys.modules.pop("_chw_test_restore", None)
+
+    # 3. Two cartridges sharing resources/cfg.py + memory/00_dyn.py + helper tool round-trip cleanly
+    def build_cart(cdir: Path, tag: str) -> None:
+        (cdir / "prompts").mkdir(parents=True)
+        (cdir / "resources").mkdir(parents=True)
+        (cdir / "memory").mkdir(parents=True)
+        (cdir / "tools/run_op").mkdir(parents=True)
+        (cdir / "tools/done").mkdir(parents=True)
+        (cdir / "cartridge.json").write_text(
+            json.dumps({"name": f"c_{tag}", "schema_version": 2}), encoding="utf-8"
+        )
+        (cdir / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n", encoding="utf-8")
+        (cdir / "prompts/system.md").write_text("System.\n", encoding="utf-8")
+        (cdir / "resources/cfg.py").write_text(
+            f"class Cfg:\n    TAG = {tag!r}\ndef build(runtime=None):\n    return Cfg()\n",
+            encoding="utf-8",
+        )
+        (cdir / "memory/00_dyn.py").write_text(
+            f"def load(state):\n    return 'mem:{tag}'\n", encoding="utf-8"
+        )
+        (cdir / "op_helper.py").write_text(
+            "def impl(ctx):\n    return {'tag': ctx.resources['cfg'].TAG}\n", encoding="utf-8"
+        )
+        (cdir / "tools/run_op/tool.yaml").write_text(
+            "name: run_op\ndescription: Run op.\nparameters: {}\nrequires:\n  - cfg\n",
+            encoding="utf-8",
+        )
+        (cdir / "tools/run_op/execute.py").write_text(
+            "from op_helper import impl as execute\n", encoding="utf-8"
+        )
+        (cdir / "tools/done/tool.yaml").write_text(
+            "name: done\ndescription: Done.\nparameters:\n  summary:\n    type: string\n",
+            encoding="utf-8",
+        )
+        (cdir / "tools/done/execute.py").write_text(
+            "def execute(ctx, *, summary: str = '') -> dict:\n    return {'summary': summary}\n",
+            encoding="utf-8",
+        )
+
+    ca = tmp_path / "ca.cartridge"
+    cb = tmp_path / "cb.cartridge"
+    build_cart(ca, "ALPHA")
+    build_cart(cb, "BETA")
+    pa = cartridge_to_preset(ca, strict=True)
+    pb = cartridge_to_preset(cb, strict=True)
+    try:
+        # Export pa AFTER pb overwrote _chw_resource_cfg in sys.modules!
+        exp_a = tmp_path / "exp_a.cartridge"
+        preset_to_cartridge(pa, exp_a, strict=True)
+        reloaded_a = cartridge_to_preset(exp_a, strict=True)
+        try:
+            out = reloaded_a.tools.dispatch(ToolCall(tool="run_op", args={}))
+            assert out.data == {"tag": "ALPHA"}
+            assert reloaded_a.config.memory_sources[0].load(DefaultState()) == "mem:ALPHA"
+        finally:
+            reloaded_a.close()
+    finally:
+        pa.close()
+        pb.close()
+    _ = RunEnvelope(run_id="ok")

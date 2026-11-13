@@ -3542,6 +3542,25 @@ def _composable_loop_impl(
 
         turn_usage_calls = 0
         _discarded_stream_receipts: list[dict[str, Any]] = []
+        _stream_executor: Any = None
+        _stream_consumed = False
+
+        def _drain_unused_stream_executor() -> list[dict[str, Any]]:
+            nonlocal _stream_consumed
+            if _stream_executor is None or _stream_consumed:
+                return []
+            _stream_consumed = True
+            _stream_executor.discard()
+            receipts = [
+                r.to_dict()
+                for r in _stream_executor.results()
+                if r.metadata.get("execution_status") != "not_executed"
+            ]
+            state_meta = getattr(state, "metadata", None)
+            if receipts and isinstance(state_meta, dict):
+                state_meta.setdefault("speculative_tool_receipts", []).extend(receipts)
+            return receipts
+
         if preflight_too_long:
             _stream_executor = None
             logger.warning(
@@ -3702,18 +3721,11 @@ def _composable_loop_impl(
                     on_stream_reset=_on_stream_reset if _stream_executor is not None else None,
                 )
             except BaseException:
-                if _stream_executor is not None:
-                    _stream_executor.discard()
-                    _stream_executor.results()
+                _drain_unused_stream_executor()
                 raise
             else:
                 if _stream_executor is not None and not llm_result.ok:
-                    _stream_executor.discard()
-                    _discarded_stream_receipts = [
-                        r.to_dict()
-                        for r in _stream_executor.results()
-                        if r.metadata.get("execution_status") != "not_executed"
-                    ]
+                    _discarded_stream_receipts = _drain_unused_stream_executor()
             loop_ctx.native_tool_stats.record(llm_result)
             llm_calls += llm_result.calls + (
                 0 if llm_result.native_attempted else llm_result.continuations
@@ -3722,6 +3734,7 @@ def _composable_loop_impl(
             usage_calls += turn_usage_calls
             _record_run_stats(state, llm_calls=llm_calls, usage_calls=usage_calls, config=config)
             if _deadline_expired(loop_ctx) and _turns is None:
+                _drain_unused_stream_executor()
                 stop_reason = "deadline_exceeded"
                 done = True
                 break
@@ -4084,6 +4097,7 @@ def _composable_loop_impl(
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
 
             if not tool_calls:
+                _drain_unused_stream_executor()
                 logger.warning("Unparseable LLM response at step %d after recovery", step_num)
                 tool_call = ToolCall(
                     tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200]
@@ -4138,6 +4152,7 @@ def _composable_loop_impl(
             tools, tool_calls, config, state, turn_id=f"turn-{llm_calls}"
         )
         if turn_plan is None:
+            _drain_unused_stream_executor()
             stop_reason = "budget_exhausted"
             done = True
             break
@@ -4146,10 +4161,13 @@ def _composable_loop_impl(
 
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
+        if not regular_calls:
+            _drain_unused_stream_executor()
         if regular_calls:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
 
             def _dispatch_regular_calls():
+                nonlocal _stream_consumed
                 groups = (
                     [regular_calls]
                     if config.concurrent_dispatch
@@ -4158,6 +4176,7 @@ def _composable_loop_impl(
                 _pre_streamed_calls = (
                     _stream_executor.submitted_calls() if _stream_executor is not None else {}
                 )
+                _stream_consumed = True
                 _pre_streamed = (
                     {r.call_id: r for r in _stream_executor.results() if r.call_id is not None}
                     if _stream_executor is not None
@@ -4262,6 +4281,15 @@ def _composable_loop_impl(
                         )
                         yield offset + index, call, result, was_intercepted
                     offset += len(group)
+                state_meta = getattr(state, "metadata", None)
+                if _pre_streamed and isinstance(state_meta, dict):
+                    leftovers = [
+                        {**r.to_dict(), "unmatched_speculative": True}
+                        for r in _pre_streamed.values()
+                        if r.metadata.get("execution_status") != "not_executed"
+                    ]
+                    if leftovers:
+                        state_meta.setdefault("speculative_tool_receipts", []).extend(leftovers)
 
             for tc_idx, tool_call, tool_result, was_intercepted in _dispatch_regular_calls():
                 cur_step = step_num + tc_idx

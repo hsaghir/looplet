@@ -1005,20 +1005,27 @@ class OpenAIStreamingBackend(OpenAIBackend):
         _begin_request(self, kwargs)
         response = self._request_client().chat.completions.create(**kwargs)
         last_chunk: Any = None
+        usage_chunk: Any = None
         stop_reason: str | None = None
         try:
             for chunk in response:
                 last_chunk = chunk
-                if chunk.choices:
-                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                if getattr(chunk, "usage", None) is not None or (
+                    isinstance(chunk, dict) and chunk.get("usage") is not None
+                ):
+                    usage_chunk = chunk
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    fr = getattr(choices[0], "finish_reason", None)
                     if isinstance(fr, str) and fr:
                         stop_reason = fr
-                delta = chunk.choices[0].delta if chunk.choices else None
+                delta = getattr(choices[0], "delta", None) if choices else None
                 text = _openai_message_text(delta)
                 if text:
                     yield text
-            if last_chunk is not None:
-                _capture_response(self, last_chunk)
+            captured_chunk = usage_chunk if usage_chunk is not None else last_chunk
+            if captured_chunk is not None:
+                _capture_response(self, captured_chunk)
             if stop_reason is not None:
                 self.last_stop_reason = {
                     "length": "max_tokens",
@@ -1153,9 +1160,23 @@ class _OpenAIToolStreamAssembler:
         self._ordered_tool_blocks: list[dict[str, Any]] = []
         self.stop_reason: str | None = None
         self.last_chunk: Any = None
+        self.usage_chunk: Any = None
+
+    def _emit_tool_index(self, idx: int) -> None:
+        if idx in self._emitted_indices:
+            return
+        self._emitted_indices.add(idx)
+        block = _finalize_streamed_tool_entry(self._tool_entries[idx])
+        self._ordered_tool_blocks.append(block)
+        if self._on_tool_call is not None:
+            self._on_tool_call({**block, "index": idx})
 
     def feed(self, chunk: Any) -> None:
         self.last_chunk = chunk
+        if getattr(chunk, "usage", None) is not None or (
+            isinstance(chunk, dict) and chunk.get("usage") is not None
+        ):
+            self.usage_chunk = chunk
         choices = getattr(chunk, "choices", None) or []
         if not choices:
             return
@@ -1191,12 +1212,7 @@ class _OpenAIToolStreamAssembler:
 
         if fr == "tool_calls":
             for idx in sorted(self._tool_entries):
-                if idx not in self._emitted_indices:
-                    self._emitted_indices.add(idx)
-                    block = _finalize_streamed_tool_entry(self._tool_entries[idx])
-                    self._ordered_tool_blocks.append(block)
-                    if self._on_tool_call is not None:
-                        self._on_tool_call({**block, "index": idx})
+                self._emit_tool_index(idx)
 
     def finish(self) -> tuple[list[dict[str, Any]], str | None, Any]:
         if (
@@ -1210,7 +1226,8 @@ class _OpenAIToolStreamAssembler:
         if full_text:
             blocks.append({"type": "text", "text": full_text})
         blocks.extend(self._ordered_tool_blocks)
-        return blocks, self.stop_reason, self.last_chunk
+        captured_chunk = self.usage_chunk if self.usage_chunk is not None else self.last_chunk
+        return blocks, self.stop_reason, captured_chunk
 
 
 def _consume_openai_tool_stream(
@@ -1394,6 +1411,95 @@ class AnthropicStreamingBackend(AnthropicBackend):
     """
 
     stream_in_loop = True
+
+    def stream_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
+            "temperature": temperature,
+            "tools": tools,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
+        )
+
+        _begin_request(self, kwargs)
+        with self._request_client().messages.stream(**kwargs) as stream:
+            chunk_idx = 0
+            emitted_tool_idx = 0
+            for event in stream:
+                ev_type = getattr(event, "type", None)
+                if ev_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", None) == "text_delta":
+                        text = getattr(delta, "text", "")
+                        if text and on_chunk is not None:
+                            on_chunk(text, chunk_idx)
+                            chunk_idx += 1
+                elif ev_type == "content_block_stop" and on_tool_call is not None:
+                    cb = getattr(event, "content_block", None)
+                    if getattr(cb, "type", None) == "tool_use":
+                        on_tool_call(
+                            {
+                                "type": "tool_use",
+                                "id": getattr(cb, "id", "") or "",
+                                "name": getattr(cb, "name", "") or "",
+                                "input": dict(getattr(cb, "input", {}) or {}),
+                                "index": emitted_tool_idx,
+                            }
+                        )
+                        emitted_tool_idx += 1
+            final_msg = stream.get_final_message()
+            _capture_response(self, final_msg)
+            return _anthropic_response_to_blocks(final_msg)
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        if (on_chunk is not None or on_tool_call is not None) and hasattr(
+            self._client.messages, "stream"
+        ):
+            return self.stream_with_tools(
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                cache_breakpoints=cache_breakpoints,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+            )
+        return super().generate_with_tools(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            cache_breakpoints=cache_breakpoints,
+        )
 
     def stream(
         self,
@@ -1597,20 +1703,27 @@ class AsyncOpenAIBackend(_ConversationBackend):
         _begin_request(self, kwargs)
         response = await self._request_client().chat.completions.create(**kwargs)
         last_chunk: Any = None
+        usage_chunk: Any = None
         stop_reason: str | None = None
         try:
             async for chunk in response:
                 last_chunk = chunk
-                if chunk.choices:
-                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                if getattr(chunk, "usage", None) is not None or (
+                    isinstance(chunk, dict) and chunk.get("usage") is not None
+                ):
+                    usage_chunk = chunk
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    fr = getattr(choices[0], "finish_reason", None)
                     if isinstance(fr, str) and fr:
                         stop_reason = fr
-                delta = chunk.choices[0].delta if chunk.choices else None
+                delta = getattr(choices[0], "delta", None) if choices else None
                 text = _openai_message_text(delta)
                 if text:
                     yield text
-            if last_chunk is not None:
-                _capture_response(self, last_chunk)
+            captured_chunk = usage_chunk if usage_chunk is not None else last_chunk
+            if captured_chunk is not None:
+                _capture_response(self, captured_chunk)
             if stop_reason is not None:
                 self.last_stop_reason = {
                     "length": "max_tokens",
@@ -2401,8 +2514,25 @@ class AsyncAnthropicBackend(_ConversationBackend):
         system_prompt: str = "",
         temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Async native tool calling via Anthropic ``tools`` parameter."""
+        if (
+            getattr(self, "stream_in_loop", False)
+            and (on_chunk is not None or on_tool_call is not None)
+            and hasattr(self._client.messages, "stream")
+        ):
+            return await self.stream_with_tools(
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                cache_breakpoints=cache_breakpoints,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+            )
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": _conversation_messages(self, prompt, native_blocks=True),
@@ -2420,6 +2550,65 @@ class AsyncAnthropicBackend(_ConversationBackend):
         response = await self._request_client().messages.create(**kwargs)
         _capture_response(self, response)
         return _anthropic_response_to_blocks(response)
+
+    async def stream_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float | None = None,
+        cache_breakpoints: list[Any] | None = None,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
+            "temperature": temperature,
+            "tools": tools,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
+        )
+
+        _begin_request(self, kwargs)
+        async with self._request_client().messages.stream(**kwargs) as stream:
+            chunk_idx = 0
+            emitted_tool_idx = 0
+            async for event in stream:
+                ev_type = getattr(event, "type", None)
+                if ev_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", None) == "text_delta":
+                        text = getattr(delta, "text", "")
+                        if text and on_chunk is not None:
+                            on_chunk(text, chunk_idx)
+                            chunk_idx += 1
+                elif ev_type == "content_block_stop" and on_tool_call is not None:
+                    cb = getattr(event, "content_block", None)
+                    if getattr(cb, "type", None) == "tool_use":
+                        on_tool_call(
+                            {
+                                "type": "tool_use",
+                                "id": getattr(cb, "id", "") or "",
+                                "name": getattr(cb, "name", "") or "",
+                                "input": dict(getattr(cb, "input", {}) or {}),
+                                "index": emitted_tool_idx,
+                            }
+                        )
+                        emitted_tool_idx += 1
+            import inspect as _inspect
+
+            final_msg = stream.get_final_message()
+            if _inspect.isawaitable(final_msg):
+                final_msg = await final_msg
+            _capture_response(self, final_msg)
+            return _anthropic_response_to_blocks(final_msg)
 
     async def stream(
         self,

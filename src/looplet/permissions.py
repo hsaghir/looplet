@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -389,7 +390,9 @@ class PermissionHook:
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
         self._lock = threading.RLock()
-        self._approved_by_key: dict[Any, tuple[int, str, str, dict[str, Any], tuple[Any, ...]]] = {}
+        self._approved_by_key: OrderedDict[
+            Any, tuple[ToolCall, tuple[int, str, str, dict[str, Any], tuple[Any, ...]]]
+        ] = OrderedDict()
         self._approved_var: ContextVar[
             tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None
         ] = ContextVar(f"looplet_perm_approved_{id(self)}", default=None)
@@ -429,6 +432,14 @@ class PermissionHook:
         from looplet.events import LifecycleEvent  # noqa: PLC0415
         from looplet.hook_decision import Allow, Deny  # noqa: PLC0415
 
+        extra = getattr(payload, "extra", None)
+        if isinstance(extra, dict) and "subagent_id" in extra:
+            return None
+        if payload.event == LifecycleEvent.STOP:
+            with self._lock:
+                self._approved_by_key.clear()
+            self._approved = None
+            return None
         if payload.event != LifecycleEvent.PRE_TOOL_USE:
             return None
         if payload.tool_call is None:
@@ -454,7 +465,10 @@ class PermissionHook:
                     self.engine._policy_snapshot(),
                 )
                 with self._lock:
-                    self._approved_by_key[key] = stamp
+                    self._approved_by_key.pop(key, None)
+                    self._approved_by_key[key] = (payload.tool_call, stamp)
+                    while len(self._approved_by_key) > 128:
+                        self._approved_by_key.popitem(last=False)
                 self._approved = stamp
             return Allow(policy_decision=audit)
         if outcome.denied:
@@ -470,8 +484,11 @@ class PermissionHook:
     # surface directly (e.g. in tests).
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
         key = self._approval_key(tool_call)
+        approved = None
         with self._lock:
-            approved = self._approved_by_key.pop(key, None)
+            saved = self._approved_by_key.pop(key, None)
+            if saved is not None and (tool_call.call_id or saved[0] is tool_call):
+                approved = saved[1]
         ctx_approved = self._approved
         self._approved = None
         if approved is None:

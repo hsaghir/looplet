@@ -210,10 +210,12 @@ class FileRunStore:
     """
 
     def __init__(self, directory: str | Path) -> None:
+        from collections import OrderedDict
+
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._header_cache: dict[str, tuple[int, int, RunRecord]] = {}
+        self._header_cache: OrderedDict[str, tuple[int, int, RunRecord]] = OrderedDict()
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -332,11 +334,14 @@ class FileRunStore:
         return _artifact_path(self._root(run_id), filename)
 
     def _write_record(self, run_id: str, path: Path, record: RunRecord) -> None:
-        raw_dict = record.to_dict()
-        self._write(path, raw_dict)
+        serialized = json.dumps(record.to_dict(), indent=2, default=str) + "\n"
+        self._write_text(path, serialized)
         st = path.stat()
-        detached = RunRecord.from_dict(json.loads(json.dumps(raw_dict, default=str)), events=())
+        detached = RunRecord.from_dict(json.loads(serialized), events=())
+        self._header_cache.pop(run_id, None)
         self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, detached)
+        while len(self._header_cache) > 64:
+            self._header_cache.popitem(last=False)
 
     def _load_unlocked(self, run_id: str, *, include_events: bool = True) -> RunRecord | None:
         path = self._file(run_id, "run.json")
@@ -346,17 +351,23 @@ class FileRunStore:
         st = path.stat()
         cached = self._header_cache.get(run_id)
         if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+            self._header_cache.move_to_end(run_id)
             header = copy.deepcopy(cached[2])
         else:
             header = RunRecord.from_dict(
                 json.loads(path.read_text(encoding="utf-8")),
                 events=(),
             )
+            self._header_cache.pop(run_id, None)
             self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, copy.deepcopy(header))
+            while len(self._header_cache) > 64:
+                self._header_cache.popitem(last=False)
         if not include_events:
             return header
         ev = self._events_unlocked(run_id)
-        updated_at = max(header.updated_at, ev[-1].timestamp) if ev else header.updated_at
+        updated_at = (
+            max(header.updated_at, max(e.timestamp for e in ev)) if ev else header.updated_at
+        )
         return replace(header, events=ev, updated_at=updated_at)
 
     def _events_unlocked(self, run_id: str) -> tuple[RunEvent, ...]:
@@ -377,15 +388,18 @@ class FileRunStore:
         return record
 
     @staticmethod
-    def _write(path: Path, value: Mapping[str, Any]) -> None:
+    def _write_text(path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(value, handle, indent=2, default=str)
-                handle.write("\n")
+                handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, path)
         finally:
             Path(temp_name).unlink(missing_ok=True)
+
+    @staticmethod
+    def _write(path: Path, value: Mapping[str, Any]) -> None:
+        FileRunStore._write_text(path, json.dumps(value, indent=2, default=str) + "\n")

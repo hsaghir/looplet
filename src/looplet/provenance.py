@@ -654,6 +654,8 @@ class _RecordingBase:
         if self._attempt_directory is None:
             return None
         attempt_id = uuid4().hex
+        if options:
+            options = {k: v for k, v in options.items() if k not in {"on_chunk", "on_tool_call"}}
         recorded_prompt = (
             prompt if self._redact_upstream or self._redact is None else self._redact(prompt)
         )

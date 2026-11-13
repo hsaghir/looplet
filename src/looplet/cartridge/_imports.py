@@ -240,12 +240,18 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
     active_ns = _ACTIVE_CARTRIDGE_NS.get()
     if active_ns is not None:
         module.__dict__["__builtins__"] = active_ns.builtins
+    previous = _sys.modules.get(module_name)
     _sys.modules[module_name] = module
     try:
         exec(code, module.__dict__)
     except Exception:
-        _sys.modules.pop(module_name, None)
+        if previous is not None:
+            _sys.modules[module_name] = previous
+        else:
+            _sys.modules.pop(module_name, None)
         raise
+    if active_ns is not None:
+        active_ns.modules[module_name] = module
     setattr(module, "__looplet_source_path__", str(path))
     for value in module.__dict__.values():
         if getattr(value, "__module__", None) != module_name:

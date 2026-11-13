@@ -13,7 +13,7 @@ else, import from the relevant submodule::
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
+import importlib.util
 from typing import TYPE_CHECKING, Any
 
 __version__ = "0.5.0.dev0"
@@ -543,7 +543,6 @@ _EXPORT_MODULES: dict[str, tuple[str, ...]] = {
 _LAZY_EXPORTS: dict[str, str] = {
     symbol: module_name for module_name, symbols in _EXPORT_MODULES.items() for symbol in symbols
 }
-_PKG_DIR = Path(__file__).resolve().parent
 
 
 def __getattr__(name: str) -> Any:
@@ -553,9 +552,7 @@ def __getattr__(name: str) -> Any:
         value = getattr(mod, name)
         globals()[name] = value
         return value
-    if not name.startswith("_") and (
-        (_PKG_DIR / f"{name}.py").is_file() or (_PKG_DIR / name / "__init__.py").is_file()
-    ):
+    if not name.startswith("_") and importlib.util.find_spec(f"looplet.{name}") is not None:
         submod = importlib.import_module(f"looplet.{name}")
         globals()[name] = submod
         return submod

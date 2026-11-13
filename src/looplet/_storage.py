@@ -130,6 +130,9 @@ class TrackedList(list):
         n = len(self)
         self._revision = n
         self._item_revisions: list[int] = list(range(1, n + 1))
+        self._change_log: list[tuple[int, int]] = [
+            (rev, idx) for idx, rev in enumerate(self._item_revisions)
+        ]
         self._detached = False
 
     def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
@@ -140,34 +143,41 @@ class TrackedList(list):
             self._record_identity = uuid4().hex
             self._detached = False
 
+    def _compact_change_log(self) -> None:
+        if len(self._change_log) > max(64, len(self) * 4):
+            self._change_log = sorted((rev, idx) for idx, rev in enumerate(self._item_revisions))
+
     def append(self, value: Any) -> None:
         self._detach_if_needed()
+        pos = len(self)
         super().append(value)
         self._revision += 1
         self._item_revisions.append(self._revision)
+        self._change_log.append((self._revision, pos))
 
     def extend(self, values: Iterable[Any]) -> None:
         items = list(values)
         if not items:
             return
         self._detach_if_needed()
+        base_pos = len(self)
         super().extend(items)
         start = self._revision + 1
         self._revision += len(items)
         self._item_revisions.extend(range(start, self._revision + 1))
+        self._change_log.extend((start + offset, base_pos + offset) for offset in range(len(items)))
 
     def insert(self, index: Any, value: Any) -> None:
         self._detach_if_needed()
         pos = max(0, min(int(index) if int(index) >= 0 else len(self) + int(index), len(self)))
         if pos == len(self):
-            super().append(value)
-            self._revision += 1
-            self._item_revisions.append(self._revision)
+            self.append(value)
             return
         super().insert(pos, value)
         self._generation += 1
         self._revision += 1
         self._item_revisions.insert(pos, self._revision)
+        self._change_log = sorted((rev, idx) for idx, rev in enumerate(self._item_revisions))
 
     def pop(self, index: Any = -1) -> Any:
         self._detach_if_needed()
@@ -177,6 +187,9 @@ class TrackedList(list):
         self._item_revisions.pop(idx)
         if not is_last:
             self._generation += 1
+            self._change_log = sorted((rev, i) for i, rev in enumerate(self._item_revisions))
+        else:
+            self._compact_change_log()
         self._revision += 1
         return val
 
@@ -184,6 +197,7 @@ class TrackedList(list):
         self._detach_if_needed()
         super().clear()
         self._item_revisions.clear()
+        self._change_log.clear()
         self._generation += 1
         self._revision += 1
 
@@ -193,6 +207,7 @@ class TrackedList(list):
         self._generation += 1
         self._revision += 1
         self._item_revisions = [self._revision] * len(self)
+        self._change_log = [(self._revision, idx) for idx in range(len(self))]
 
     def sort(self, *, key: Any = None, reverse: bool = False) -> None:
         self._detach_if_needed()
@@ -200,12 +215,15 @@ class TrackedList(list):
         self._generation += 1
         self._revision += 1
         self._item_revisions = [self._revision] * len(self)
+        self._change_log = [(self._revision, idx) for idx in range(len(self))]
 
     def mark_modified(self, index: int) -> None:
         if 0 <= index < len(self):
             self._detach_if_needed()
             self._revision += 1
             self._item_revisions[index] = self._revision
+            self._change_log.append((self._revision, index))
+            self._compact_change_log()
 
     def __setitem__(self, index: Any, value: Any) -> None:
         self._detach_if_needed()
@@ -217,10 +235,13 @@ class TrackedList(list):
                 for pos in positions:
                     self._revision += 1
                     self._item_revisions[pos] = self._revision
+                    self._change_log.append((self._revision, pos))
+                self._compact_change_log()
             else:
                 self._generation += 1
                 self._revision += 1
                 self._item_revisions = [self._revision] * len(self)
+                self._change_log = [(self._revision, idx) for idx in range(len(self))]
             return
         pos = int(index)
         if pos < 0:
@@ -228,6 +249,8 @@ class TrackedList(list):
         super().__setitem__(pos, value)
         self._revision += 1
         self._item_revisions[pos] = self._revision
+        self._change_log.append((self._revision, pos))
+        self._compact_change_log()
 
     def __delitem__(self, index: Any) -> None:
         self._detach_if_needed()
@@ -235,6 +258,7 @@ class TrackedList(list):
         del self._item_revisions[index]
         self._generation += 1
         self._revision += 1
+        self._change_log = sorted((rev, idx) for idx, rev in enumerate(self._item_revisions))
 
     def __iadd__(self, values: Iterable[Any]) -> TrackedList:
         self.extend(values)
@@ -248,6 +272,7 @@ class TrackedList(list):
         clone._generation = self._generation
         clone._revision = self._revision
         clone._item_revisions = self._item_revisions[:]
+        clone._change_log = self._change_log[:]
         clone._detached = True
         return clone
 
@@ -255,6 +280,8 @@ class TrackedList(list):
     def changes_since(
         self, cursor: tuple[int, int, int], stop: int
     ) -> Iterator[tuple[int, int, Iterator[tuple[int, Any]]]]:
+        from bisect import bisect_right
+
         if stop > len(self):
             raise IndexError("record index out of range")
         generation, revision, length = cursor
@@ -262,9 +289,15 @@ class TrackedList(list):
             changed = [(pos, self[pos]) for pos in range(stop)]
         else:
             limit = min(length, stop)
-            changed = [
-                (pos, self[pos]) for pos in range(limit) if self._item_revisions[pos] > revision
-            ]
+            log_pos = bisect_right(self._change_log, (revision, len(self) + 1))
+            dirty_positions = sorted(
+                {
+                    idx
+                    for _, idx in self._change_log[log_pos:]
+                    if idx < limit and self._item_revisions[idx] > revision
+                }
+            )
+            changed = [(pos, self[pos]) for pos in dirty_positions]
             if stop > length:
                 changed.extend((pos, self[pos]) for pos in range(length, stop))
         yield self._generation, self._revision, iter(changed)

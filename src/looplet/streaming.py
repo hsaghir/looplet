@@ -561,16 +561,29 @@ class _TrackedToolItem:
     ctx: ToolContext | None
     is_concurrent_safe: bool
     status: str = "queued"
+    started: bool = False
     result: ToolResult | None = None
     future: Future[ToolResult] | None = None
     task: asyncio.Task[ToolResult] | None = None
 
 
-def _cancelled_tool_result(call: ToolCall, message: str) -> ToolResult:
+_UNSET = object()
+
+
+def _cancelled_tool_result(
+    call: ToolCall,
+    message: str,
+    *,
+    execution_status: str = "not_executed",
+    discarded_output: Any = _UNSET,
+) -> ToolResult:
     from looplet.tools import _summarize_args_dict  # noqa: PLC0415
 
     clean = {k: v for k, v in call.args.items() if not k.startswith("__")}
     err = ToolError(kind=ErrorKind.CANCELLED, message=message, retriable=False)
+    meta: dict[str, Any] = {"execution_status": execution_status}
+    if discarded_output is not _UNSET:
+        meta["discarded_output"] = discarded_output
     return ToolResult(
         tool=call.tool,
         args_summary=_summarize_args_dict(clean),
@@ -578,7 +591,7 @@ def _cancelled_tool_result(call: ToolCall, message: str) -> ToolResult:
         error=err.message,
         error_detail=err,
         call_id=call.call_id,
-        metadata={"execution_status": "not_executed"},
+        metadata=meta,
     )
 
 
@@ -645,19 +658,31 @@ class StreamingToolExecutor:
             self._items.append(item)
             self._process_queue_locked()
 
+    def submitted_calls(self) -> dict[str, ToolCall]:
+        """Return submitted tool calls keyed by non-empty ``call_id``."""
+        with self._lock:
+            return {item.call.call_id: item.call for item in self._items if item.call.call_id}
+
     def discard(self) -> None:
         """Discard all pending and in-progress tools (e.g. on streaming fallback)."""
         with self._lock:
             self._discarded = True
             self._sibling_token.cancel()
             for item in self._items:
-                if item.status != "completed":
+                if item.status == "queued":
                     item.result = _cancelled_tool_result(
-                        item.call, "Streaming fallback - tool execution discarded"
+                        item.call,
+                        "Streaming fallback - tool execution discarded",
+                        execution_status="not_executed",
                     )
                     item.status = "completed"
-                if item.future is not None:
-                    item.future.cancel()
+                elif item.future is not None and item.future.cancel():
+                    item.result = _cancelled_tool_result(
+                        item.call,
+                        "Streaming fallback - tool execution discarded",
+                        execution_status="not_executed",
+                    )
+                    item.status = "completed"
             self._cond.notify_all()
 
     def _can_execute_locked(self, is_concurrent_safe: bool) -> bool:
@@ -699,11 +724,17 @@ class StreamingToolExecutor:
         try:
             res = self._tools.dispatch(item.call, ctx=item.ctx)
         except Exception as exc:  # pragma: no cover - defensive
-            res = _cancelled_tool_result(item.call, str(exc))
+            res = _cancelled_tool_result(item.call, str(exc), execution_status="effect_unknown")
         with self._lock:
             if self._discarded:
+                completed_ok = res.error is None
                 item.result = _cancelled_tool_result(
-                    item.call, "Streaming fallback - tool execution discarded"
+                    item.call,
+                    "Streaming fallback - tool execution discarded",
+                    execution_status="completed_before_discard"
+                    if completed_ok
+                    else "effect_unknown",
+                    discarded_output=res.data if completed_ok else _UNSET,
                 )
             else:
                 item.result = res
@@ -785,19 +816,26 @@ class AsyncStreamingToolExecutor:
         self._done_event.clear()
         self._process_queue()
 
+    def submitted_calls(self) -> dict[str, ToolCall]:
+        """Return submitted tool calls keyed by non-empty ``call_id``."""
+        return {item.call.call_id: item.call for item in self._items if item.call.call_id}
+
     def discard(self) -> None:
         """Discard all pending and in-progress tools."""
         self._discarded = True
         self._sibling_token.cancel()
         for item in self._items:
-            if item.status != "completed":
+            if item.status == "queued":
                 item.result = _cancelled_tool_result(
-                    item.call, "Streaming fallback - tool execution discarded"
+                    item.call,
+                    "Streaming fallback - tool execution discarded",
+                    execution_status="not_executed",
                 )
                 item.status = "completed"
-            if item.task is not None and not item.task.done():
+            elif item.task is not None and not item.task.done():
                 item.task.cancel()
-        self._done_event.set()
+        if all(item.status == "completed" for item in self._items):
+            self._done_event.set()
 
     def _can_execute(self, is_concurrent_safe: bool) -> bool:
         executing = [t for t in self._items if t.status == "executing"]
@@ -828,7 +866,11 @@ class AsyncStreamingToolExecutor:
                 continue
             if self._can_execute(item.is_concurrent_safe):
                 item.status = "executing"
-                item.task = asyncio.create_task(self._execute_item(item))
+                task = asyncio.create_task(self._execute_item(item))
+                item.task = task
+                task.add_done_callback(
+                    lambda done_task, tracked=item: self._on_task_done(tracked, done_task)
+                )
                 if not item.is_concurrent_safe:
                     break
             else:
@@ -836,7 +878,20 @@ class AsyncStreamingToolExecutor:
         if all(item.status == "completed" for item in self._items):
             self._done_event.set()
 
+    def _on_task_done(self, item: _TrackedToolItem, task: asyncio.Task[ToolResult]) -> None:
+        if item.status != "completed" and task.cancelled():
+            item.result = _cancelled_tool_result(
+                item.call,
+                "Streaming fallback - tool execution discarded"
+                if self._discarded
+                else "Tool execution cancelled",
+                execution_status="effect_unknown" if item.started else "not_executed",
+            )
+            item.status = "completed"
+            self._process_queue()
+
     async def _execute_item(self, item: _TrackedToolItem) -> ToolResult:
+        item.started = True
         try:
             res = await self._tools.async_dispatch(item.call, ctx=item.ctx)
         except asyncio.CancelledError:
@@ -845,12 +900,17 @@ class AsyncStreamingToolExecutor:
                 "Streaming fallback - tool execution discarded"
                 if self._discarded
                 else "Tool execution cancelled",
+                execution_status="effect_unknown",
             )
         except Exception as exc:  # pragma: no cover - defensive
-            res = _cancelled_tool_result(item.call, str(exc))
+            res = _cancelled_tool_result(item.call, str(exc), execution_status="effect_unknown")
         if self._discarded:
+            completed_ok = res.error is None
             item.result = _cancelled_tool_result(
-                item.call, "Streaming fallback - tool execution discarded"
+                item.call,
+                "Streaming fallback - tool execution discarded",
+                execution_status="completed_before_discard" if completed_ok else "effect_unknown",
+                discarded_output=res.data if completed_ok else _UNSET,
             )
         else:
             item.result = res

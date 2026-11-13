@@ -119,13 +119,20 @@ def event_from_payload(
     timestamp: float | None = None,
 ) -> RunEvent:
     """Adapt an existing lifecycle payload without changing its schema."""
+    import hashlib
+
     kind = getattr(payload.event, "value", str(payload.event))
+    body = payload.to_jsonable()
+    if kind in {"pre_llm_call", "post_llm_response"} and isinstance(body.get("prompt"), str):
+        raw_prompt = body.pop("prompt")
+        body["prompt_chars"] = len(raw_prompt)
+        body["prompt_sha256"] = hashlib.sha256(raw_prompt.encode("utf-8")).hexdigest()
     return RunEvent(
         envelope=envelope,
         sequence=sequence,
         timestamp=time.time() if timestamp is None else timestamp,
         kind=kind,
-        payload=payload.to_jsonable(),
+        payload=body,
     )
 
 

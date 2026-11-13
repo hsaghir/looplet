@@ -211,10 +211,57 @@ class FileToolResultStore:
         from looplet.builtin_tools.tool_results import read_result
 
         if start_line is not None or end_line is not None:
+            from looplet.builtin_tools.tool_results import _integer
+
+            _integer(offset, "offset")
+            _integer(limit, "limit", maximum=8000)
+            if not limit:
+                raise ValueError("limit must be positive")
+            s_line = 1 if start_line is None else start_line
+            if type(s_line) is not int or s_line < 1:
+                raise ValueError("start_line must be a positive 1-based integer")
+            if end_line is not None and (type(end_line) is not int or end_line < s_line):
+                raise ValueError("end_line must be an integer >= start_line")
             view = self._text(key, json_pointer)
-            raw_text = view.read_text(encoding="utf-8") if isinstance(view, Path) else view
+            if isinstance(view, Path):
+                char_offset = 0
+                total_chars = 0
+                total_lines = 0
+                collected: list[str] = []
+                collected_chars = 0
+                with view.open(encoding="utf-8", newline="") as stream:
+                    for line_no, line in enumerate(stream, 1):
+                        total_lines = line_no
+                        line_len = len(line)
+                        total_chars += line_len
+                        if line_no < s_line:
+                            char_offset += line_len
+                        elif (end_line is None or line_no <= end_line) and collected_chars < limit:
+                            take = line[: limit - collected_chars]
+                            collected.append(take)
+                            collected_chars += len(take)
+                if end_line is None:
+                    e_line = total_lines
+                    if e_line < s_line and total_lines == 0:
+                        raise ValueError("end_line must be an integer >= start_line")
+                else:
+                    e_line = end_line
+                content = "".join(collected)
+                end_char = char_offset + len(content)
+                return {
+                    "result_key": key,
+                    "json_pointer": json_pointer,
+                    "start_line": s_line,
+                    "end_line": min(e_line, total_lines),
+                    "total_lines": total_lines,
+                    "offset": char_offset,
+                    "offset_unit": "characters",
+                    "total_chars": total_chars,
+                    "content": content,
+                    "next_offset": end_char if end_char < total_chars else None,
+                }
             result = read_result(
-                raw_text,
+                view,
                 result_key=key,
                 json_pointer="",
                 offset=offset,

@@ -13,6 +13,7 @@ import importlib.util
 import logging
 import re
 import sys
+import threading
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
@@ -557,6 +558,7 @@ def _entrypoint_import_roots(path: Path) -> list[Path]:
     return roots
 
 
+_BUNDLE_IMPORT_LOCK = threading.RLock()
 _BUNDLE_IMPORT_ROOTS: set[Path] = set()
 _BUNDLE_IMPORT_ROOT_COUNTS: dict[Path, int] = {}
 _PROTECTED_MODULE_PREFIXES = ("_pytest", "looplet", "pytest", "tests")
@@ -566,36 +568,37 @@ _STDLIB_MODULE_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
 
 @contextmanager
 def _bundle_import_context(import_roots: Iterable[Path]) -> Iterator[None]:
-    roots = tuple(root.resolve() for root in import_roots)
-    _preload_shadowed_stdlib_modules(roots)
-    removed_modules: dict[str, ModuleType] = {}
-    _merge_removed_modules(removed_modules, _purge_conflicting_bundle_modules(roots))
-    _merge_removed_modules(removed_modules, _purge_shadowed_project_modules(roots))
-    original_modules = dict(sys.modules)
-    original_sys_path = list(sys.path)
-    try:
-        root_strings = [str(root) for root in roots]
-        for root in root_strings:
-            while root in sys.path:
-                sys.path.remove(root)
-        sys.path[:0] = root_strings
-        for root in roots:
-            _BUNDLE_IMPORT_ROOTS.add(root)
-            _BUNDLE_IMPORT_ROOT_COUNTS[root] = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) + 1
-        yield
-    finally:
+    with _BUNDLE_IMPORT_LOCK:
+        roots = tuple(root.resolve() for root in import_roots)
+        _preload_shadowed_stdlib_modules(roots)
+        removed_modules: dict[str, ModuleType] = {}
+        _merge_removed_modules(removed_modules, _purge_conflicting_bundle_modules(roots))
+        _merge_removed_modules(removed_modules, _purge_shadowed_project_modules(roots))
+        original_modules = dict(sys.modules)
+        original_sys_path = list(sys.path)
         try:
-            _purge_context_modules(roots, original_modules)
-            _restore_modules(removed_modules)
-            sys.path[:] = original_sys_path
-        finally:
+            root_strings = [str(root) for root in roots]
+            for root in root_strings:
+                while root in sys.path:
+                    sys.path.remove(root)
+            sys.path[:0] = root_strings
             for root in roots:
-                count = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) - 1
-                if count > 0:
-                    _BUNDLE_IMPORT_ROOT_COUNTS[root] = count
-                else:
-                    _BUNDLE_IMPORT_ROOT_COUNTS.pop(root, None)
-                    _BUNDLE_IMPORT_ROOTS.discard(root)
+                _BUNDLE_IMPORT_ROOTS.add(root)
+                _BUNDLE_IMPORT_ROOT_COUNTS[root] = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) + 1
+            yield
+        finally:
+            try:
+                _purge_context_modules(roots, original_modules)
+                _restore_modules(removed_modules)
+                sys.path[:] = original_sys_path
+            finally:
+                for root in roots:
+                    count = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) - 1
+                    if count > 0:
+                        _BUNDLE_IMPORT_ROOT_COUNTS[root] = count
+                    else:
+                        _BUNDLE_IMPORT_ROOT_COUNTS.pop(root, None)
+                        _BUNDLE_IMPORT_ROOTS.discard(root)
 
 
 def _purge_conflicting_bundle_modules(current_roots: tuple[Path, ...]) -> dict[str, ModuleType]:

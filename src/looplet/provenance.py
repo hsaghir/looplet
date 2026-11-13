@@ -105,6 +105,33 @@ def _model_attempt_root(directory: Path) -> Path:
     return directory
 
 
+def _rehydrate_attempt_conversation(root: Path, req: Any, blob_cache: dict[str, Any]) -> None:
+    if not isinstance(req, dict):
+        return
+    conv_in = req.get("conversation_input")
+    if not isinstance(conv_in, dict):
+        return
+    conv_obj = conv_in.get("conversation")
+    if not isinstance(conv_obj, dict) or "message_blob_refs" not in conv_obj:
+        return
+    refs = conv_obj.pop("message_blob_refs")
+    if not isinstance(refs, list):
+        raise ValueError("Invalid message_blob_refs in model attempt")
+    blob_root = _model_attempt_root(root / "blobs")
+    restored_msgs: list[Any] = []
+    for ref in refs:
+        if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{64}", ref):
+            raise ValueError(f"Invalid model attempt blob digest: {ref!r}")
+        if ref not in blob_cache:
+            blob_file = _artifact_path(blob_root, f"{ref}.json")
+            raw_bytes = blob_file.read_bytes()
+            if hashlib.sha256(raw_bytes).hexdigest() != ref:
+                raise ValueError(f"Corrupt model attempt blob: {ref}")
+            blob_cache[ref] = json.loads(raw_bytes.decode("utf-8"))
+        restored_msgs.append(copy.deepcopy(blob_cache[ref]))
+    conv_obj["messages"] = restored_msgs
+
+
 def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
     """Read durable attempts independently of trajectory or manifest export.
 
@@ -126,18 +153,29 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
         ) != ("looplet.model-attempt.v1", attempt_id, kind):
             raise ValueError(f"Invalid model attempt record: {path.name}")
         grouped.setdefault(attempt_id, {})[kind] = payload
+    blob_cache: dict[str, Any] = {}
     attempts = []
     for attempt_id, records in sorted(grouped.items()):
         if "intent" not in records:
             raise ValueError(f"Model attempt has no committed intent: {attempt_id}")
+        intent = records["intent"]
+        _rehydrate_attempt_conversation(root, intent.get("request"), blob_cache)
+        outcome = records.get("outcome")
+        if isinstance(outcome, dict) and isinstance(outcome.get("capture"), dict):
+            cap = outcome["capture"]
+            if "request" not in cap and cap.get("request_ref") == "intent":
+                cap.pop("request_ref", None)
+                cap["request"] = copy.deepcopy(intent.get("request"))
+            else:
+                _rehydrate_attempt_conversation(root, cap.get("request"), blob_cache)
         attempts.append(
             {
                 "attempt_id": attempt_id,
-                "intent": records["intent"],
+                "intent": intent,
                 "prepared_requests": [
                     records[kind] for kind in sorted(records) if kind.startswith("dispatch-")
                 ],
-                "outcome": records.get("outcome"),
+                "outcome": outcome,
             }
         )
     return attempts
@@ -408,6 +446,9 @@ class _RecordingBase:
         self._conversation_input: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_recorded_conversation_input"
         )
+        self._blob_lock = Lock()
+        self._last_blob_msgs: list[tuple[Any, str]] = []
+        self._written_blobs: set[tuple[Path, str]] = set()
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
@@ -439,6 +480,9 @@ class _RecordingBase:
         recorder._scoped_step_num = self._scoped_step_num
         recorder._model_call_context = self._model_call_context
         recorder._conversation_input = self._conversation_input
+        recorder._blob_lock = self._blob_lock
+        recorder._last_blob_msgs = self._last_blob_msgs
+        recorder._written_blobs = self._written_blobs
         return recorder
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -527,9 +571,62 @@ class _RecordingBase:
             }
         )
         payload = raw if kind in {"intent", "outcome"} else _redact_model_record(raw, self._redact)
+        if kind == "intent" and isinstance(payload.get("request"), dict):
+            conv_in = payload["request"].get("conversation_input")
+            if isinstance(conv_in, dict) and isinstance(conv_in.get("conversation"), dict):
+                conv_obj = conv_in["conversation"]
+                msgs = conv_obj.get("messages")
+                if isinstance(msgs, list) and msgs:
+                    blob_root = _model_attempt_root(root / "blobs")
+                    blob_root.mkdir(mode=0o700, exist_ok=True)
+                    refs: list[str] = []
+                    with self._blob_lock:
+                        prev = list(self._last_blob_msgs)
+                        new_memo: list[tuple[Any, str]] = []
+                        for pos, msg in enumerate(msgs):
+                            if pos < len(prev) and prev[pos][0] == msg:
+                                digest = prev[pos][1]
+                                if (blob_root, digest) not in self._written_blobs:
+                                    blob_text = json.dumps(
+                                        msg,
+                                        ensure_ascii=True,
+                                        allow_nan=False,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    )
+                                    blob_path = _artifact_path(blob_root, f"{digest}.json")
+                                    if not blob_path.exists():
+                                        _atomic_write(blob_path, blob_text)
+                                    self._written_blobs.add((blob_root, digest))
+                            else:
+                                blob_text = json.dumps(
+                                    msg,
+                                    ensure_ascii=True,
+                                    allow_nan=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                )
+                                digest = hashlib.sha256(blob_text.encode("ascii")).hexdigest()
+                                if (blob_root, digest) not in self._written_blobs:
+                                    blob_path = _artifact_path(blob_root, f"{digest}.json")
+                                    if not blob_path.exists():
+                                        _atomic_write(blob_path, blob_text)
+                                    self._written_blobs.add((blob_root, digest))
+                            refs.append(digest)
+                            new_memo.append((msg, digest))
+                        self._last_blob_msgs[:] = new_memo
+                    conv_in["conversation"] = {
+                        k: v for k, v in conv_obj.items() if k != "messages"
+                    } | {"message_blob_refs": refs}
+        elif kind == "outcome" and isinstance(payload.get("capture"), dict):
+            cap = payload["capture"]
+            if "request" in cap:
+                payload["capture"] = {k: v for k, v in cap.items() if k != "request"} | {
+                    "request_ref": "intent"
+                }
         _atomic_write(
             record,
-            json.dumps(payload, ensure_ascii=True, allow_nan=False),
+            json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
         )
 
     def _write_dispatch(self, attempt_id: str, number: int, request: Any) -> None:
@@ -1949,9 +2046,14 @@ class TrajectoryRecorder:
                         if shared_redactor:
                             if self._redact is not None and entry["metadata"]:
                                 entry["metadata"] = _redact_value(entry["metadata"], self._redact)
-                            stream.write(json.dumps(entry, indent=2, default=str))
+                            stream.write(json.dumps(entry, default=str))
                         else:
-                            stream.write(_recorded_model_json(entry, self._redact))
+                            redacted_entry = (
+                                _redact_model_record(entry, self._redact)
+                                if self._redact is not None
+                                else entry
+                            )
+                            stream.write(json.dumps(redacted_entry, default=str))
                     else:
                         stream.write(_recorded_json(record.to_dict(), self._redact))
                 stream.write("],\n" if name == "steps" else "]\n")

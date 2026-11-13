@@ -2655,15 +2655,19 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
         "    return [lambda x: x]\n"
     )
 
-    before = len(_ws._resource_origin)
-    cartridge_to_preset(src)
-    after = len(_ws._resource_origin)  # noqa: SLF001
+    import gc
+
+    gc.collect()
+    before_keys = set(_ws._resource_origin)  # noqa: SLF001
+    preset = cartridge_to_preset(src)
+    after_keys = set(_ws._resource_origin)  # noqa: SLF001
     # The list returned by build() must NOT have been registered (would
-    # leak a stale id → name mapping across loads / tests).
-    assert after == before, (
+    # leak a stale id -> name mapping across loads / tests).
+    assert id(preset.resources["my_list"]) not in after_keys
+    assert after_keys <= before_keys, (
         "unhashable resource instance was registered in _resource_origin; "
         "this would leak a stale id reservation that a later same-typed "
-        f"object could collide with (size went from {before} to {after})"
+        f"object could collide with (new keys: {after_keys - before_keys})"
     )
 
 

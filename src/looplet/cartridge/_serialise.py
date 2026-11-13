@@ -1427,6 +1427,14 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
         and module_name not in {"__main__", "builtins"}
         and not module_name.startswith("_chw_")
     ):
+        if getattr(cls, "__looplet_helper_module__", None) == module_name:
+            return (
+                "# Re-imported from the original module so the class's\n"
+                "# full closure (typing imports, helpers) stays available.\n"
+                "# Edit this file (or replace the import with a class\n"
+                "# definition) to customise the hook in this workspace.\n"
+                f"from {module_name} import {cls_name} as {cls_name}\n"
+            )
         try:
             mod = importlib.import_module(module_name)
             if getattr(mod, cls_name, None) is cls:

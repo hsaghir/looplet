@@ -954,10 +954,12 @@ class BaseToolRegistry:
     """
 
     def __init__(self, *, retain_results: bool = True) -> None:
+        from looplet._storage import DiskBackedDict  # noqa: PLC0415
+
         self._tools: dict[str, ToolSpec] = {}
         self._resources: dict[str, Any] = {}
         self._retain_results = retain_results
-        self._evidence_results: dict[str, Any] = {}
+        self._evidence_results: Any = DiskBackedDict(lambda v: v, lambda v: v)
 
     def set_resources(self, resources: dict[str, Any]) -> None:
         """Provide the shared-resource registry for tool DI.
@@ -1535,12 +1537,14 @@ class BaseToolRegistry:
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
         max_concurrent: int | None = None,
         cancel_on_sibling_error: bool = False,
+        settled_out: dict[int, ToolResult] | None = None,
     ) -> list[ToolResult]:
         """Dispatch calls asynchronously while preserving input order.
 
         Refill free slots within consecutive concurrent-safe groups.
         ``max_concurrent`` bounds dispatch tasks; ``None`` allows the whole group.
-        Cancelled concurrent groups drain their started dispatches.
+        Cancelled concurrent groups drain their started dispatches and populate
+        ``settled_out`` (when provided) with completed sibling results by call index.
         """
         import asyncio  # noqa: PLC0415
         from dataclasses import replace  # noqa: PLC0415
@@ -1602,27 +1606,46 @@ class BaseToolRegistry:
                             pending, return_when=asyncio.FIRST_COMPLETED
                         )
                         for future in completed:
-                            batch_results[pending.pop(future)] = future.result()
+                            done_idx = pending.pop(future)
+                            done_res = future.result()
+                            batch_results[done_idx] = done_res
+                            if settled_out is not None:
+                                settled_out[offset + done_idx] = done_res
                 except asyncio.CancelledError as error:
                     cancelled = error
                 finally:
-                    for future in pending:
+                    pending_items = list(pending.items())
+                    for future, _ in pending_items:
                         future.cancel()
-                    drained = asyncio.gather(*pending, return_exceptions=True)
+                    drained = asyncio.gather(
+                        *(future for future, _ in pending_items), return_exceptions=True
+                    )
                     while not drained.done():
                         try:
                             await asyncio.shield(drained)
                         except asyncio.CancelledError as error:
                             cancelled = cancelled or error
+                    if settled_out is not None:
+                        for (_, done_idx), outcome in zip(
+                            pending_items, drained.result(), strict=True
+                        ):
+                            if isinstance(outcome, ToolResult):
+                                settled_out[offset + done_idx] = outcome
                     if cancelled is not None:
                         raise cancelled
                 results.extend(cast(list[ToolResult], batch_results))
             elif batch_ctxs is not None:
-                for call, call_ctx in zip(batch_calls, batch_ctxs):
-                    results.append(await _dispatch(call, call_ctx))
+                for sub_idx, (call, call_ctx) in enumerate(zip(batch_calls, batch_ctxs)):
+                    sub_res = await _dispatch(call, call_ctx)
+                    results.append(sub_res)
+                    if settled_out is not None:
+                        settled_out[offset + sub_idx] = sub_res
             else:
-                for call in batch_calls:
-                    results.append(await _dispatch(call, shared_ctx))
+                for sub_idx, call in enumerate(batch_calls):
+                    sub_res = await _dispatch(call, shared_ctx)
+                    results.append(sub_res)
+                    if settled_out is not None:
+                        settled_out[offset + sub_idx] = sub_res
             offset += len(batch_calls)
         return results
 
@@ -1647,7 +1670,8 @@ class BaseToolRegistry:
         snapshot = json_snapshot(result_data)
         payload = json.dumps(snapshot, sort_keys=True).encode("utf-8")
         key = "sha256:" + hashlib.sha256(payload).hexdigest()
-        self._evidence_results.setdefault(key, snapshot)
+        if key not in self._evidence_results:
+            self._evidence_results[key] = snapshot
         return key
 
     def get_result(self, key: str) -> Any:
@@ -1744,7 +1768,7 @@ class BaseToolRegistry:
         store = self._external_result_store()
         if store is not None:
             return store.snapshot_results()
-        return deepcopy(self._evidence_results)
+        return {k: deepcopy(self._evidence_results[k]) for k in self._evidence_results}
 
     def checkpoint_results(self) -> dict[str, Any]:
         """Use a store's durable reference when supported; preserve explicit snapshots."""
@@ -1772,7 +1796,12 @@ class BaseToolRegistry:
             from looplet.result_store import FileToolResultStore
 
             snapshot = dict(FileToolResultStore.checkpoint_values(snapshot))
-        self._evidence_results = json_snapshot(snapshot)
+        from looplet._storage import DiskBackedDict  # noqa: PLC0415
+
+        spool_dict: DiskBackedDict[Any] = DiskBackedDict(lambda v: v, lambda v: v)
+        for k, v in json_snapshot(snapshot).items():
+            spool_dict[k] = v
+        self._evidence_results = spool_dict
 
     @staticmethod
     def _execute_with_timeout(spec: ToolSpec, kwargs: dict[str, Any], timeout_s: float) -> Any:

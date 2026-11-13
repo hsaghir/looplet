@@ -54,6 +54,7 @@ import copy
 import json
 import logging
 import os
+import threading
 from contextvars import ContextVar
 from typing import Any, AsyncGenerator, Callable, Generator
 
@@ -450,12 +451,19 @@ def _conversation_messages(
         result = message.get("tool_result")
         if result is not None:
             call_id = result.get("call_id") or metadata.get("tool_call_id")
+            res_meta = result.get("metadata", {}) or {}
+            exec_status = res_meta.get("execution_status")
             payload = model_result_payload(
                 result.get("data"),
                 error=result.get("error"),
+                error_kind=result.get("error_kind"),
+                error_retriable=result.get("error_retriable"),
+                execution_status=(
+                    exec_status if isinstance(exec_status, str) and exec_status else None
+                ),
                 result_key=result.get("result_key"),
                 warnings=result.get("warnings"),
-                delivery=result.get("metadata", {}).get("model_projection", {}).get("delivery"),
+                delivery=res_meta.get("model_projection", {}).get("delivery"),
             )
             rendered = json.dumps(payload, ensure_ascii=False)
             if call_id in pending:
@@ -570,6 +578,42 @@ def _conversation_messages(
     return messages
 
 
+_CALL_ATTR_UNSET = object()
+
+
+class _CallLocalAttr:
+    """ContextVar-backed per-call attribute with latest-value instance fallback."""
+
+    def __init__(self, name: str, *, default_factory: Callable[[], Any] | None = None) -> None:
+        self._name = name
+        self._var_key = f"_cv_{name}"
+        self._fallback_key = f"_fb_{name}"
+        self._default_factory = default_factory
+
+    def _get_var(self, instance: Any) -> ContextVar[Any]:
+        var = instance.__dict__.get(self._var_key)
+        if var is None:
+            var = ContextVar(
+                f"looplet_backend_{self._name}_{id(instance)}", default=_CALL_ATTR_UNSET
+            )
+            instance.__dict__[self._var_key] = var
+        return var
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        val = self._get_var(instance).get()
+        if val is not _CALL_ATTR_UNSET:
+            return val
+        if self._fallback_key in instance.__dict__:
+            return instance.__dict__[self._fallback_key]
+        return self._default_factory() if self._default_factory is not None else None
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        self._get_var(instance).set(value)
+        instance.__dict__[self._fallback_key] = value
+
+
 class _ConversationBackend:
     _client: Any
     _model: str
@@ -578,6 +622,11 @@ class _ConversationBackend:
     _native_blocks = False
     request_policy = BackendRequestPolicy(supports_single_model_request=True)
     request_admission: Callable[[dict[str, Any]], None] | None = None
+    last_usage = _CallLocalAttr("last_usage", default_factory=dict)
+    last_request = _CallLocalAttr("last_request")
+    last_response = _CallLocalAttr("last_response")
+    last_model = _CallLocalAttr("last_model")
+    last_stop_reason = _CallLocalAttr("last_stop_reason")
 
     def configure_request_admission(
         self, admission: Callable[[dict[str, Any]], None] | None
@@ -938,10 +987,10 @@ class OpenAIStreamingBackend(OpenAIBackend):
         temperature: float | None = None,
     ) -> Generator[str, None, None]:
         """Yield text chunks as they arrive from the API."""
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -955,12 +1004,27 @@ class OpenAIStreamingBackend(OpenAIBackend):
 
         _begin_request(self, kwargs)
         response = self._request_client().chat.completions.create(**kwargs)
+        last_chunk: Any = None
+        stop_reason: str | None = None
         try:
             for chunk in response:
+                last_chunk = chunk
+                if chunk.choices:
+                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                    if isinstance(fr, str) and fr:
+                        stop_reason = fr
                 delta = chunk.choices[0].delta if chunk.choices else None
                 text = _openai_message_text(delta)
                 if text:
                     yield text
+            if last_chunk is not None:
+                _capture_response(self, last_chunk)
+            if stop_reason is not None:
+                self.last_stop_reason = {
+                    "length": "max_tokens",
+                    "end_turn": "stop",
+                    "content_filter": "refusal",
+                }.get(stop_reason, stop_reason)
         finally:
             close = getattr(response, "close", None)
             if close is not None:
@@ -1071,79 +1135,94 @@ def _finalize_streamed_tool_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _OpenAIToolStreamAssembler:
+    """Sans-I/O chunk accumulator shared by sync and async OpenAI tool streams."""
+
+    def __init__(
+        self,
+        *,
+        on_chunk: Callable[[str, int], None] | None = None,
+        on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self._on_chunk = on_chunk
+        self._on_tool_call = on_tool_call
+        self._text_parts: list[str] = []
+        self._chunk_index = 0
+        self._tool_entries: dict[int, dict[str, Any]] = {}
+        self._emitted_indices: set[int] = set()
+        self._ordered_tool_blocks: list[dict[str, Any]] = []
+        self.stop_reason: str | None = None
+        self.last_chunk: Any = None
+
+    def feed(self, chunk: Any) -> None:
+        self.last_chunk = chunk
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return
+        choice = choices[0]
+        fr = getattr(choice, "finish_reason", None)
+        if isinstance(fr, str) and fr:
+            self.stop_reason = fr
+        delta = getattr(choice, "delta", None)
+        if delta is not None:
+            text = _openai_message_text(delta)
+            if text:
+                if self._on_chunk is not None:
+                    self._on_chunk(text, self._chunk_index)
+                self._chunk_index += 1
+                self._text_parts.append(text)
+            tc_deltas = getattr(delta, "tool_calls", None) or []
+            for tc_delta in tc_deltas:
+                idx = getattr(tc_delta, "index", None)
+                if not isinstance(idx, int):
+                    idx = 0
+                entry = self._tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
+                tc_id = getattr(tc_delta, "id", None)
+                if isinstance(tc_id, str) and tc_id:
+                    entry["id"] = tc_id
+                fn = getattr(tc_delta, "function", None)
+                if fn is not None:
+                    fn_name = getattr(fn, "name", None)
+                    if isinstance(fn_name, str) and fn_name:
+                        entry["name"] += fn_name
+                    fn_args = getattr(fn, "arguments", None)
+                    if isinstance(fn_args, str) and fn_args:
+                        entry["arg_parts"].append(fn_args)
+
+        if fr == "tool_calls":
+            for idx in sorted(self._tool_entries):
+                if idx not in self._emitted_indices:
+                    self._emitted_indices.add(idx)
+                    block = _finalize_streamed_tool_entry(self._tool_entries[idx])
+                    self._ordered_tool_blocks.append(block)
+                    if self._on_tool_call is not None:
+                        self._on_tool_call({**block, "index": idx})
+
+    def finish(self) -> tuple[list[dict[str, Any]], str | None, Any]:
+        if (
+            self._tool_entries
+            and len(self._emitted_indices) < len(self._tool_entries)
+            and self.stop_reason is None
+        ):
+            self.stop_reason = "incomplete"
+        blocks: list[dict[str, Any]] = []
+        full_text = "".join(self._text_parts)
+        if full_text:
+            blocks.append({"type": "text", "text": full_text})
+        blocks.extend(self._ordered_tool_blocks)
+        return blocks, self.stop_reason, self.last_chunk
+
+
 def _consume_openai_tool_stream(
     stream_resp: Any,
     *,
     on_chunk: Callable[[str, int], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, Any]:
-    text_parts: list[str] = []
-    chunk_index = 0
-    tool_entries: dict[int, dict[str, Any]] = {}
-    emitted_indices: set[int] = set()
-    ordered_tool_blocks: list[dict[str, Any]] = []
-    stop_reason: str | None = None
-    last_chunk: Any = None
-
+    assembler = _OpenAIToolStreamAssembler(on_chunk=on_chunk, on_tool_call=on_tool_call)
     for chunk in stream_resp:
-        last_chunk = chunk
-        choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            continue
-        choice = choices[0]
-        fr = getattr(choice, "finish_reason", None)
-        if isinstance(fr, str) and fr:
-            stop_reason = fr
-        delta = getattr(choice, "delta", None)
-        if delta is None:
-            continue
-        text = _openai_message_text(delta)
-        if text:
-            if on_chunk is not None:
-                on_chunk(text, chunk_index)
-            chunk_index += 1
-            text_parts.append(text)
-        tc_deltas = getattr(delta, "tool_calls", None) or []
-        for tc_delta in tc_deltas:
-            idx = getattr(tc_delta, "index", None)
-            if not isinstance(idx, int):
-                idx = 0
-            entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
-            tc_id = getattr(tc_delta, "id", None)
-            if isinstance(tc_id, str) and tc_id:
-                entry["id"] = tc_id
-            fn = getattr(tc_delta, "function", None)
-            if fn is not None:
-                fn_name = getattr(fn, "name", None)
-                if isinstance(fn_name, str) and fn_name:
-                    entry["name"] += fn_name
-                fn_args = getattr(fn, "arguments", None)
-                if isinstance(fn_args, str) and fn_args:
-                    entry["arg_parts"].append(fn_args)
-
-        if fr == "tool_calls":
-            for idx in sorted(tool_entries):
-                if idx not in emitted_indices:
-                    emitted_indices.add(idx)
-                    block = _finalize_streamed_tool_entry(tool_entries[idx])
-                    ordered_tool_blocks.append(block)
-                    if on_tool_call is not None:
-                        on_tool_call({**block, "index": idx})
-
-    for idx in sorted(tool_entries):
-        if idx not in emitted_indices:
-            emitted_indices.add(idx)
-            block = _finalize_streamed_tool_entry(tool_entries[idx])
-            ordered_tool_blocks.append(block)
-            if on_tool_call is not None:
-                on_tool_call({**block, "index": idx})
-
-    blocks: list[dict[str, Any]] = []
-    full_text = "".join(text_parts)
-    if full_text:
-        blocks.append({"type": "text", "text": full_text})
-    blocks.extend(ordered_tool_blocks)
-    return blocks, stop_reason, last_chunk
+        assembler.feed(chunk)
+    return assembler.finish()
 
 
 async def _consume_openai_tool_stream_async(
@@ -1152,73 +1231,10 @@ async def _consume_openai_tool_stream_async(
     on_chunk: Callable[[str, int], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, Any]:
-    text_parts: list[str] = []
-    chunk_index = 0
-    tool_entries: dict[int, dict[str, Any]] = {}
-    emitted_indices: set[int] = set()
-    ordered_tool_blocks: list[dict[str, Any]] = []
-    stop_reason: str | None = None
-    last_chunk: Any = None
-
+    assembler = _OpenAIToolStreamAssembler(on_chunk=on_chunk, on_tool_call=on_tool_call)
     async for chunk in stream_resp:
-        last_chunk = chunk
-        choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            continue
-        choice = choices[0]
-        fr = getattr(choice, "finish_reason", None)
-        if isinstance(fr, str) and fr:
-            stop_reason = fr
-        delta = getattr(choice, "delta", None)
-        if delta is None:
-            continue
-        text = _openai_message_text(delta)
-        if text:
-            if on_chunk is not None:
-                on_chunk(text, chunk_index)
-            chunk_index += 1
-            text_parts.append(text)
-        tc_deltas = getattr(delta, "tool_calls", None) or []
-        for tc_delta in tc_deltas:
-            idx = getattr(tc_delta, "index", None)
-            if not isinstance(idx, int):
-                idx = 0
-            entry = tool_entries.setdefault(idx, {"id": "", "name": "", "arg_parts": []})
-            tc_id = getattr(tc_delta, "id", None)
-            if isinstance(tc_id, str) and tc_id:
-                entry["id"] = tc_id
-            fn = getattr(tc_delta, "function", None)
-            if fn is not None:
-                fn_name = getattr(fn, "name", None)
-                if isinstance(fn_name, str) and fn_name:
-                    entry["name"] += fn_name
-                fn_args = getattr(fn, "arguments", None)
-                if isinstance(fn_args, str) and fn_args:
-                    entry["arg_parts"].append(fn_args)
-
-        if fr == "tool_calls":
-            for idx in sorted(tool_entries):
-                if idx not in emitted_indices:
-                    emitted_indices.add(idx)
-                    block = _finalize_streamed_tool_entry(tool_entries[idx])
-                    ordered_tool_blocks.append(block)
-                    if on_tool_call is not None:
-                        on_tool_call({**block, "index": idx})
-
-    for idx in sorted(tool_entries):
-        if idx not in emitted_indices:
-            emitted_indices.add(idx)
-            block = _finalize_streamed_tool_entry(tool_entries[idx])
-            ordered_tool_blocks.append(block)
-            if on_tool_call is not None:
-                on_tool_call({**block, "index": idx})
-
-    blocks: list[dict[str, Any]] = []
-    full_text = "".join(text_parts)
-    if full_text:
-        blocks.append({"type": "text", "text": full_text})
-    blocks.extend(ordered_tool_blocks)
-    return blocks, stop_reason, last_chunk
+        assembler.feed(chunk)
+    return assembler.finish()
 
 
 # ── Anthropic Backend ────────────────────────────────────────────
@@ -1390,7 +1406,7 @@ class AnthropicStreamingBackend(AnthropicBackend):
         """Yield text chunks as they arrive from the API."""
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
@@ -1401,6 +1417,12 @@ class AnthropicStreamingBackend(AnthropicBackend):
         with self._request_client().messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield text
+            get_final = getattr(stream, "get_final_message", None)
+            if callable(get_final):
+                try:
+                    _capture_response(self, get_final())
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 # ── Async OpenAI Backend ─────────────────────────────────────────
@@ -1557,10 +1579,10 @@ class AsyncOpenAIBackend(_ConversationBackend):
         temperature: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield text chunks asynchronously."""
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -1574,12 +1596,27 @@ class AsyncOpenAIBackend(_ConversationBackend):
 
         _begin_request(self, kwargs)
         response = await self._request_client().chat.completions.create(**kwargs)
+        last_chunk: Any = None
+        stop_reason: str | None = None
         try:
             async for chunk in response:
+                last_chunk = chunk
+                if chunk.choices:
+                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                    if isinstance(fr, str) and fr:
+                        stop_reason = fr
                 delta = chunk.choices[0].delta if chunk.choices else None
                 text = _openai_message_text(delta)
                 if text:
                     yield text
+            if last_chunk is not None:
+                _capture_response(self, last_chunk)
+            if stop_reason is not None:
+                self.last_stop_reason = {
+                    "length": "max_tokens",
+                    "end_turn": "stop",
+                    "content_filter": "refusal",
+                }.get(stop_reason, stop_reason)
         finally:
             close = getattr(response, "aclose", None) or getattr(response, "close", None)
             if close is not None:
@@ -1734,12 +1771,19 @@ def _responses_conversation_items(
         result = message.get("tool_result")
         if result is not None:
             call_id = result.get("call_id") or metadata.get("tool_call_id")
+            res_meta = result.get("metadata", {}) or {}
+            exec_status = res_meta.get("execution_status")
             payload = model_result_payload(
                 result.get("data"),
                 error=result.get("error"),
+                error_kind=result.get("error_kind"),
+                error_retriable=result.get("error_retriable"),
+                execution_status=(
+                    exec_status if isinstance(exec_status, str) and exec_status else None
+                ),
                 result_key=result.get("result_key"),
                 warnings=result.get("warnings"),
-                delivery=result.get("metadata", {}).get("model_projection", {}).get("delivery"),
+                delivery=res_meta.get("model_projection", {}).get("delivery"),
             )
             rendered = json.dumps(payload, ensure_ascii=False)
             if call_id in pending:
@@ -1963,17 +2007,20 @@ class OpenAIResponsesBackend(_ConversationBackend):
         self._tool_choice = tool_choice
         self._use_previous_response_id = use_previous_response_id
         self._store = store
+        self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
         self.last_usage: dict[str, int] = {}
 
     @property
     def previous_response_id(self) -> str | None:
-        return self._previous_response_id
+        with self._cursor_lock:
+            return self._previous_response_id
 
     def reset_conversation(self) -> None:
-        self._previous_response_id = None
-        self._synced_item_count = 0
+        with self._cursor_lock:
+            self._previous_response_id = None
+            self._synced_item_count = 0
         self._conversation_input = None
 
     def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
@@ -1983,8 +2030,9 @@ class OpenAIResponsesBackend(_ConversationBackend):
         self._conversation_input = detached
 
     def apply_context_compaction(self, snapshot: dict[str, Any]) -> bool:
-        self._previous_response_id = None
-        self._synced_item_count = 0
+        with self._cursor_lock:
+            self._previous_response_id = None
+            self._synced_item_count = 0
         self.set_conversation_input(snapshot)
         return True
 
@@ -2007,18 +2055,21 @@ class OpenAIResponsesBackend(_ConversationBackend):
                 content_parts.append({"type": "input_image", "image_url": img})
             full_items[-1] = {"type": "message", "role": "user", "content": content_parts}
 
+        with self._cursor_lock:
+            prev_id = self._previous_response_id
+            synced_count = self._synced_item_count
         use_prev = (
             self._use_previous_response_id
             and self._store
             and not stateless
-            and self._previous_response_id is not None
+            and prev_id is not None
             and snapshot is not None
-            and len(full_items) > self._synced_item_count > 0
+            and len(full_items) > synced_count > 0
         )
         if use_prev:
             delta_items = [
                 item
-                for item in full_items[self._synced_item_count :]
+                for item in full_items[synced_count:]
                 if item.get("type") == "function_call_output"
                 or (item.get("type") == "message" and item.get("role") == "user")
             ]
@@ -2042,8 +2093,8 @@ class OpenAIResponsesBackend(_ConversationBackend):
         if tools is not None:
             kwargs["tools"] = _to_responses_tools(tools)
             kwargs["tool_choice"] = self._tool_choice
-        if use_prev and self._previous_response_id is not None:
-            kwargs["previous_response_id"] = self._previous_response_id
+        if use_prev and prev_id is not None:
+            kwargs["previous_response_id"] = prev_id
         return kwargs, len(full_items)
 
     def _prepare_and_begin(self, kwargs: dict[str, Any]) -> None:
@@ -2056,8 +2107,10 @@ class OpenAIResponsesBackend(_ConversationBackend):
         """Clear expired state and replay only outside single-request admission."""
         if "previous_response_id" not in kwargs or not _is_lost_previous_response_error(error):
             return False
-        self._previous_response_id = None
-        self._synced_item_count = 0
+        with self._cursor_lock:
+            if self._previous_response_id == kwargs.get("previous_response_id"):
+                self._previous_response_id = None
+                self._synced_item_count = 0
         return not single_model_request_active()
 
     def generate(
@@ -2099,8 +2152,9 @@ class OpenAIResponsesBackend(_ConversationBackend):
         text = _responses_output_text(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            self._previous_response_id = resp_id
-            self._synced_item_count = total_items + int(bool(text))
+            with self._cursor_lock:
+                self._previous_response_id = resp_id
+                self._synced_item_count = total_items + int(bool(text))
         return text
 
     def generate_with_tools(
@@ -2143,10 +2197,11 @@ class OpenAIResponsesBackend(_ConversationBackend):
         blocks = _responses_output_to_blocks(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            self._previous_response_id = resp_id
-            self._synced_item_count = total_items + sum(
-                block["type"] in {"text", "tool_use"} for block in blocks
-            )
+            with self._cursor_lock:
+                self._previous_response_id = resp_id
+                self._synced_item_count = total_items + sum(
+                    block["type"] in {"text", "tool_use"} for block in blocks
+                )
         return blocks
 
 
@@ -2182,6 +2237,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         self._tool_choice = tool_choice
         self._use_previous_response_id = use_previous_response_id
         self._store = store
+        self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
         self.last_usage: dict[str, int] = {}
@@ -2225,8 +2281,9 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         text = _responses_output_text(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            self._previous_response_id = resp_id
-            self._synced_item_count = total_items + int(bool(text))
+            with self._cursor_lock:
+                self._previous_response_id = resp_id
+                self._synced_item_count = total_items + int(bool(text))
         return text
 
     async def generate_with_tools(  # type: ignore[override]
@@ -2269,10 +2326,11 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         blocks = _responses_output_to_blocks(response)
         resp_id = getattr(response, "id", None)
         if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            self._previous_response_id = resp_id
-            self._synced_item_count = total_items + sum(
-                block["type"] in {"text", "tool_use"} for block in blocks
-            )
+            with self._cursor_lock:
+                self._previous_response_id = resp_id
+                self._synced_item_count = total_items + sum(
+                    block["type"] in {"text", "tool_use"} for block in blocks
+                )
         return blocks
 
 
@@ -2374,7 +2432,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
         """Yield text chunks asynchronously."""
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
@@ -2385,6 +2443,17 @@ class AsyncAnthropicBackend(_ConversationBackend):
         async with self._request_client().messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
+            get_final = getattr(stream, "get_final_message", None)
+            if callable(get_final):
+                try:
+                    import inspect as _inspect
+
+                    final_msg = get_final()
+                    if _inspect.isawaitable(final_msg):
+                        final_msg = await final_msg
+                    _capture_response(self, final_msg)
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 # ── Turnkey factory for the RPC `set_backend` wire ───────────────────

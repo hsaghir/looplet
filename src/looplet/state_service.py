@@ -104,20 +104,27 @@ def _send_error(sock: socket.socket, rid: Any, message: str) -> None:
 class _LineReader:
     """Buffered line reader over a stream socket (one per connection)."""
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, *, max_message_bytes: int = 16 * 1024 * 1024) -> None:
         self._sock = sock
         self._buf = b""
+        self._max_message_bytes = max_message_bytes
 
     def readline(self) -> str | None:
         while b"\n" not in self._buf:
+            if len(self._buf) > self._max_message_bytes:
+                raise StateServiceError("state service frame exceeded max_message_bytes")
             chunk = self._sock.recv(65536)
             if not chunk:
                 if self._buf:
+                    if len(self._buf) > self._max_message_bytes:
+                        raise StateServiceError("state service frame exceeded max_message_bytes")
                     line, self._buf = self._buf, b""
                     return line.decode("utf-8")
                 return None
             self._buf += chunk
         line, _, self._buf = self._buf.partition(b"\n")
+        if len(line) > self._max_message_bytes:
+            raise StateServiceError("state service frame exceeded max_message_bytes")
         return line.decode("utf-8")
 
 
@@ -285,14 +292,18 @@ class StateServiceClient:
         socket_path: str,
         *,
         connect_timeout: float = 10.0,
+        rpc_timeout: float = 30.0,
+        max_message_bytes: int = 16 * 1024 * 1024,
         run_envelope: RunEnvelope | None = None,
     ) -> None:
         self._path = socket_path
         self._lock = threading.Lock()
         self._run_envelope = run_envelope
+        self._rpc_timeout = rpc_timeout
+        self._max_message_bytes = max_message_bytes
         self._next_id = 0
         self._sock = self._connect(socket_path, connect_timeout)
-        self._reader = _LineReader(self._sock)
+        self._reader = _LineReader(self._sock, max_message_bytes=max_message_bytes)
         self.methods: list[str] = []
         try:
             init = self._rpc("state/initialize", {})
@@ -321,26 +332,37 @@ class StateServiceClient:
     def socket_path(self) -> str:
         return self._path
 
-    def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _rpc(
+        self, method: str, params: dict[str, Any], *, timeout_override: float | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             remaining = remaining_deadline(self._run_envelope)
             if remaining is not None and remaining <= 0:
                 raise StateServiceError("state service call exceeded run deadline")
+            base_timeout = self._rpc_timeout if timeout_override is None else timeout_override
+            effective_timeout = (
+                min(base_timeout, remaining) if remaining is not None else base_timeout
+            )
             self._next_id += 1
             rid = self._next_id
             old_timeout = self._sock.gettimeout()
-            if remaining is not None:
-                self._sock.settimeout(remaining)
+            if effective_timeout is not None:
+                self._sock.settimeout(effective_timeout)
             try:
                 _send_line(self._sock, {"id": rid, "method": method, "params": params})
                 line = self._reader.readline()
             except socket.timeout as exc:
-                raise StateServiceError("state service call exceeded run deadline") from exc
+                if remaining is not None and effective_timeout == remaining:
+                    raise StateServiceError("state service call exceeded run deadline") from exc
+                raise StateServiceError("state service call timed out") from exc
             except OSError as exc:
                 raise StateServiceError(f"state transport failed: {exc}") from exc
             finally:
-                if remaining is not None:
-                    self._sock.settimeout(old_timeout)
+                if effective_timeout is not None:
+                    try:
+                        self._sock.settimeout(old_timeout)
+                    except OSError:
+                        pass
             if line is None:
                 raise StateServiceError("state service closed the connection")
             try:
@@ -514,7 +536,7 @@ class StateServiceHandle:
 
     def close(self) -> None:
         try:
-            self.client._rpc("state/shutdown", {})  # noqa: SLF001
+            self.client._rpc("state/shutdown", {}, timeout_override=1.0)  # noqa: SLF001
         except Exception:  # pragma: no cover - best effort
             pass
         try:

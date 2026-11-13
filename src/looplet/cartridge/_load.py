@@ -21,7 +21,6 @@ import inspect
 import logging
 import shutil
 import sys
-from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -29,7 +28,11 @@ if TYPE_CHECKING:
     from looplet.memory import PersistentMemorySource
     from looplet.presets import AgentPreset
 
-from looplet.cartridge._imports import _CartridgeSourceFinder, _import_module_from_path
+from looplet.cartridge._imports import (
+    _cartridge_import_scope,
+    _CartridgeSourceFinder,  # noqa: F401
+    _import_module_from_path,
+)
 from looplet.cartridge._layout import (
     CartridgeLayout,
     CartridgeSerializationError,
@@ -335,52 +338,25 @@ def cartridge_to_preset(
                 )
             root = extended_root
 
-        _purge_cartridge_helper_modules()
-
-        runtime_dict = dict(runtime or {})
-        runtime_dict.setdefault("cartridge_root", str(root))
-
-        root_str = str(root)
-        resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
-        source_finder = _CartridgeSourceFinder(root)
-        pushed_paths: list[str] = []
-        for p in (root_str, resources_dir_str):
-            if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-                    pushed_paths.append(p)
-        load_resources = _LoadResourceTracker()
-        finder_index = (
-            sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
-        )
-        sys.meta_path.insert(finder_index, source_finder)
+    runtime_dict = dict(runtime or {})
+    runtime_dict.setdefault("cartridge_root", str(root))
+    load_resources = _LoadResourceTracker()
+    with _cartridge_import_scope(root) as namespace:
         try:
-            try:
-                preset = _workspace_to_preset_inner(
-                    root,
-                    runtime_dict,
-                    state_factory=state_factory,
-                    strict=strict,
-                    load_resources=load_resources,
-                )
-                _remember_cartridge_helper_modules(root)
-                _stamp_preset_origin(preset, root)
-            except BaseException:
-                _remember_cartridge_helper_modules(root)
-                load_resources.close()
-                raise
-            load_resources.disarm()
-            return preset
-        finally:
-            try:
-                sys.meta_path.remove(source_finder)
-            except ValueError:
-                pass
-            for p in pushed_paths:
-                try:
-                    sys.path.remove(p)
-                except ValueError:
-                    pass
+            preset = _workspace_to_preset_inner(
+                root,
+                runtime_dict,
+                state_factory=state_factory,
+                strict=strict,
+                load_resources=load_resources,
+            )
+            setattr(preset, "_cartridge_namespace", namespace)
+            _stamp_preset_origin(preset, root)
+        except BaseException:
+            load_resources.close()
+            raise
+        load_resources.disarm()
+        return preset
 
 
 import threading as _threading  # noqa: E402, PLC0415

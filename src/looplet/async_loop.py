@@ -1040,6 +1040,7 @@ async def _async_composable_loop_impl(
     from looplet.turn_engine import (
         bind_state_attributes,
         build_pending_dispatch_kwargs,
+        commit_step_to_history,
         finalize_checkpoint_restore,
         resolve_domain_callables,
         resolve_turn_llm,
@@ -1197,18 +1198,14 @@ async def _async_composable_loop_impl(
         metadata = {"task": str(task)}
         if status is not None:
             metadata["status"] = status
-        loop_ctx.step_num = step_number
         _checkpoint = _capture_checkpoint(
             loop_ctx,
             step_number=step_number,
             checkpoint_state=checkpoint_state,
             metadata={**metadata, **_policy_checkpoint_metadata(state, _ckpt_store)},
         )
-        await _run_persistence(
-            _ckpt_store.save,
-            _checkpoint,
-            key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
-        )
+        key = f"step_{step_number}" if status is None else f"step_{step_number}_{status}"
+        await _run_persistence(_ckpt_store.save, _checkpoint, key=key)
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
@@ -1328,6 +1325,19 @@ async def _async_composable_loop_impl(
             post_dispatch_parts.clear()
 
         _briefing = "\n".join(briefing_parts)
+        _probe_llm = (
+            config.router.select(purpose="reasoning")
+            if config.router is not None and not _replaying
+            else llm
+        )
+        _typed_turns = config.uses_typed_history and config.render_messages_override is None
+        _omit_text_history = (
+            _typed_turns
+            and config.use_native_tools
+            and getattr(_probe_llm, "conversation_mode", "text") in {"messages", "stateful"}
+            and callable(getattr(_probe_llm, "set_conversation_input", None))
+            and callable(getattr(_probe_llm, "generate_with_tools", None))
+        )
         _prepared = await prepare_prompt_async(
             config=config,
             state=state,
@@ -1340,6 +1350,7 @@ async def _async_composable_loop_impl(
             hooks=hooks,
             builder=build_prompt_fn,
             conversation=_conv,
+            omit_text_history=_omit_text_history,
         )
         prompt = _prepared.prompt
         _tool_view = _prepared.tool_view
@@ -1433,6 +1444,7 @@ async def _async_composable_loop_impl(
                 )
             )
         _llm_span = None
+        _discarded_stream_receipts: list[dict[str, Any]] = []
         if not loop_ctx.context_budget.pressure and config.tracer is not None:
             _llm_span = config.tracer.start_span(
                 f"llm.call.step_{step_num}",
@@ -1468,6 +1480,8 @@ async def _async_composable_loop_impl(
 
             _stream_executor: Any = None
             _stream_submitted_count = 0
+            _stream_halted = False
+            _stream_submitted_ids: set[str] = set()
             if config.streaming_tool_execution and _ckpt_store is None and not hooks:
                 from looplet.streaming import AsyncStreamingToolExecutor  # noqa: PLC0415
 
@@ -1476,13 +1490,11 @@ async def _async_composable_loop_impl(
                 )
 
             def _on_stream_tool_call(block: dict[str, Any]) -> None:
-                nonlocal _stream_submitted_count
-                if _stream_executor is None:
-                    return
-                index = block.get("index")
-                if type(index) is not int or index != _stream_submitted_count:
+                nonlocal _stream_submitted_count, _stream_halted
+                if _stream_executor is None or _stream_halted:
                     return
                 if _stream_submitted_count >= max(0, int(getattr(state, "budget_remaining", 0))):
+                    _stream_halted = True
                     return
                 name = block.get("name", "")
                 call_id = block.get("id", "")
@@ -1492,12 +1504,16 @@ async def _async_composable_loop_impl(
                     or not name
                     or not isinstance(call_id, str)
                     or not call_id
+                    or call_id in _stream_submitted_ids
                     or not isinstance(raw_input, dict)
+                    or "_raw_arguments" in raw_input
                     or name in config.resolve_terminal_outcomes()
                 ):
+                    _stream_halted = True
                     return
                 spec = tools._tools.get(name)
                 if spec is None or not spec.is_concurrent_safe(raw_input):
+                    _stream_halted = True
                     return
                 tc = ToolCall(tool=name, args=dict(raw_input), call_id=call_id)
                 t_ctx = _build_tool_ctx(
@@ -1511,6 +1527,7 @@ async def _async_composable_loop_impl(
                     llm=_sync_llm,
                     async_llm=_get_async_tool_llm(),
                 )
+                _stream_submitted_ids.add(call_id)
                 _stream_submitted_count += 1
                 _stream_executor.submit(tc, ctx=t_ctx)
 
@@ -1543,7 +1560,11 @@ async def _async_composable_loop_impl(
             else:
                 if _stream_executor is not None and not llm_result.ok:
                     _stream_executor.discard()
-                    await _stream_executor.results()
+                    _discarded_stream_receipts = [
+                        r.to_dict()
+                        for r in await _stream_executor.results()
+                        if r.metadata.get("execution_status") != "not_executed"
+                    ]
             finally:
                 if _llm_span is not None and config.tracer is not None:
                     config.tracer.end_span(_llm_span)
@@ -1713,6 +1734,8 @@ async def _async_composable_loop_impl(
                 break
             llm_failed = True
             step = _failed_model_step(step_num, llm_result)
+            if _discarded_stream_receipts:
+                step.metadata["speculative_tool_receipts"] = _discarded_stream_receipts
             state.steps.append(step)
             stop_reason = llm_result.failure_reason
             _history.record_step(
@@ -1948,11 +1971,58 @@ async def _async_composable_loop_impl(
         if regular_calls:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
 
+            def _record_cancelled_settled_step(
+                tc_offset_idx: int, settled_call: ToolCall, settled_res: ToolResult
+            ) -> None:
+                c_step = step_num + tc_offset_idx
+                t_spec = tools._tools.get(settled_call.tool)
+                if not (t_spec and t_spec.free):
+                    state.queries_used += 1
+                d_mode = (
+                    "parallel"
+                    if config.concurrent_dispatch
+                    and t_spec is not None
+                    and t_spec.is_concurrent_safe(settled_call.args)
+                    else "serial"
+                )
+                s_obj = Step(
+                    number=c_step,
+                    tool_call=settled_call,
+                    tool_result=settled_res,
+                    metadata=_step_metadata(settled_call, dispatch_mode=d_mode),
+                )
+                if t_spec and t_spec.free and settled_res.error is None:
+                    s_obj.metadata["budget_free"] = True
+                state.steps.append(s_obj)
+                s_ents = extract_entities(settled_res.data)
+                all_step_entities.extend(s_ents)
+                s_findings, s_highlights = extract_step_metadata(state, c_step)
+                _history.record_step(
+                    s_obj,
+                    theory=settled_call.args.get("__theory__", ""),
+                    entities=s_ents,
+                    findings=s_findings,
+                    highlights=s_highlights,
+                    recall_key=settled_res.result_key or "",
+                )
+
             async def _dispatch_regular_calls():
                 groups = (
                     [regular_calls]
                     if config.concurrent_dispatch
                     else [[tool_call] for tool_call in regular_calls]
+                )
+                _pre_streamed_calls = (
+                    _stream_executor.submitted_calls() if _stream_executor is not None else {}
+                )
+                _pre_streamed = (
+                    {
+                        r.call_id: r
+                        for r in await _stream_executor.results()
+                        if r.call_id is not None
+                    }
+                    if _stream_executor is not None
+                    else {}
                 )
                 offset = 0
                 for group in groups:
@@ -1982,60 +2052,110 @@ async def _async_composable_loop_impl(
                                     policy_checkpoint_metadata=_policy_checkpoint_metadata,
                                 ),
                             )
-                        tool_contexts = [
-                            _build_tool_ctx(
-                                config,
-                                tools=tools,
-                                hooks=hooks,
-                                tool_call=call,
-                                step_num=group_step + index,
-                                state=state,
-                                session_log=session_log,
-                                llm=_sync_llm,
-                                async_llm=_get_async_tool_llm(),
+                        reused_by_pos: dict[int, ToolResult] = {}
+                        remaining_calls: list[ToolCall] = []
+                        remaining_contexts: list[Any] = []
+                        remaining_indices: list[int] = []
+                        for pos, (index, call) in enumerate(dispatch_items):
+                            sub_call = (
+                                _pre_streamed_calls.get(call.call_id)
+                                if call.call_id is not None
+                                else None
                             )
-                            for index, call in dispatch_items
-                        ]
-                        _pre_streamed = (
-                            {
-                                r.call_id: r
-                                for r in await _stream_executor.results()
-                                if r.call_id is not None
-                            }
-                            if _stream_executor is not None
-                            else {}
-                        )
-                        if _pre_streamed and all(
-                            c.call_id in _pre_streamed for c in calls_to_dispatch
-                        ):
-                            results = [_pre_streamed[c.call_id] for c in calls_to_dispatch]
-                        elif config.concurrent_dispatch:
                             if (
-                                type(tools).dispatch_batch is not BaseToolRegistry.dispatch_batch
-                                and type(tools).async_dispatch_batch
-                                is BaseToolRegistry.async_dispatch_batch
+                                call.call_id is not None
+                                and call.call_id in _pre_streamed
+                                and sub_call is not None
+                                and sub_call.tool == call.tool
+                                and sub_call.args == call.args
                             ):
-                                results = await asyncio.to_thread(
-                                    tools.dispatch_batch, calls_to_dispatch, ctx=tool_contexts
-                                )
-                            elif (
-                                type(tools).async_dispatch_batch
-                                is BaseToolRegistry.async_dispatch_batch
-                            ):
-                                results = await tools.async_dispatch_batch(
-                                    calls_to_dispatch,
-                                    ctx=tool_contexts,
-                                    max_concurrent=config.max_parallel_calls,
-                                )
+                                reused_by_pos[pos] = _pre_streamed.pop(call.call_id)
                             else:
-                                results = await tools.async_dispatch_batch(
-                                    calls_to_dispatch, ctx=tool_contexts
+                                remaining_calls.append(call)
+                                remaining_indices.append(index)
+                                remaining_contexts.append(
+                                    _build_tool_ctx(
+                                        config,
+                                        tools=tools,
+                                        hooks=hooks,
+                                        tool_call=call,
+                                        step_num=group_step + index,
+                                        state=state,
+                                        session_log=session_log,
+                                        llm=_sync_llm,
+                                        async_llm=_get_async_tool_llm(),
+                                    )
                                 )
-                        else:
+                        if not remaining_calls:
+                            results = [reused_by_pos[p] for p in range(len(calls_to_dispatch))]
+                        elif config.concurrent_dispatch:
+                            settled_by_rem_idx: dict[int, ToolResult] = {}
+                            try:
+                                if (
+                                    type(tools).dispatch_batch
+                                    is not BaseToolRegistry.dispatch_batch
+                                    and type(tools).async_dispatch_batch
+                                    is BaseToolRegistry.async_dispatch_batch
+                                ):
+                                    fresh = await asyncio.to_thread(
+                                        tools.dispatch_batch,
+                                        remaining_calls,
+                                        ctx=remaining_contexts,
+                                    )
+                                elif (
+                                    type(tools).async_dispatch_batch
+                                    is BaseToolRegistry.async_dispatch_batch
+                                ):
+                                    fresh = await tools.async_dispatch_batch(
+                                        remaining_calls,
+                                        ctx=remaining_contexts,
+                                        max_concurrent=config.max_parallel_calls,
+                                        settled_out=settled_by_rem_idx,
+                                    )
+                                else:
+                                    fresh = await tools.async_dispatch_batch(
+                                        remaining_calls, ctx=remaining_contexts
+                                    )
+                            except asyncio.CancelledError:
+                                for pos, (index, call) in enumerate(dispatch_items):
+                                    if pos in reused_by_pos:
+                                        _record_cancelled_settled_step(
+                                            offset + index, call, reused_by_pos[pos]
+                                        )
+                                for rem_pos, rem_res in sorted(settled_by_rem_idx.items()):
+                                    _record_cancelled_settled_step(
+                                        offset + remaining_indices[rem_pos],
+                                        remaining_calls[rem_pos],
+                                        rem_res,
+                                    )
+                                raise
+                            fresh_iter = iter(fresh)
                             results = [
-                                await tools.async_dispatch(
-                                    calls_to_dispatch[0], ctx=tool_contexts[0]
-                                )
+                                reused_by_pos[p] if p in reused_by_pos else next(fresh_iter)
+                                for p in range(len(calls_to_dispatch))
+                            ]
+                        else:
+                            fresh = []
+                            try:
+                                for call, t_ctx in zip(remaining_calls, remaining_contexts):
+                                    fresh.append(await tools.async_dispatch(call, ctx=t_ctx))
+                            except asyncio.CancelledError:
+                                for pos, (index, call) in enumerate(dispatch_items):
+                                    if pos in reused_by_pos:
+                                        _record_cancelled_settled_step(
+                                            offset + index, call, reused_by_pos[pos]
+                                        )
+                                for rem_pos, rem_res in enumerate(fresh):
+                                    _record_cancelled_settled_step(
+                                        offset + remaining_indices[rem_pos],
+                                        remaining_calls[rem_pos],
+                                        rem_res,
+                                    )
+                                raise
+                            fresh_iter = iter(fresh)
+                            results = [
+                                reused_by_pos[p] if p in reused_by_pos else next(fresh_iter)
+                                for p in range(len(calls_to_dispatch))
                             ]
                     else:
                         results = []
@@ -2109,19 +2229,20 @@ async def _async_composable_loop_impl(
                     and tool_result.error is None
                 ):
                     step.metadata["budget_free"] = True
-                state.steps.append(step)
+                from looplet._storage import DiskBackedList  # noqa: PLC0415
 
-                step_entities = extract_entities(tool_result.data)
-                all_step_entities.extend(step_entities)
-                step_findings, step_highlights = extract_step_metadata(state, cur_step)
-                theory = tool_call.args.get("__theory__", "")
-                _history.record_step(
-                    step,
-                    theory=theory,
-                    entities=step_entities,
-                    findings=step_findings,
-                    highlights=step_highlights,
-                    recall_key=tool_result.result_key or "",
+                appended_off_loop = isinstance(state.steps, DiskBackedList)
+                if appended_off_loop:
+                    await _run_persistence(state.steps.append, step)
+                step_entities = commit_step_to_history(
+                    step=step,
+                    cur_step=cur_step,
+                    state=state,
+                    history=_history,
+                    extract_entities=extract_entities,
+                    extract_step_metadata=extract_step_metadata,
+                    all_step_entities=all_step_entities,
+                    already_appended=appended_off_loop,
                 )
                 await _notify_post_step_async(hooks, state, session_log, cur_step)
                 if stream is not None and _ToolResultEvent is not None:

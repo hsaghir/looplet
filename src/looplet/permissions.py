@@ -18,6 +18,8 @@ while staying domain-agnostic.
 from __future__ import annotations
 
 import logging
+import threading
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
@@ -386,7 +388,24 @@ class PermissionHook:
 
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
-        self._approved: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None = None
+        self._lock = threading.RLock()
+        self._approved_by_key: dict[Any, tuple[int, str, str, dict[str, Any], tuple[Any, ...]]] = {}
+        self._approved_var: ContextVar[
+            tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None
+        ] = ContextVar(f"looplet_perm_approved_{id(self)}", default=None)
+
+    def _approval_key(self, tool_call: ToolCall) -> Any:
+        return ("cid", tool_call.call_id) if tool_call.call_id else ("obj", id(tool_call))
+
+    @property
+    def _approved(self) -> tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None:
+        return self._approved_var.get()
+
+    @_approved.setter
+    def _approved(
+        self, value: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None
+    ) -> None:
+        self._approved_var.set(value)
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``engine`` as an ``@ref`` so the
@@ -414,6 +433,9 @@ class PermissionHook:
             return None
         if payload.tool_call is None:
             return None
+        key = self._approval_key(payload.tool_call)
+        with self._lock:
+            self._approved_by_key.pop(key, None)
         self._approved = None
         outcome = self.engine.evaluate(payload.tool_call)
         audit = PolicyDecision(
@@ -424,13 +446,16 @@ class PermissionHook:
         )
         if outcome.allowed:
             if outcome.rule is not None and outcome.rule.decision == PermissionDecision.ASK:
-                self._approved = (
+                stamp = (
                     id(payload.tool_call),
                     payload.tool_call.call_id,
                     payload.tool_call.tool,
                     deepcopy(payload.tool_call.args),
                     self.engine._policy_snapshot(),
                 )
+                with self._lock:
+                    self._approved_by_key[key] = stamp
+                self._approved = stamp
             return Allow(policy_decision=audit)
         if outcome.denied:
             return Deny(
@@ -444,8 +469,13 @@ class PermissionHook:
     # this hook behaves correctly even if someone calls the per-method
     # surface directly (e.g. in tests).
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
-        approved = self._approved
+        key = self._approval_key(tool_call)
+        with self._lock:
+            approved = self._approved_by_key.pop(key, None)
+        ctx_approved = self._approved
         self._approved = None
+        if approved is None:
+            approved = ctx_approved
         if approved is not None:
             if _same_action_value(
                 approved,

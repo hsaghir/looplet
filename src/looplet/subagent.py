@@ -312,20 +312,60 @@ class _ChildRun:
 
 class _ChildRecoveryEvidence:
     def __init__(self, checkpoint_state: Any, restore_checkpoint_state: Any) -> None:
+        from looplet._storage import TrackedList
+
         self._checkpoint_state = checkpoint_state
         self._restore_checkpoint_state = restore_checkpoint_state
         self._recovered_steps: list[dict[str, Any]] = []
+        self._tracked_receipts: TrackedList = TrackedList()
+        self._receipt_pos_by_step: dict[Any, int] = {}
+        self._encoded_live_count: int = 0
+
+    def _reset_tracked_from_recovered(self) -> None:
+        from looplet._storage import TrackedList
+
+        by_num = {step["step"]: step for step in self._recovered_steps}
+        ordered = [by_num[n] for n in sorted(by_num)]
+        self._tracked_receipts = TrackedList(ordered)
+        self._receipt_pos_by_step = {item["step"]: idx for idx, item in enumerate(ordered)}
+        self._encoded_live_count = 0
 
     def checkpoint_state(self, context: Any) -> dict[str, Any]:
         domain = dict(self._checkpoint_state(context)) if self._checkpoint_state else {}
-        steps = [*self._recovered_steps, *(step.to_dict() for step in context.state.steps)]
-        by_number = {step["step"]: step for step in steps}
-        domain["_looplet_child_receipts"] = [by_number[number] for number in sorted(by_number)]
+        live_steps = context.state.steps
+        if len(live_steps) < self._encoded_live_count:
+            self._reset_tracked_from_recovered()
+        for idx in range(self._encoded_live_count, len(live_steps)):
+            rec = live_steps[idx].to_dict()
+            s_num = rec["step"]
+            existing_pos = self._receipt_pos_by_step.get(s_num)
+            if existing_pos is not None:
+                self._tracked_receipts[existing_pos] = rec
+            elif not self._tracked_receipts or s_num > self._tracked_receipts[-1]["step"]:
+                self._receipt_pos_by_step[s_num] = len(self._tracked_receipts)
+                self._tracked_receipts.append(rec)
+            else:
+                self._encoded_live_count = 0
+                by_number = {
+                    step["step"]: step
+                    for step in [*self._recovered_steps, *(s.to_dict() for s in live_steps)]
+                }
+                from looplet._storage import TrackedList
+
+                ordered = [by_number[n] for n in sorted(by_number)]
+                self._tracked_receipts = TrackedList(ordered)
+                self._receipt_pos_by_step = {item["step"]: i for i, item in enumerate(ordered)}
+                self._encoded_live_count = len(live_steps)
+                domain["_looplet_child_receipts"] = self._tracked_receipts.snapshot_list()
+                return domain
+        self._encoded_live_count = len(live_steps)
+        domain["_looplet_child_receipts"] = self._tracked_receipts.snapshot_list()
         return domain
 
     def restore_checkpoint_state(self, context: Any, domain: dict[str, Any]) -> None:
         domain = dict(domain)
         self._recovered_steps = list(domain.pop("_looplet_child_receipts", []))
+        self._reset_tracked_from_recovered()
         if self._restore_checkpoint_state is not None:
             self._restore_checkpoint_state(context, domain)
 

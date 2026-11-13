@@ -99,9 +99,15 @@ def _normalise_rule_entry(entry: Any) -> dict[str, Any]:
     if isinstance(entry, str):
         return {"tool": entry}
     if isinstance(entry, dict):
-        if "tool" not in entry:
-            raise ValueError(f"permission rule missing 'tool' field: {entry!r}")
-        return entry
+        if "tool" not in entry and "origin" not in entry:
+            raise ValueError(f"permission rule missing 'tool' or 'origin' field: {entry!r}")
+        normalised = dict(entry)
+        normalised.setdefault("tool", "*")
+        if "origin" in normalised and (
+            not isinstance(normalised["origin"], str) or not normalised["origin"].strip()
+        ):
+            raise ValueError(f"permission rule 'origin' must be a non-empty string: {entry!r}")
+        return normalised
     raise ValueError(f"permission rule must be a string (tool name) or a dict, got {entry!r}")
 
 
@@ -148,6 +154,7 @@ def compile_permissions_block(block: dict[str, Any]) -> PermissionHook:
                     decision=decision,
                     arg_matcher=_make_arg_matcher(normalised),
                     reason=str(normalised.get("reason", "")),
+                    origin=normalised.get("origin"),
                 )
             )
 

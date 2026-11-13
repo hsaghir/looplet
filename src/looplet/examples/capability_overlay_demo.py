@@ -19,10 +19,8 @@ from typing import Any
 
 from looplet import (
     CachePolicy,
-    DefaultState,
     EvalContext,
     EvalHook,
-    MockLLMBackend,
     PermissionDecision,
     PermissionEngine,
     PermissionHook,
@@ -77,11 +75,12 @@ def build_base_cartridge(directory: Path) -> Path:
         "    type: integer\n"
         "    description: Net settled minus refund total in cents, excluding void rows.\n"
         "output_schema:\n"
-        "  strict: true\n"
-        "  fields:\n"
+        "  type: object\n"
+        "  required:\n"
+        "    - total_cents\n"
+        "  properties:\n"
         "    total_cents:\n"
-        "      type: int\n"
-        "      required: true\n",
+        "      type: integer\n",
         encoding="utf-8",
     )
     (directory / "tools" / "done" / "execute.py").write_text(
@@ -205,6 +204,7 @@ def run_demo(work_dir: Path) -> dict[str, Any]:
     with watcher:
         preset = watcher.preset()
         preset.config.max_steps = 8
+        preset.state.max_steps = 8
         preset.resources["ledger_rows"] = LEDGER_ROWS
         preset.tools.set_resources(preset.resources)
         preset.tools.register(make_overlay_writer(overlay_dir))
@@ -215,9 +215,9 @@ def run_demo(work_dir: Path) -> dict[str, Any]:
 
         permissions = (
             PermissionEngine(default=PermissionDecision.DENY)
-            .allow_origin(preset.tools, "cartridge")
-            .allow_origin(preset.tools, "host")
-            .allow_origin(preset.tools, "overlay")
+            .allow_origin("cartridge")
+            .allow_origin("host")
+            .allow_origin("overlay")
         )
         cache_detector = CacheBreakDetector(preset.config.cache_policy)
         reload_hook = ReloadHook(watcher)
@@ -225,12 +225,11 @@ def run_demo(work_dir: Path) -> dict[str, Any]:
         backend = _NativeScriptedBackend(scripted_native_responses())
         llm = sink.wrap_llm(backend)
 
-        state = DefaultState(max_steps=8)
         with closing(
             composable_loop(
                 llm=llm,
                 tools=preset.tools,
-                state=state,
+                state=preset.state,
                 config=preset.config,
                 hooks=[
                     *preset.hooks,
@@ -246,11 +245,12 @@ def run_demo(work_dir: Path) -> dict[str, Any]:
             for _ in steps:
                 pass
         sink.flush()
+        state = preset.state
 
         # Graduate the validated overlay preset into a standalone v2 cartridge.
         preset_to_cartridge(watcher.preset(), graduated_dir, strict=True)
 
-    # Replay captured responses against a fresh blank overlay directory.
+    # Replay captured model responses against a fresh blank overlay directory.
     replay_overlay = work_dir / "replay_overlay"
     replay_watcher = WorkspaceWatcher(
         base_dir,
@@ -261,22 +261,23 @@ def run_demo(work_dir: Path) -> dict[str, Any]:
     with replay_watcher:
         replay_preset = replay_watcher.preset()
         replay_preset.config.max_steps = 8
+        replay_preset.state.max_steps = 8
         replay_preset.resources["ledger_rows"] = LEDGER_ROWS
         replay_preset.tools.set_resources(replay_preset.resources)
         replay_preset.tools.register(make_overlay_writer(replay_overlay))
         replay_reload = ReloadHook(replay_watcher)
-        replay_state = DefaultState(max_steps=8)
         with closing(
             replay_loop(
                 trace_dir,
                 tools=replay_preset.tools,
-                state=replay_state,
+                state=replay_preset.state,
                 config=replay_preset.config,
                 hooks=[*replay_preset.hooks, replay_reload],
             )
         ) as replay_steps:
             for _ in replay_steps:
                 pass
+        replay_state = replay_preset.state
 
     trajectory = json.loads((trace_dir / "trajectory.json").read_text(encoding="utf-8"))
     result = RunResult.from_state(state)
@@ -299,14 +300,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--scripted",
         action="store_true",
-        help="Run the deterministic zero-network demo.",
+        help="Run the scripted zero-network demo.",
     )
     parser.add_argument("--output", type=Path, default=None, help="Optional output directory.")
     args = parser.parse_args(argv)
     if not args.scripted:
-        # Keep CLI consistent with hello_world; non-scripted mode uses MockLLMBackend fallback hint.
-        _ = MockLLMBackend
-        parser.error("Pass --scripted to run the deterministic capability overlay demo.")
+        parser.error("Pass --scripted to run the scripted capability overlay demo.")
 
     if args.output is not None:
         args.output.mkdir(parents=True, exist_ok=True)

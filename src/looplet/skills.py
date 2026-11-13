@@ -269,6 +269,17 @@ class SkillManager:
         """Search available skills without activating them."""
         return self.store.search(query, limit=limit)
 
+    def bind_tools(self, tools: BaseToolRegistry) -> None:
+        """Attach ``tools`` and synchronize any skills activated prior to loop start."""
+        self.tools = tools
+        for skill in self._active.values():
+            if skill.tools:
+                tools.sync_origin(
+                    f"skill:{skill.name}",
+                    skill.tools,
+                    protected=self.protected_tools,
+                )
+
     def activate(self, name: str) -> Skill:
         """Activate a skill by name and return the full skill."""
         if name not in self._active:
@@ -350,7 +361,7 @@ class SkillActivationHook:
 
     def bind(self, loop_ctx: Any) -> None:
         if self.bind_tools and self.manager.tools is None:
-            self.manager.tools = loop_ctx.tools
+            self.manager.bind_tools(loop_ctx.tools)
 
     def pre_prompt(self, state: Any, session_log: Any, context: Any, step_num: int) -> str | None:  # noqa: ARG002
         """Inject active skill instructions into the next prompt."""

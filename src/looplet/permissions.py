@@ -21,7 +21,7 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, overload
 
 from looplet.types import PolicyDecision, ToolCall
 
@@ -59,14 +59,25 @@ ArgMatcher = Callable[[dict[str, Any]], bool]
 the rule should match. ``None`` rules match regardless of args."""
 
 
+def _origin_matches(actual: str | None, pattern: str) -> bool:
+    if actual is None:
+        return False
+    if pattern == "*":
+        return True
+    if pattern.endswith("*"):
+        return actual.startswith(pattern[:-1])
+    return actual == pattern
+
+
 @dataclass
 class PermissionRule:
     """A single rule in the engine's evaluation list.
 
     Rules are checked in order; the first matching rule wins. A rule
-    matches when the tool name equals ``tool`` (``"*"`` matches any)
-    and - if provided - ``arg_matcher(args)`` and ``call_matcher(call)``
-    are truthy.
+    matches when the tool name equals ``tool`` (``"*"`` matches any),
+    optional ``origin`` matches the tool's :attr:`ToolSpec.origin`
+    (exact or ``prefix*``), and - if provided - ``arg_matcher(args)``
+    and ``call_matcher(call)`` are truthy.
     """
 
     tool: str
@@ -74,14 +85,47 @@ class PermissionRule:
     arg_matcher: ArgMatcher | None = None
     reason: str = ""
     call_matcher: Callable[[ToolCall], bool] | None = None
+    origin: str | None = None
+    _tools_ref: Any = field(default=None, init=False, repr=False, compare=False)
 
-    def matches(self, call: ToolCall) -> bool:
-        matched, _ = self._match(call)
+    def __post_init__(self) -> None:
+        if self.origin is not None and (
+            not isinstance(self.origin, str) or not self.origin.strip()
+        ):
+            raise ValueError("PermissionRule.origin must be a non-empty string or None")
+
+    def matches(self, call: ToolCall, *, tools: Any = None) -> bool:
+        matched, _ = self._match(call, tools=tools)
         return matched
 
-    def _match(self, call: ToolCall) -> tuple[bool, bool]:
+    def _match(self, call: ToolCall, *, tools: Any = None) -> tuple[bool, bool]:
         if self.tool != "*" and self.tool != call.tool:
             return False, False
+        if self.origin is not None:
+            registry = tools if tools is not None else self._tools_ref
+            if registry is None:
+                fail_closed_match = self.decision in (
+                    PermissionDecision.DENY,
+                    PermissionDecision.ASK,
+                )
+                logger.warning(
+                    "PermissionRule origin=%r for '%s' (decision=%s) evaluated without "
+                    "a bound tool registry - failing closed (matches=%s)",
+                    self.origin,
+                    call.tool,
+                    self.decision.value,
+                    fail_closed_match,
+                )
+                return fail_closed_match, True
+            getter = getattr(registry, "get", None)
+            spec = (
+                getter(call.tool)
+                if callable(getter)
+                else getattr(registry, "_tools", {}).get(call.tool)
+            )
+            actual_origin = getattr(spec, "origin", None) if spec is not None else None
+            if not _origin_matches(actual_origin, self.origin):
+                return False, False
         if self.arg_matcher is None and self.call_matcher is None:
             return True, False
         try:
@@ -156,6 +200,7 @@ class PermissionEngine:
                 (
                     id(rule),
                     rule.tool,
+                    rule.origin,
                     rule.decision,
                     rule.arg_matcher,
                     rule.call_matcher,
@@ -261,76 +306,92 @@ class PermissionEngine:
         )
         return self
 
-    @staticmethod
-    def _origin_matches(actual: str | None, pattern: str) -> bool:
-        if actual is None:
-            return False
-        if pattern == "*":
-            return True
-        if pattern.endswith("*"):
-            return actual.startswith(pattern[:-1])
-        return actual == pattern
-
     def _add_origin_rule(
         self,
-        tools: Any,
-        origin: str,
+        tools_or_origin: Any,
+        origin: str | None,
         decision: PermissionDecision,
         *,
-        reason: str,
+        reason_prefix: str,
+        reason: str = "",
     ) -> "PermissionEngine":
-        if not isinstance(origin, str) or not origin.strip():
+        if origin is None:
+            tools_ref = None
+            origin_pattern = tools_or_origin
+        else:
+            tools_ref = tools_or_origin
+            origin_pattern = origin
+        if not isinstance(origin_pattern, str) or not origin_pattern.strip():
             raise ValueError("origin pattern must be a non-empty string")
-
-        def _matches(call: ToolCall) -> bool:
-            getter = getattr(tools, "get", None)
-            spec = (
-                getter(call.tool)
-                if callable(getter)
-                else getattr(tools, "_tools", {}).get(call.tool)
-            )
-            return bool(
-                spec is not None and self._origin_matches(getattr(spec, "origin", None), origin)
-            )
-
-        self.rules.append(
-            PermissionRule(
-                tool="*",
-                decision=decision,
-                call_matcher=_matches,
-                reason=reason,
-            )
+        rule = PermissionRule(
+            tool="*",
+            decision=decision,
+            origin=origin_pattern,
+            reason=reason or f"{reason_prefix} {origin_pattern!r}",
         )
+        rule._tools_ref = tools_ref
+        self.rules.append(rule)
         return self
 
-    def allow_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+    @overload
+    def allow_origin(self, origin: str, /, *, reason: str = "") -> "PermissionEngine": ...
+
+    @overload
+    def allow_origin(
+        self, tools: Any, origin: str, /, *, reason: str = ""
+    ) -> "PermissionEngine": ...
+
+    def allow_origin(
+        self, tools_or_origin: Any, origin: str | None = None, /, *, reason: str = ""
+    ) -> "PermissionEngine":
         """Allow tool calls whose :attr:`ToolSpec.origin` matches ``origin`` (exact or ``prefix*``)."""
         return self._add_origin_rule(
-            tools,
+            tools_or_origin,
             origin,
             PermissionDecision.ALLOW,
-            reason=reason or f"allowed tool origin {origin!r}",
+            reason_prefix="allowed tool origin",
+            reason=reason,
         )
 
-    def deny_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+    @overload
+    def deny_origin(self, origin: str, /, *, reason: str = "") -> "PermissionEngine": ...
+
+    @overload
+    def deny_origin(
+        self, tools: Any, origin: str, /, *, reason: str = ""
+    ) -> "PermissionEngine": ...
+
+    def deny_origin(
+        self, tools_or_origin: Any, origin: str | None = None, /, *, reason: str = ""
+    ) -> "PermissionEngine":
         """Deny tool calls whose :attr:`ToolSpec.origin` matches ``origin`` (exact or ``prefix*``)."""
         return self._add_origin_rule(
-            tools,
+            tools_or_origin,
             origin,
             PermissionDecision.DENY,
-            reason=reason or f"denied tool origin {origin!r}",
+            reason_prefix="denied tool origin",
+            reason=reason,
         )
 
-    def ask_origin(self, tools: Any, origin: str, *, reason: str = "") -> "PermissionEngine":
+    @overload
+    def ask_origin(self, origin: str, /, *, reason: str = "") -> "PermissionEngine": ...
+
+    @overload
+    def ask_origin(self, tools: Any, origin: str, /, *, reason: str = "") -> "PermissionEngine": ...
+
+    def ask_origin(
+        self, tools_or_origin: Any, origin: str | None = None, /, *, reason: str = ""
+    ) -> "PermissionEngine":
         """Require approval for tool calls whose :attr:`ToolSpec.origin` matches ``origin``."""
         return self._add_origin_rule(
-            tools,
+            tools_or_origin,
             origin,
             PermissionDecision.ASK,
-            reason=reason or f"approval required for tool origin {origin!r}",
+            reason_prefix="approval required for tool origin",
+            reason=reason,
         )
 
-    def evaluate(self, call: ToolCall) -> PermissionOutcome:
+    def evaluate(self, call: ToolCall, *, tools: Any = None) -> PermissionOutcome:
         """Run the call through all rules; first match wins.
 
         A matching ``DEFAULT`` rule resolves through the engine default.
@@ -342,7 +403,7 @@ class PermissionEngine:
         - Without a handler, the call is denied, regardless of ``default``.
         """
         for rule in self.rules:
-            matched, matcher_failed = rule._match(call)
+            matched, matcher_failed = rule._match(call, tools=tools)
             if matched:
                 decision = rule.decision
                 if decision == PermissionDecision.DEFAULT:
@@ -455,7 +516,11 @@ class PermissionHook:
 
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
+        self._tools: Any = None
         self._approved: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None = None
+
+    def bind(self, loop_ctx: Any) -> None:
+        self._tools = getattr(loop_ctx, "tools", None)
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``engine`` as an ``@ref`` so the
@@ -484,11 +549,19 @@ class PermissionHook:
         if payload.tool_call is None:
             return None
         self._approved = None
-        outcome = self.engine.evaluate(payload.tool_call)
+        outcome = self.engine.evaluate(payload.tool_call, tools=self._tools)
         audit = PolicyDecision(
             decision=outcome.decision.value,
             tool=payload.tool_call.tool,
-            policy_id=outcome.rule.tool if outcome.rule is not None else "default",
+            policy_id=(
+                f"origin:{outcome.rule.origin}"
+                if outcome.rule is not None
+                and outcome.rule.origin is not None
+                and outcome.rule.tool == "*"
+                else outcome.rule.tool
+                if outcome.rule is not None
+                else "default"
+            ),
             reason=outcome.reason,
         )
         if outcome.allowed:
@@ -529,5 +602,5 @@ class PermissionHook:
                 return True
             self.engine._record_denial(tool_call, None, "Approved action or policy changed")
             return False
-        outcome = self.engine.evaluate(tool_call)
+        outcome = self.engine.evaluate(tool_call, tools=self._tools)
         return not outcome.denied

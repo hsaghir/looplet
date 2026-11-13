@@ -21,7 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from looplet.cartridge._layout import CartridgeLayout
+from looplet.cartridge._layout import (
+    CartridgeLayout,
+    _preset_origin_root,
+    _stamp_preset_origin,
+)
 from looplet.cartridge._load import cartridge_to_preset
 from looplet.hook_decision import HookDecision, InjectContext
 from looplet.validation import ValidatingToolRegistry
@@ -85,7 +89,7 @@ def _fingerprint_overlay_layer(root: Path) -> dict[str, str]:
     fp: dict[str, str] = {}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root)
-        if "__pycache__" in rel.parts or p.suffix == ".pyc":
+        if "__pycache__" in rel.parts or p.suffix in {".pyc", ".pyo"}:
             continue
         posix = rel.as_posix()
         if p.is_symlink():
@@ -135,7 +139,7 @@ def _content_digest_layer(root: Path, *, include_unwatched: bool) -> str:
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root)
         parts = rel.parts
-        if "__pycache__" in parts or p.suffix == ".pyc":
+        if "__pycache__" in parts or p.suffix in {".pyc", ".pyo"}:
             continue
         if not include_unwatched and any(part.startswith(".") for part in parts):
             continue
@@ -174,7 +178,30 @@ def _content_digest_layer(root: Path, *, include_unwatched: bool) -> str:
             h.update(posix_bytes)
             h.update(len(data).to_bytes(8, "big"))
             h.update(hashlib.sha256(data).digest())
+        elif include_unwatched:
+            h.update(b"S")
+            h.update(len(posix_bytes).to_bytes(4, "big"))
+            h.update(posix_bytes)
     return h.hexdigest()
+
+
+def _resource_digests_for_preset(preset: Any) -> dict[str, str]:
+    """Return ``{resource_name: sha256}`` for ``resources/<name>.py`` in ``preset``'s origin."""
+    origin_root = _preset_origin_root(preset)
+    if origin_root is None:
+        return {}
+    res_dir = origin_root / CartridgeLayout.RESOURCES_DIR
+    if not res_dir.is_dir():
+        return {}
+    digests: dict[str, str] = {}
+    for res_file in sorted(res_dir.glob("*.py")):
+        if res_file.name.startswith("_") or not res_file.is_file() or res_file.is_symlink():
+            continue
+        try:
+            digests[res_file.stem] = hashlib.sha256(res_file.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return digests
 
 
 @dataclass(frozen=True)
@@ -265,6 +292,7 @@ class WorkspaceWatcher:
     protected_tools: Collection[str] = ()
     _fp: dict[str, str] = field(default_factory=dict, init=False)
     _preset: Any = field(default=None, init=False)
+    _deferred_presets: list[Any] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.overlays, (str, bytes)):
@@ -363,8 +391,11 @@ class WorkspaceWatcher:
         previous = self._preset
         self._preset = replacement
         self._fp = fp
-        if close_previous and previous is not None and previous is not replacement:
-            previous.close()
+        if previous is not None and previous is not replacement:
+            if close_previous:
+                previous.close()
+            elif not any(item is previous for item in self._deferred_presets):
+                self._deferred_presets.append(previous)
         return replacement
 
     def preset(self) -> Any:
@@ -396,11 +427,17 @@ class WorkspaceWatcher:
         return self._commit_preset(replacement, fp)
 
     def close(self) -> None:
-        """Close the currently loaded preset, if any."""
+        """Close the currently loaded preset and any deferred presets."""
         preset, self._preset = self._preset, None
+        deferred, self._deferred_presets = list(self._deferred_presets), []
         self._fp = {}
-        if preset is not None:
-            preset.close()
+        seen_ids: set[int] = set()
+        for item in (preset, *reversed(deferred)):
+            if item is None or id(item) in seen_ids:
+                continue
+            seen_ids.add(id(item))
+            if not getattr(item, "_closed", False):
+                item.close()
 
     def __enter__(self) -> "WorkspaceWatcher":
         return self
@@ -448,6 +485,7 @@ class ReloadHook:
         self._initial_run_preset: Any = None
         self._host_memory_sources: list[Any] = []
         self._cartridge_resource_keys: set[str] = set()
+        self._resource_digests: dict[str, str] = {}
         self._active_fingerprint: dict[str, str] = {}
         self._active_digest: str = ""
         self._last_attempted_digest: str = ""
@@ -494,6 +532,7 @@ class ReloadHook:
             if id(src) not in initial_mem_ids
         ]
         self._cartridge_resource_keys = set(initial.resources.keys())
+        self._resource_digests = _resource_digests_for_preset(initial)
         self._active_fingerprint = dict(self.watcher._fp)
         self._active_digest = self.watcher.digest()
         self._last_attempted_digest = self._active_digest
@@ -506,17 +545,56 @@ class ReloadHook:
             if isinstance(reloads, list):
                 reloads.append(observation.to_dict())
 
+    def _reconcile_resources(self, tools: Any, candidate: Any) -> dict[str, Any]:
+        """Merge host + candidate resources while preserving unchanged live cartridge resources."""
+        host_resources = {
+            k: v for k, v in tools.resources.items() if k not in self._cartridge_resource_keys
+        }
+        next_digests = _resource_digests_for_preset(candidate)
+        prev_preset = self.watcher._preset
+        prev_owned = getattr(prev_preset, "owned_resources", None)
+        cand_owned = getattr(candidate, "owned_resources", None)
+
+        effective_cartridge: dict[str, Any] = {}
+        for key, cand_val in candidate.resources.items():
+            if (
+                key != "cartridge_root"
+                and key in tools.resources
+                and key in self._resource_digests
+                and self._resource_digests.get(key) == next_digests.get(key)
+            ):
+                live_val = tools.resources[key]
+                effective_cartridge[key] = live_val
+                if cand_val is not live_val and isinstance(cand_owned, list):
+                    if any(item is cand_val for item in cand_owned):
+                        cand_owned[:] = [item for item in cand_owned if item is not cand_val]
+                        try:
+                            cand_val.close()
+                        except Exception:  # pragma: no cover - defensive cleanup
+                            pass
+                if isinstance(prev_owned, list) and any(item is live_val for item in prev_owned):
+                    prev_owned[:] = [item for item in prev_owned if item is not live_val]
+                    if isinstance(cand_owned, list) and not any(
+                        item is live_val for item in cand_owned
+                    ):
+                        cand_owned.append(live_val)
+            else:
+                effective_cartridge[key] = cand_val
+
+        candidate.resources.clear()
+        candidate.resources.update(effective_cartridge)
+        merged_resources = {**host_resources, **effective_cartridge}
+        self._cartridge_resource_keys = set(effective_cartridge.keys())
+        self._resource_digests = next_digests
+        return merged_resources
+
     def _apply_candidate(self, candidate: Any) -> tuple[dict[str, tuple[str, ...]], bool, bool]:
         loop_ctx = self._loop_ctx
         if loop_ctx is None:
             raise RuntimeError("ReloadHook must be bound to LoopContext before applying presets")
 
         tools = loop_ctx.tools
-        host_resources = {
-            k: v for k, v in tools.resources.items() if k not in self._cartridge_resource_keys
-        }
-        merged_resources = {**host_resources, **candidate.resources}
-        self._cartridge_resource_keys = set(candidate.resources.keys())
+        merged_resources = self._reconcile_resources(tools, candidate)
 
         argument_schemas = (
             dict(candidate.tools._schemas)
@@ -570,6 +648,14 @@ class ReloadHook:
         if isinstance(getattr(loop_ctx, "resources", None), dict):
             loop_ctx.resources.clear()
             loop_ctx.resources.update(merged_resources)
+        if self._initial_run_preset is not None and self._initial_run_preset is not candidate:
+            init_res = getattr(self._initial_run_preset, "resources", None)
+            if isinstance(init_res, dict):
+                init_res.clear()
+                init_res.update(merged_resources)
+            cand_origin = _preset_origin_root(candidate)
+            if cand_origin is not None:
+                _stamp_preset_origin(self._initial_run_preset, cand_origin)
 
         slots = self.watcher.allowed_overlay_slots
         allow_prompts = slots is None or not self.watcher.overlays or "prompts" in slots

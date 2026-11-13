@@ -35,6 +35,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge capability overlays (`cartridge_to_preset(..., overlays=..., allowed_overlay_slots=..., protected_tools=...)`), origin-scoped tool registries and declarative `PermissionRule.origin` selectors (`allow_origin`, `deny_origin`, `ask_origin`), step-boundary `ReloadHook` and `WorkspaceWatcher` synchronization with live-resource preservation and checkpoint recovery, `SkillManager` tool binding, and multi-epoch `TrajectoryRecorder` `harness_epochs` provenance support host-layered capabilities without mutating base cartridges.
 - Temporary record spools share one process-local SQLite connection with atomic savepoint locks, incremental checkpoints encode `Conversation` and `SessionLog` deltas via revision-tracked lists over WAL storage, and `MemoryRunStore` appends events in linear time.
 - Sync and async loops share Sans-I/O turn-engine setup, router-safe scoped helper proxies, checkpoint restoration, non-blocking async LEP hook dispatch, and `ContextVar`-isolated conversation inputs on stateless backends.
 - Cartridge loading caches `extends` overlays by content digest under a thread-safe import lock, rejects duplicate YAML mapping keys and unknown compatibility manifest fields fail-closed, and supports bounded `max_concurrency` in `run_cartridge_evals()`.

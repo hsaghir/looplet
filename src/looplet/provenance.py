@@ -1601,6 +1601,7 @@ class TrajectoryRecorder:
         self._loop_ctx: Any = None
         self._harness_epochs: list[dict[str, Any]] = []
         self._last_epoch_key: tuple[Any, ...] | None = None
+        self._last_exec_ids: dict[str, int] = {}
         # When set, every JSON document written to disk is redacted
         # through this callable. The recorder still captures the
         # un-redacted in-memory trajectory so callers that want raw
@@ -1629,7 +1630,15 @@ class TrajectoryRecorder:
             for name, spec in raw_specs.items()
             if getattr(spec, "origin", None) is not None
         }
-        epoch_key = (sys_sha, view.version, tuple(sorted(tool_origins.items())))
+        curr_exec_ids = {
+            name: id(getattr(spec, "execute", spec)) for name, spec in raw_specs.items()
+        }
+        epoch_key = (
+            sys_sha,
+            view.version,
+            tuple(sorted(tool_origins.items())),
+            tuple(sorted(curr_exec_ids.items())),
+        )
         if epoch_key == self._last_epoch_key:
             return
         curr_tools = list(view.names)
@@ -1648,8 +1657,16 @@ class TrajectoryRecorder:
             curr_set = set(curr_tools)
             entry["added_tools"] = [name for name in curr_tools if name not in prev_set]
             entry["removed_tools"] = [name for name in prev_list if name not in curr_set]
+            updated = [
+                name
+                for name in curr_tools
+                if name in prev_set and self._last_exec_ids.get(name) != curr_exec_ids.get(name)
+            ]
+            if updated:
+                entry["updated_tools"] = updated
         self._harness_epochs.append(entry)
         self._last_epoch_key = epoch_key
+        self._last_exec_ids = curr_exec_ids
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
         if self._loop_span is None and self._tracer is not None:

@@ -285,6 +285,18 @@ class ValidatingToolRegistry(BaseToolRegistry):
         argument_schemas: Mapping[str, OutputSchema | Literal["parameters"]] | None = None,
     ) -> dict[str, tuple[str, ...]]:
         """Synchronize ``origin`` tools and keep validation schemas aligned."""
+        validated_schemas: dict[str, OutputSchema | Literal["parameters"]] = {}
+        if argument_schemas is not None:
+            if not isinstance(argument_schemas, Mapping):
+                raise TypeError("argument_schemas must be a mapping or None")
+            for spec in specs:
+                if spec.name in argument_schemas:
+                    schema = argument_schemas[spec.name]
+                    if schema != "parameters" and not isinstance(schema, OutputSchema):
+                        raise TypeError(
+                            f"argument_schemas[{spec.name!r}] must be OutputSchema or 'parameters'"
+                        )
+                    validated_schemas[spec.name] = schema
         summary = super().sync_origin(
             origin,
             specs,
@@ -292,10 +304,8 @@ class ValidatingToolRegistry(BaseToolRegistry):
             allow_override_origins=allow_override_origins,
             resources=resources,
         )
-        if argument_schemas:
-            for spec in specs:
-                if spec.name in argument_schemas:
-                    self._schemas[spec.name] = argument_schemas[spec.name]
+        for name, schema in validated_schemas.items():
+            self._schemas[name] = schema
         return summary
 
     @staticmethod

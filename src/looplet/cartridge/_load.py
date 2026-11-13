@@ -434,10 +434,14 @@ def _directory_tree_digest(directory: Path) -> str:
 
     h = _hashlib.sha256()
     for p in sorted(directory.rglob("*")):
-        if "__pycache__" in p.parts:
+        if "__pycache__" in p.parts or p.suffix in {".pyc", ".pyo"}:
             continue
         rel = p.relative_to(directory).as_posix().encode("utf-8")
-        if p.is_file():
+        if p.is_symlink():
+            h.update(b"L")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
+        elif p.is_file():
             h.update(b"F")
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
@@ -446,6 +450,10 @@ def _directory_tree_digest(directory: Path) -> str:
             h.update(data)
         elif p.is_dir():
             h.update(b"D")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
+        else:
+            h.update(b"S")
             h.update(len(rel).to_bytes(4, "big"))
             h.update(rel)
     return h.hexdigest()
@@ -609,8 +617,12 @@ def _apply_overlays(
             if entry.is_symlink():
                 raise CartridgeSerializationError(f"overlay contains a symlink: {entry}")
             rel = entry.relative_to(overlay_path)
-            if "__pycache__" in rel.parts or entry.suffix == ".pyc":
+            if "__pycache__" in rel.parts or entry.suffix in {".pyc", ".pyo"}:
                 continue
+            if not entry.is_dir() and not entry.is_file():
+                raise CartridgeSerializationError(
+                    f"overlay contains unsupported special file {rel.as_posix()!r}"
+                )
             slot, tool_info = _classify_overlay_entry(rel, entry)
             if slot is not None and allowed_slots is not None and slot not in allowed_slots:
                 raise CartridgeSerializationError(
@@ -706,7 +718,7 @@ def _apply_overlays(
 
         for entry in sorted(overlay_path.rglob("*")):
             rel = entry.relative_to(overlay_path)
-            if "__pycache__" in rel.parts or entry.suffix == ".pyc":
+            if "__pycache__" in rel.parts or entry.suffix in {".pyc", ".pyo"}:
                 continue
             if rel.as_posix() in {
                 CartridgeLayout.CARTRIDGE_JSON,
@@ -1491,6 +1503,14 @@ def _workspace_to_preset_inner(
                 )
                 or {}
             )
+            declared_tool_name = str(yaml_payload.get("name", tool_dir.name))
+            is_overlay_multi = (
+                tool_dir.name in overlay_tool_entries or declared_tool_name in overlay_tool_entries
+            )
+            if is_overlay_multi and declared_tool_name in protected_tools:
+                raise CartridgeSerializationError(
+                    f"overlay tool {tool_dir.name!r} cannot override protected tool {declared_tool_name!r}"
+                )
             argument_schema = None
             if "argument_validation" in yaml_payload:
                 from looplet.validation import _schema_from_payload
@@ -1682,7 +1702,7 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s; skipping", msg)
                 continue
-            registry.register(_dc_replace(spec, origin="builtin"))
+            registry.register(spec)
 
     # MCP servers - opt-in via ``mcp_servers:`` in config.yaml. Each
     # entry spawns an :class:`MCPToolAdapter` that discovers the
@@ -2140,19 +2160,21 @@ def _workspace_to_preset_inner(
             # handler via ``runtime={"ask_handler": <callable>}``; the
             # callable receives ``(ToolCall, PermissionRule)`` and must
             # return ``PermissionDecision.ALLOW`` or ``DENY``.
-            asking_tools = sorted(
+            asking_rules = sorted(
                 {
-                    rule.tool
+                    f"origin:{rule.origin}"
+                    if rule.origin is not None and rule.tool == "*"
+                    else rule.tool
                     for rule in permission_hook.engine.rules
                     if rule.decision == PermissionDecision.ASK
                 }
             )
-            if asking_tools:
+            if asking_rules:
                 ask_handler = (runtime_dict or {}).get("ask_handler")
                 if ask_handler is None:
                     msg = (
                         f"cartridge {cfg_path} declares permissions.ask rules for "
-                        f"{asking_tools!r} but no ``ask_handler`` was supplied. "
+                        f"{asking_rules!r} but no ``ask_handler`` was supplied. "
                         f"Pass one via ``cartridge_to_preset(path, runtime="
                         f"{{'ask_handler': callable}})``. The handler receives "
                         f"``(ToolCall, PermissionRule)`` and must return "
@@ -2166,6 +2188,7 @@ def _workspace_to_preset_inner(
                         f"runtime['ask_handler'] must be callable, got {type(ask_handler).__name__}"
                     )
                 permission_hook.engine.ask_handler = ask_handler  # type: ignore[assignment]
+            permission_hook._tools = registry  # noqa: SLF001
             preset.hooks.append(permission_hook)
 
     # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;

@@ -464,6 +464,33 @@ def _invoke_hook(
     return method(*args, **kwargs)
 
 
+async def _invoke_hook_async(
+    hook: Any,
+    slot: str,
+    *args: Any,
+    _optional_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Awaitable hook invocation that offloads blocking transport hooks off the event loop."""
+    method = getattr(hook, slot)
+    if _optional_kwargs:
+        kwargs.update(
+            {
+                name: value
+                for name, value in _optional_kwargs.items()
+                if _hook_accepts_keyword(method, name)
+            }
+        )
+    invoke_async = getattr(hook, "_invoke_hook_return_async", None)
+    if callable(invoke_async):
+        raw: Any = await invoke_async(slot, *args, **kwargs)  # type: ignore[misc]
+    else:
+        raw = _invoke_hook(hook, slot, *args, **kwargs)
+    if inspect.isawaitable(raw):
+        return await raw
+    return raw
+
+
 def normalize_hook_return(
     value: Any,
     *,

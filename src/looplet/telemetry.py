@@ -61,6 +61,34 @@ class Span:
             return None
         return (self.end_time - self.start_time) * 1000.0
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this span and its nested child tree to a JSON-safe dict."""
+        return {
+            "name": self.name,
+            "span_id": self.span_id,
+            "parent_id": self.parent_id,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration_ms": round(self.duration_ms, 2) if self.duration_ms is not None else None,
+            "status": self.status,
+            "attributes": dict(self.attributes),
+            "children": [child.to_dict() for child in self.children],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Span":
+        """Reconstruct a Span tree from :meth:`to_dict` output."""
+        return cls(
+            name=str(data["name"]),
+            span_id=str(data.get("span_id") or uuid4().hex[:12]),
+            parent_id=data.get("parent_id"),
+            start_time=float(data.get("start_time", 0.0)),
+            end_time=float(data["end_time"]) if data.get("end_time") is not None else None,
+            attributes=dict(data.get("attributes") or {}),
+            children=[cls.from_dict(child) for child in (data.get("children") or ())],
+            status=str(data.get("status", "ok")),
+        )
+
 
 # ── Tracer ──────────────────────────────────────────────────────────
 

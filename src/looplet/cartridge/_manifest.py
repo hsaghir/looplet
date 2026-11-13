@@ -51,9 +51,21 @@ class CartridgeCompatibility:
             return cls()
         if not isinstance(value, dict):
             raise CartridgeSerializationError("cartridge compatibility must be an object")
+        unknown = sorted(set(value) - {"looplet", "languages", "requires", "rpc"})
+        if unknown:
+            raise CartridgeSerializationError(
+                f"cartridge compatibility has unsupported field(s): {unknown}"
+            )
         looplet = value.get("looplet")
-        if looplet is not None and not isinstance(looplet, str):
-            raise CartridgeSerializationError("cartridge compatibility.looplet must be a string")
+        if looplet is not None:
+            if not isinstance(looplet, str):
+                raise CartridgeSerializationError(
+                    "cartridge compatibility.looplet must be a string"
+                )
+            if not looplet.strip():
+                raise CartridgeSerializationError(
+                    f"invalid Looplet version constraint: {looplet!r}"
+                )
 
         def _strings(name: str) -> tuple[str, ...]:
             raw = value.get(name, [])
@@ -147,6 +159,8 @@ def _read_manifest_data(root: Path) -> dict[str, Any]:
         raise CartridgeSerializationError(
             f"invalid cartridge manifest at {meta_path}: 'metadata' must be an object"
         )
+    if "compatibility" in meta:
+        CartridgeCompatibility.from_dict(meta["compatibility"])
     return meta
 
 

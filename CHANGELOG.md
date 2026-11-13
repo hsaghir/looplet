@@ -35,6 +35,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Temporary record spools share one process-local SQLite connection with atomic savepoint locks, incremental checkpoints encode `Conversation` and `SessionLog` deltas via revision-tracked lists over WAL storage, and `MemoryRunStore` appends events in linear time.
+- Sync and async loops share Sans-I/O turn-engine setup, router-safe scoped helper proxies, checkpoint restoration, non-blocking async LEP hook dispatch, and `ContextVar`-isolated conversation inputs on stateless backends.
+- Cartridge loading caches `extends` overlays by content digest under a thread-safe import lock, rejects duplicate YAML mapping keys and unknown compatibility manifest fields fail-closed, and supports bounded `max_concurrency` in `run_cartridge_evals()`.
+- Provenance redacts each recorded field in a single pass without nested re-scrubbing and exports recorded tracer spans in `trajectory.json`.
 - Replay keeps captured responses authoritative when a loop configuration or CLI factory supplies a model router.
 - Multi-tool trajectory steps link only the turn's root model calls and each step's own scoped helper calls.
 - SDK-issued request and attempt identifiers survive content redaction across manifests, trajectories, replay lineage, and retained model attempts.

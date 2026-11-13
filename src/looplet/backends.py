@@ -54,6 +54,7 @@ import copy
 import json
 import logging
 import os
+from contextvars import ContextVar
 from typing import Any, AsyncGenerator, Callable, Generator
 
 from looplet.backend_contract import (
@@ -437,6 +438,9 @@ def _conversation_messages(
     snapshot = getattr(backend, "_conversation_input", None)
     if snapshot is None:
         return [{"role": "user", "content": prompt}]
+    cached = getattr(backend, "_translated_conversation_messages", None)
+    if cached is not None and getattr(backend, "_translated_native_blocks", None) is native_blocks:
+        return copy.deepcopy(cached)
     messages: list[dict[str, Any]] = [{"role": "user", "content": snapshot["prompt"]}]
     pending: set[str] = set()
     for message in snapshot["conversation"].get("messages", []):
@@ -673,17 +677,53 @@ class _ConversationBackend:
             else self._client
         )
 
+    def _conv_state_var(
+        self,
+    ) -> ContextVar[tuple[dict[str, Any] | None, list[dict[str, Any]] | None, bool | None]]:
+        var: (
+            ContextVar[tuple[dict[str, Any] | None, list[dict[str, Any]] | None, bool | None]]
+            | None
+        ) = self.__dict__.get("_conversation_state_var")
+        if var is None:
+            default_state: tuple[
+                dict[str, Any] | None, list[dict[str, Any]] | None, bool | None
+            ] = (
+                None,
+                None,
+                None,
+            )
+            var = ContextVar(f"looplet_backend_conv_{id(self)}", default=default_state)
+            self.__dict__["_conversation_state_var"] = var
+        return var
+
+    @property
+    def _conversation_input(self) -> dict[str, Any] | None:
+        return self._conv_state_var().get()[0]
+
+    @_conversation_input.setter
+    def _conversation_input(self, value: dict[str, Any] | None) -> None:
+        self._conv_state_var().set((value, None, None))
+
+    @property
+    def _translated_conversation_messages(self) -> list[dict[str, Any]] | None:
+        return self._conv_state_var().get()[1]
+
+    @property
+    def _translated_native_blocks(self) -> bool | None:
+        return self._conv_state_var().get()[2]
+
     def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
         detached = json_snapshot(snapshot)
+        translated = None
         if detached is not None:
             from types import SimpleNamespace
 
-            _conversation_messages(
+            translated = _conversation_messages(
                 SimpleNamespace(_conversation_input=detached),
                 detached["prompt"],
                 native_blocks=self._native_blocks,
             )
-        self._conversation_input = detached
+        self._conv_state_var().set((detached, translated, self._native_blocks))
 
 
 class OpenAIBackend(_ConversationBackend):

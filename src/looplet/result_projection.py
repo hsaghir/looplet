@@ -220,21 +220,63 @@ def bound_result_batch(results: list[ToolResult], *, max_chars: int) -> list[Too
 
 def project_result_batches(conversation: Any) -> None:
     """Freeze bounded model views before the next request, leaving raw steps alone."""
-    batch = []
+    from looplet._storage import TrackedList
 
-    def finish() -> None:
+    messages = getattr(conversation, "messages", None)
+    if not messages:
+        return
+    max_chars = get_context_window_total_chars()
+    tracked = messages if isinstance(messages, TrackedList) else None
+    cursor = getattr(conversation, "_projected_batch_cursor", None)
+    start_idx = 0
+    if (
+        tracked is not None
+        and isinstance(cursor, tuple)
+        and len(cursor) == 4
+        and cursor[0] == tracked._record_identity
+        and cursor[1] == tracked._generation
+        and cursor[3] == max_chars
+        and 0 <= cursor[2] <= len(messages)
+    ):
+        start_idx = cursor[2]
+
+    batch: list[tuple[int, Any]] = []
+    next_batch_start = start_idx
+
+    def finish(closed: bool, boundary_idx: int) -> None:
+        nonlocal next_batch_start
         results = bound_result_batch(
-            [message.tool_result for message in batch],
-            max_chars=get_context_window_total_chars(),
+            [msg.tool_result for _, msg in batch],
+            max_chars=max_chars,
         )
-        for message, result in zip(batch, results):
-            message.tool_result = result
+        for (idx, msg), result in zip(batch, results):
+            if result is not msg.tool_result and result != msg.tool_result:
+                msg.tool_result = result
+                if tracked is not None:
+                    tracked.mark_modified(idx)
         batch.clear()
+        if closed:
+            next_batch_start = boundary_idx
 
-    for message in getattr(conversation, "messages", []):
-        if getattr(message.role, "value", message.role) == "assistant" and batch:
-            finish()
+    for idx in range(start_idx, len(messages)):
+        message = messages[idx]
+        if getattr(message.role, "value", message.role) == "assistant":
+            if batch:
+                finish(True, idx)
+            else:
+                next_batch_start = idx
         if message.tool_result is not None:
-            batch.append(message)
+            batch.append((idx, message))
     if batch:
-        finish()
+        finish(False, next_batch_start)
+
+    if tracked is not None:
+        try:
+            conversation._projected_batch_cursor = (
+                tracked._record_identity,
+                tracked._generation,
+                next_batch_start,
+                max_chars,
+            )
+        except AttributeError:
+            pass

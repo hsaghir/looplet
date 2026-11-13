@@ -104,6 +104,7 @@ class MemoryRunStore:
 
     def __init__(self) -> None:
         self._records: dict[str, RunRecord] = {}
+        self._events: dict[str, list[RunEvent]] = {}
         self._checkpoints: dict[tuple[str, str], Checkpoint] = {}
         self._lock = threading.RLock()
 
@@ -115,6 +116,7 @@ class MemoryRunStore:
                 raise FileExistsError(f"run already exists: {envelope.run_id}")
             record = RunRecord.create(envelope, metadata=metadata)
             self._records[envelope.run_id] = copy.deepcopy(record)
+            self._events[envelope.run_id] = []
             return record
 
     def append_event(self, event: RunEvent) -> None:
@@ -124,9 +126,8 @@ class MemoryRunStore:
                 status="running" if record.status == "created" else record.status,
                 updated_at=event.timestamp,
             )
-            self._records[record.run_id] = replace(
-                updated, events=(*record.events, copy.deepcopy(event))
-            )
+            self._records[record.run_id] = updated
+            self._events.setdefault(record.run_id, []).append(copy.deepcopy(event))
 
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._lock:
@@ -169,19 +170,28 @@ class MemoryRunStore:
                 result=result.to_dict(full=True),
                 checkpoint_keys=record.checkpoint_keys,
                 artifact_refs=tuple(artifacts),
-                events=record.events,
+                events=(),
             )
             self._records[run_id] = copy.deepcopy(updated)
-            return updated
+            return replace(
+                copy.deepcopy(updated),
+                events=tuple(copy.deepcopy(self._events.get(run_id, ()))),
+            )
 
     def load(self, run_id: str) -> RunRecord | None:
         with self._lock:
-            return copy.deepcopy(self._records.get(run_id))
+            record = self._records.get(run_id)
+            if record is None:
+                return None
+            return replace(
+                copy.deepcopy(record),
+                events=tuple(copy.deepcopy(self._events.get(run_id, ()))),
+            )
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
         with self._lock:
-            record = self._require(run_id)
-            return copy.deepcopy(record.events)
+            self._require(run_id)
+            return tuple(copy.deepcopy(self._events.get(run_id, ())))
 
     def _require(self, run_id: str) -> RunRecord:
         record = self._records.get(run_id)

@@ -436,3 +436,28 @@ class TestMetricsHook:
         step = _make_step(1, "done")
         hook.post_dispatch(MagicMock(), MagicMock(), step.tool_call, step.tool_result, 1)
         assert "done" in collector.tool_call_histogram
+
+    def test_trajectory_persists_and_serializes_spans(self, tmp_path) -> None:
+        import json
+
+        from looplet import LoopConfig, TrajectoryRecorder, run_result, tools_from
+        from looplet.testing import MockLLMBackend
+
+        tracer = Tracer()
+        recorder = TrajectoryRecorder(tracer=tracer, output_dir=tmp_path / "trace")
+        res = run_result(
+            MockLLMBackend([json.dumps({"tool": "done", "args": {"summary": "ok"}})]),
+            task="Verify spans",
+            tools=tools_from([], include_done=True),
+            hooks=[TracingHook(tracer), recorder],
+            config=LoopConfig(max_steps=2, use_native_tools=False, harness_profile="minimal"),
+        )
+        assert res.completed
+        assert len(recorder.trajectory.spans) >= 1
+        as_dict = recorder.trajectory.to_dict()
+        assert "spans" in as_dict and len(as_dict["spans"]) == len(recorder.trajectory.spans)
+        saved = json.loads((tmp_path / "trace" / "trajectory.json").read_text())
+        assert saved["spans"] == as_dict["spans"]
+        reconstructed = Span.from_dict(saved["spans"][0])
+        assert reconstructed.name == recorder.trajectory.spans[0].name
+        assert reconstructed.span_id == recorder.trajectory.spans[0].span_id

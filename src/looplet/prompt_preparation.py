@@ -103,9 +103,13 @@ def _gather(
         else ("", None)
     )
     snapshot = state.snapshot() if hasattr(state, "snapshot") else {}
-    if context_history is None:
-        context_history = state.context_summary() if hasattr(state, "context_summary") else ""
     typed_turns = config.uses_typed_history and config.render_messages_override is None
+    if context_history is None:
+        context_history = (
+            ""
+            if typed_turns
+            else (state.context_summary() if hasattr(state, "context_summary") else "")
+        )
     return _PromptInputs(
         kwargs={
             "task": task,

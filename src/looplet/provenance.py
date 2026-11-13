@@ -47,6 +47,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import MutableSequence, Sequence
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar, copy_context
@@ -64,7 +65,7 @@ from looplet._backend_contract import (
     invoke_backend,
     json_snapshot,
 )
-from looplet._storage import DiskBackedDict, DiskBackedList
+from looplet._storage import DiskBackedList
 from looplet.artifact_compat import (
     _artifact_path,
     _atomic_write,
@@ -268,18 +269,24 @@ def _redact_model_record(
     value: dict[str, Any], redact: Callable[[str], str] | None
 ) -> dict[str, Any]:
     """Redact model evidence without changing SDK-issued linkage identifiers."""
+    if redact is None:
+        return value
     redacted = _redact_value(value, redact)
     for source, target in (
         (value, redacted),
         (value.get("capture", {}), redacted.get("capture", {})),
     ):
+        if not isinstance(source, dict) or not isinstance(target, dict):
+            continue
         for field_name in ("request_id", "attempt_id"):
             if field_name in source:
                 target[field_name] = source[field_name]
         replay_source = source.get("replay_source")
-        if replay_source is not None:
+        target_replay = target.get("replay_source")
+        if isinstance(replay_source, dict) and isinstance(target_replay, dict):
             for field_name in ("request_id", "attempt_id"):
-                target["replay_source"][field_name] = replay_source[field_name]
+                if field_name in replay_source:
+                    target_replay[field_name] = replay_source[field_name]
     return redacted
 
 
@@ -496,8 +503,8 @@ class _RecordingBase:
             detached = _redact_value(detached, self._redact, preserve_opaque=True)
         return method(detached)
 
-    def _scrub(self, s: str) -> str:
-        out = self._redact(s) if self._redact is not None else s
+    def _scrub(self, s: str, *, already_redacted: bool = False) -> str:
+        out = self._redact(s) if (self._redact is not None and not already_redacted) else s
         return _truncate(out, self._max_chars)
 
     def _redact_native_response(self, value: Any) -> Any:
@@ -511,17 +518,15 @@ class _RecordingBase:
         record = _artifact_path(root, f"{attempt_id}.{kind}.json")
         if not policy.exists():
             _atomic_write(policy, "*\n")
-        payload = _redact_model_record(
-            json_snapshot(
-                {
-                    "schema": "looplet.model-attempt.v1",
-                    "kind": kind,
-                    "attempt_id": attempt_id,
-                    **value,
-                }
-            ),
-            self._redact,
+        raw = json_snapshot(
+            {
+                "schema": "looplet.model-attempt.v1",
+                "kind": kind,
+                "attempt_id": attempt_id,
+                **value,
+            }
         )
+        payload = raw if kind in {"intent", "outcome"} else _redact_model_record(raw, self._redact)
         _atomic_write(
             record,
             json.dumps(payload, ensure_ascii=True, allow_nan=False),
@@ -552,23 +557,37 @@ class _RecordingBase:
         if self._attempt_directory is None:
             return None
         attempt_id = uuid4().hex
+        recorded_prompt = (
+            prompt if self._redact_upstream or self._redact is None else self._redact(prompt)
+        )
+        recorded_system = (
+            system_prompt
+            if self._redact_upstream or self._redact is None
+            else self._redact(system_prompt)
+        )
+        conv_snapshot = self._conversation_input.get(None)
+        recorded_conv = (
+            conv_snapshot
+            if self._redact_upstream or self._redact is None
+            else _redact_value(conv_snapshot, self._redact)
+        )
         self._write_attempt(
             attempt_id,
             "intent",
             {
                 "started_at": time.time(),
                 "request_id": request_id,
-                "execution": self._model_call_context.get(),
+                "execution": _redact_value(self._model_call_context.get(), self._redact),
                 "scope": "logical_request_intent_not_provider_delivery_attestation",
                 "request": {
                     "method": method,
-                    "prompt": prompt,
-                    "system_prompt": system_prompt,
+                    "prompt": recorded_prompt,
+                    "system_prompt": recorded_system,
                     "max_tokens": max_tokens,
                     "temperature": temperature,
-                    "tools": tools,
-                    "options": options,
-                    "conversation_input": self._conversation_input.get(None),
+                    "tools": _redact_value(tools, self._redact),
+                    "options": _redact_value(options, self._redact),
+                    "conversation_input": recorded_conv,
                 },
             },
         )
@@ -696,61 +715,110 @@ class _RecordingBase:
             )
             usage = getattr(self._backend, "last_usage", {}) if error is None else {}
         scoped_step = self._scoped_step_num.get()
+        effective_step_num = scoped_step if scoped_step is not None else self.current_step_num
+        redacted_prompt = (
+            prompt if self._redact_upstream or self._redact is None else self._redact(prompt)
+        )
+        redacted_system = (
+            system_prompt
+            if self._redact_upstream or self._redact is None
+            else self._redact(system_prompt)
+        )
+        conv_snapshot = self._conversation_input.get(None)
+        redacted_conv = (
+            conv_snapshot
+            if self._redact_upstream or self._redact is None
+            else _redact_value(conv_snapshot, self._redact)
+        )
+        redacted_tools = _redact_value(tools, self._redact)
+        redacted_options = _redact_value(options or {}, self._redact)
+        redacted_response = (
+            self._redact(response)
+            if isinstance(response, str) and self._redact is not None
+            else stored_response
+            if isinstance(response, list)
+            else _redact_value(response, self._redact)
+        )
+        redacted_error = (
+            self._redact(error) if error is not None and self._redact is not None else error
+        )
+        redacted_replay_source = None
+        if native_capture is not None and native_capture.replay_source is not None:
+            raw_rs = json_snapshot(native_capture.replay_source)
+            redacted_replay_source = _redact_value(raw_rs, self._redact)
+            if isinstance(raw_rs, dict) and isinstance(redacted_replay_source, dict):
+                for id_field in ("request_id", "attempt_id"):
+                    if id_field in raw_rs:
+                        redacted_replay_source[id_field] = raw_rs[id_field]
         call = LLMCall(
             index=len(self.calls),
             timestamp=started_at,
             duration_ms=duration_ms,
             method=method,
-            prompt=self._scrub(prompt),
-            system_prompt=self._scrub(system_prompt),
-            response=stored_response,
+            prompt=_truncate(redacted_prompt, self._max_chars),
+            system_prompt=_truncate(redacted_system, self._max_chars),
+            response=(
+                _truncate(redacted_response, self._max_chars)
+                if isinstance(response, str)
+                else stored_response
+            ),
             temperature=temperature,
             max_tokens=max_tokens,
-            tools=_redact_value(tools, self._redact),
-            step_num=scoped_step if scoped_step is not None else self.current_step_num,
-            error=self._scrub(error) if error is not None else None,
+            tools=redacted_tools,
+            step_num=effective_step_num,
+            error=_truncate(redacted_error, self._max_chars)
+            if redacted_error is not None
+            else None,
             scope=self._call_scope.get(),
-            capture=_redact_model_record(
-                json_snapshot(
-                    {
-                        "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
-                        **({"request_id": request_id} if request_id is not None else {}),
-                        **(
-                            {"replay_source": native_capture.replay_source}
-                            if native_capture is not None
-                            and native_capture.replay_source is not None
-                            else {}
-                        ),
-                        **({"execution": execution} if execution else {}),
-                        "request": {
-                            "method": method,
-                            "prompt": prompt,
-                            "system_prompt": system_prompt,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                            "tools": tools,
-                            "options": options or {},
-                            "conversation_input": self._conversation_input.get(None),
-                        },
-                        "response": response,
-                        "provider_request": provider_request,
-                        "provider_response": provider_response if error is None else None,
-                        "stop_reason": stop_reason if error is None else None,
-                        "usage": usage if error is None else {},
-                        "error": error,
-                        **(
-                            {
-                                "terminal_error": {
-                                    "schema": "looplet.terminal-error.v1",
-                                    "termination_reason": termination_reason,
-                                }
+            capture=json_snapshot(
+                {
+                    "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
+                    **({"request_id": request_id} if request_id is not None else {}),
+                    **(
+                        {"replay_source": redacted_replay_source}
+                        if redacted_replay_source is not None
+                        else {}
+                    ),
+                    **({"execution": _redact_value(execution, self._redact)} if execution else {}),
+                    "request": {
+                        "method": method,
+                        "prompt": redacted_prompt,
+                        "system_prompt": redacted_system,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "tools": redacted_tools,
+                        "options": redacted_options,
+                        "conversation_input": redacted_conv,
+                    },
+                    "response": redacted_response,
+                    "provider_request": _redact_value(
+                        json_snapshot(provider_request), self._redact
+                    ),
+                    "provider_response": (
+                        _redact_value(json_snapshot(provider_response), self._redact)
+                        if error is None
+                        else None
+                    ),
+                    "stop_reason": (
+                        _redact_value(stop_reason, self._redact) if error is None else None
+                    ),
+                    "usage": (
+                        _redact_value(json_snapshot(usage), self._redact) if error is None else {}
+                    ),
+                    "error": redacted_error,
+                    **(
+                        {
+                            "terminal_error": {
+                                "schema": "looplet.terminal-error.v1",
+                                "termination_reason": _redact_value(
+                                    termination_reason, self._redact
+                                ),
                             }
-                            if termination_reason is not None
-                            else {}
-                        ),
-                    }
-                ),
-                self._redact,
+                        }
+                        if termination_reason is not None
+                        else {}
+                    ),
+                }
             ),
         )
         if attempt_id is not None:
@@ -814,7 +882,10 @@ class _RecordingBase:
                 (root / f"call_{idx}_response.txt").write_text(
                     _format_response_block(c), encoding="utf-8"
                 )
-                mf.write(json.dumps(_redact_model_record(c.to_dict(), self._redact)) + "\n")
+                entry = c.to_dict()
+                if self._redact is not None and entry["metadata"]:
+                    entry["metadata"] = _redact_value(entry["metadata"], self._redact)
+                mf.write(json.dumps(entry, default=str) + "\n")
         if publish_descriptor:
             write_artifact_descriptor(root, kind="provenance", components=("model_calls",))
         return root
@@ -1481,6 +1552,7 @@ class Trajectory:
             "metadata": self.metadata,
             "step_count": len(self.steps),
             "llm_call_count": len(self.llm_calls),
+            "spans": [s.to_dict() for s in self.spans],
             "steps": [s.to_dict() for s in self.steps],
             "llm_calls": [c.to_dict() for c in self.llm_calls],
         }
@@ -1654,9 +1726,12 @@ class TrajectoryRecorder:
         if self._harness_snapshot is not None:
             self.trajectory.metadata["harness_snapshot"] = dict(self._harness_snapshot)
         if self._recording_llm is not None:
-            self.trajectory.llm_calls = DiskBackedList(
-                vars, lambda value: LLMCall(**value), self._recording_llm.calls
-            )
+            if isinstance(self._recording_llm.calls, DiskBackedList):
+                self.trajectory.llm_calls = self._recording_llm.calls.clone()
+            else:
+                self.trajectory.llm_calls = DiskBackedList(
+                    vars, lambda value: LLMCall(**value), self._recording_llm.calls
+                )
         if self._tracer is not None and self._loop_span is not None:
             self._tracer.end_span(self._loop_span)
             self.trajectory.spans = list(self._tracer.root_spans)
@@ -1690,14 +1765,11 @@ class TrajectoryRecorder:
         # Sweep ``state.steps`` for any Step that was yielded but not
         # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
-        captured_nums = DiskBackedDict(lambda value: value, lambda value: value)
-        with captured_nums.transaction():
-            for record in self.trajectory.steps:
-                captured_nums[str(record.step_num)] = True
+        captured_nums = {record.step_num for record in self.trajectory.steps}
         if state is not None and hasattr(state, "steps"):
             for st in state.steps:
                 num = getattr(st, "number", None)
-                if num is None or str(num) in captured_nums:
+                if num is None or num in captured_nums:
                     continue
                 tc = getattr(st, "tool_call", None)
                 tr = getattr(st, "tool_result", None)
@@ -1858,7 +1930,11 @@ class TrajectoryRecorder:
             "metadata": trajectory.metadata,
             "step_count": len(trajectory.steps),
             "llm_call_count": len(trajectory.llm_calls),
+            "spans": [s.to_dict() for s in trajectory.spans],
         }
+        shared_redactor = (
+            self._recording_llm is not None and self._recording_llm._redact is self._redact
+        )
         with (root / "trajectory.json").open("w", encoding="utf-8") as stream:
             stream.write("{")
             for name, value in fields.items():
@@ -1868,11 +1944,16 @@ class TrajectoryRecorder:
                 for index, record in enumerate(records):
                     if index:
                         stream.write(",\n")
-                    stream.write(
-                        _recorded_model_json(record.to_dict(), self._redact)
-                        if name == "llm_calls"
-                        else _recorded_json(record.to_dict(), self._redact)
-                    )
+                    if name == "llm_calls":
+                        entry = record.to_dict()
+                        if shared_redactor:
+                            if self._redact is not None and entry["metadata"]:
+                                entry["metadata"] = _redact_value(entry["metadata"], self._redact)
+                            stream.write(json.dumps(entry, indent=2, default=str))
+                        else:
+                            stream.write(_recorded_model_json(entry, self._redact))
+                    else:
+                        stream.write(_recorded_json(record.to_dict(), self._redact))
                 stream.write("],\n" if name == "steps" else "]\n")
             stream.write("}\n")
         steps_dir = root / "steps"
@@ -2376,13 +2457,19 @@ class _RecordedToolReplayHook:
 
     def __init__(self, recorded_steps: list[dict[str, Any]], stub_tools: set[str] | bool) -> None:
         self._stub_tools = stub_tools
-        self._by_tool_queue: dict[str, list[dict[str, Any]]] = {}
-        for step in recorded_steps:
+        self._by_tool_queue: dict[str, deque[tuple[int, dict[str, Any]]]] = {}
+        self._by_tool_call_id: dict[tuple[str, str], deque[tuple[int, dict[str, Any]]]] = {}
+        self._consumed_ordinals: set[int] = set()
+        for ordinal, step in enumerate(recorded_steps):
             tc = step.get("tool_call") or {}
             tr = step.get("tool_result") or {}
             tname = tc.get("tool") or tr.get("tool")
             if isinstance(tname, str) and tname:
-                self._by_tool_queue.setdefault(tname, []).append(step)
+                pair = (ordinal, step)
+                self._by_tool_queue.setdefault(tname, deque()).append(pair)
+                cid = tc.get("call_id") or tr.get("call_id")
+                if isinstance(cid, str) and cid:
+                    self._by_tool_call_id.setdefault((tname, cid), deque()).append(pair)
 
     def _should_stub(self, tool_name: str) -> bool:
         if self._stub_tools is True:
@@ -2403,19 +2490,24 @@ class _RecordedToolReplayHook:
         if not self._should_stub(tool_call.tool):
             return None
         tr_dict = None
-        queue = self._by_tool_queue.get(tool_call.tool)
-        if queue:
-            selected_index = 0
-            if tool_call.call_id:
-                for index, recorded_step in enumerate(queue):
-                    recorded_call = recorded_step.get("tool_call") or {}
-                    recorded_result = recorded_step.get("tool_result") or {}
-                    if tool_call.call_id == (
-                        recorded_call.get("call_id") or recorded_result.get("call_id")
-                    ):
-                        selected_index = index
-                        break
-            tr_dict = queue.pop(selected_index).get("tool_result")
+        selected: tuple[int, dict[str, Any]] | None = None
+        if tool_call.call_id:
+            id_queue = self._by_tool_call_id.get((tool_call.tool, tool_call.call_id))
+            while id_queue:
+                candidate = id_queue.popleft()
+                if candidate[0] not in self._consumed_ordinals:
+                    selected = candidate
+                    break
+        if selected is None:
+            queue = self._by_tool_queue.get(tool_call.tool)
+            while queue:
+                candidate = queue.popleft()
+                if candidate[0] not in self._consumed_ordinals:
+                    selected = candidate
+                    break
+        if selected is not None:
+            self._consumed_ordinals.add(selected[0])
+            tr_dict = selected[1].get("tool_result")
         if tr_dict is None:
             raise ValueError(f"No recorded result for stubbed tool {tool_call.tool!r}")
         return ToolResult(

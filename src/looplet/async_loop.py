@@ -38,7 +38,6 @@ import inspect
 import logging
 import time
 from contextlib import aclosing
-from dataclasses import replace as _dc_replace
 from functools import wraps
 from threading import RLock
 from typing import Any, AsyncGenerator, Callable, Sequence
@@ -51,20 +50,19 @@ from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextSourceSelector
 from looplet.context_projection import ContextProjection as ContextProjection
-from looplet.hook_decision import _invoke_hook
+from looplet.hook_decision import _invoke_hook_async
 from looplet.loop import (
     ContextBudgetSnapshot as ContextBudgetSnapshot,
 )
 from looplet.loop import (
     LoopConfig,
     LoopContext,
-    RunEnvelope,
     RunPhase,
     RunStatus,
     _accumulate_step_usage,
     _bind_loop_context_async,
     _build_tool_ctx,
-    _call_check_done,
+    _call_check_done_async,
     _completion_gate_warning,
     _count_usage_calls,
     _deadline_expired,
@@ -1036,69 +1034,34 @@ async def _async_composable_loop_impl(
 
     _conv = conversation if conversation is not None else Conversation()
 
-    from looplet.loop import _ScopedLLMProxy
-    from looplet.provenance import _has_replay_backend, _recording_backend
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.loop import _get_persist_threshold
+    from looplet.provenance import _has_replay_backend
+    from looplet.turn_engine import (
+        bind_state_attributes,
+        build_pending_dispatch_kwargs,
+        finalize_checkpoint_restore,
+        resolve_domain_callables,
+        resolve_turn_llm,
+        restore_checkpoint_into_loop,
+    )
 
     _replaying = _has_replay_backend(llm)
     _ckpt_store = _checkpoint_store
     saved_checkpoint = _initial_checkpoint
-    _step_offset = 0
-    if saved_checkpoint is not None:
-        _validate_checkpoint_identity(
-            saved_checkpoint,
-            config.run_envelope.run_id if config.run_envelope is not None else None,
-        )
-        resumed = _resume_loop_state(saved_checkpoint, max_steps=config.max_steps)
-        restore_backend = (
-            config.router.select(purpose="reasoning")
-            if config.router is not None and not _replaying
-            else llm
-        )
-        restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
-        if callable(restore_backend_state):
-            from copy import deepcopy
-
-            restore_backend_state(deepcopy((resumed.get("domain_state") or {}).get("llm", {})))
-        if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
-            config = _dc_replace(
-                config,
-                run_envelope=RunEnvelope.from_dict(resumed["run_envelope"]),
-            )
-        _step_offset = resumed.get("step_offset", 0)
-        restored_log = resumed.get("session_log")
-        if restored_log is not None:
-            session_log.entries = restored_log.entries[:]
-            session_log.current_theory = restored_log.current_theory
-        restored_conv = resumed.get("conversation")
-        if restored_conv is not None and conversation is None:
-            _conv = restored_conv
-        for key, value in (resumed.get("state_counters") or {}).items():
-            try:
-                setattr(state, key, value)
-            except AttributeError:
-                pass
-
-        from looplet.assistant_turns import TURN_STATE_KEY, restore_assistant_checkpoint
-
-        config = restore_assistant_checkpoint(state, config, saved_checkpoint)
-        if TURN_STATE_KEY in saved_checkpoint.metadata:
-            _step_offset = saved_checkpoint.step_number - state.step_count
-
-    # Stash task + conversation on state (same as sync loop)
-    try:
-        setattr(state, "task", task)  # noqa: B010
-    except AttributeError:
-        pass
-    try:
-        setattr(state, "conversation", _conv)  # noqa: B010
-    except AttributeError:
-        pass
-    try:
-        setattr(state, "run_envelope", config.run_envelope)  # noqa: B010
-    except AttributeError:
-        pass
-
-    from looplet.loop import _get_persist_threshold
+    config, _step_offset, _conv, resumed = restore_checkpoint_into_loop(
+        saved_checkpoint,
+        config=config,
+        llm=llm,
+        state=state,
+        session_log=session_log,
+        active_conv=_conv,
+        explicit_conversation=conversation,
+        validate_checkpoint_identity=_validate_checkpoint_identity,
+        resume_loop_state=_resume_loop_state,
+        replaying=_replaying,
+    )
+    bind_state_attributes(state, task=task, conversation=_conv, run_envelope=config.run_envelope)
 
     _history = HistoryRecorder(
         state=state,
@@ -1128,52 +1091,33 @@ async def _async_composable_loop_impl(
     loop_ctx.native_tool_stats = NativeToolStats()
     loop_ctx.step_num = _step_offset
 
-    # Domain callables
-    _raw_extract_entities = config.resolve_callable("extract_entities", _default_extract_entities)
-    try:
-        _ee_params = inspect.signature(_raw_extract_entities).parameters
-        _ee_takes_state = "state" in _ee_params or any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in _ee_params.values()
-        )
-    except (TypeError, ValueError):
-        _ee_takes_state = False
-    if _ee_takes_state:
-
-        def extract_entities(data: Any) -> list[str]:
-            return _raw_extract_entities(data, state=state)
-
-    else:
-        extract_entities = _raw_extract_entities
-    extract_step_metadata = config.resolve_callable(
-        "extract_step_metadata", lambda state, step_num: ([], [])
+    _domain = resolve_domain_callables(
+        config,
+        state,
+        default_extract_entities=_default_extract_entities,
+        default_build_briefing=_default_build_briefing,
+        default_extract_step_metadata=lambda state, step_num: ([], []),
     )
-    build_prompt_fn = config.resolve_callable("build_prompt")
-    build_briefing_fn = config.resolve_callable("build_briefing", _default_build_briefing)
-    checkpoint_state = config.resolve_callable("checkpoint_state")
-    restore_checkpoint_state = config.resolve_callable("restore_checkpoint_state")
-    if saved_checkpoint is not None and restore_checkpoint_state is not None:
-        restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
-    if saved_checkpoint is not None:
-        tools.restore_results(resumed.get("tool_results_store") or {})
-
-    from looplet.assistant_turns import _AssistantTurns
-
-    if saved_checkpoint is not None and saved_checkpoint.is_terminal:
-        from looplet.assistant_turns import TURN_STATE_KEY
-
-        if TURN_STATE_KEY in saved_checkpoint.metadata:
-            saved = saved_checkpoint
-            if saved.run_status != "completed":
-                raise ValueError("stopped assistant runs require an explicit new run identity")
-            _set_run_lifecycle(
-                loop_ctx,
-                status=RunStatus.COMPLETED,
-                phase=RunPhase.TERMINAL,
-                termination_reason=saved.termination_reason,
-                terminal_tool=saved.metadata.get("accepted_terminal_tool"),
-            )
-            finalizer.bind([], state, session_log, context, llm)
-            return
+    extract_entities = _domain.extract_entities
+    extract_step_metadata = _domain.extract_step_metadata
+    build_prompt_fn = _domain.build_prompt
+    build_briefing_fn = _domain.build_briefing
+    checkpoint_state = _domain.checkpoint_state
+    restore_checkpoint_state = _domain.restore_checkpoint_state
+    if finalize_checkpoint_restore(
+        saved_checkpoint,
+        resumed,
+        loop_ctx=loop_ctx,
+        tools=tools,
+        restore_checkpoint_state=restore_checkpoint_state,
+        finalizer=finalizer,
+        state=state,
+        session_log=session_log,
+        context=context,
+        llm=llm,
+        set_run_lifecycle=_set_run_lifecycle,
+    ):
+        return
     _turns = (
         _AssistantTurns(state, config)
         if config.max_model_calls is not None or config.uses_typed_history
@@ -1197,10 +1141,9 @@ async def _async_composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            result = _invoke_hook(
+            await _invoke_hook_async(
                 hook, "pre_loop", state, session_log, context, _optional_kwargs={"tools": tools}
             )
-            await _maybe_await(result)
 
     await emit_event_async(
         hooks,
@@ -1240,17 +1183,7 @@ async def _async_composable_loop_impl(
     _sync_llm = _SyncBridgeLLM(llm, loop=asyncio.get_running_loop(), requests=_nested_requests)
 
     def _get_llm() -> Any:
-        if config.router is not None and not _replaying:
-            selected = config.router.select(purpose="reasoning")
-            recorder = _recording_backend(llm)
-            if recorder is not None:
-                selected = recorder.for_backend(selected)
-                if isinstance(llm, _ScopedLLMProxy):
-                    selected = llm.for_backend(selected)
-        else:
-            selected = llm
-        loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
-        return loop_ctx.llm
+        return resolve_turn_llm(llm, config, _turns, loop_ctx, replaying=_replaying)
 
     def _get_async_tool_llm() -> Any:
         backend = _get_llm()
@@ -1361,8 +1294,8 @@ async def _async_composable_loop_impl(
             method = getattr(hook, "pre_prompt", None)
             if method is None:
                 continue
-            raw = await _maybe_await(
-                _invoke_hook(hook, "pre_prompt", state, session_log, context, step_num)
+            raw = await _invoke_hook_async(
+                hook, "pre_prompt", state, session_log, context, step_num
             )
             from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
@@ -2038,33 +1971,16 @@ async def _async_composable_loop_impl(
                         if _ckpt_store is not None:
                             await _save_pending_dispatch(
                                 _ckpt_store,
-                                calls=group,
-                                dispatching=calls_to_dispatch,
-                                step_number=group_step + len(group) - 1,
-                                session_log=session_log,
-                                conversation_data=_conv.serialize(),
-                                config_snapshot={
-                                    "max_steps": config.max_steps,
-                                    "queries_used": getattr(state, "queries_used", 0),
-                                    "budget_remaining": getattr(state, "budget_remaining", 0),
-                                },
-                                tool_results_store=tools.checkpoint_results(),
-                                domain_state=(
-                                    checkpoint_state(loop_ctx)
-                                    if checkpoint_state is not None
-                                    else {}
+                                **build_pending_dispatch_kwargs(
+                                    loop_ctx,
+                                    calls=group,
+                                    dispatching=calls_to_dispatch,
+                                    step_number=group_step + len(group) - 1,
+                                    task=task,
+                                    checkpoint_state=checkpoint_state,
+                                    ckpt_store=_ckpt_store,
+                                    policy_checkpoint_metadata=_policy_checkpoint_metadata,
                                 ),
-                                run_envelope=(
-                                    loop_ctx.run_envelope.to_dict()
-                                    if loop_ctx.run_envelope is not None
-                                    else None
-                                ),
-                                metadata={
-                                    "task": str(task),
-                                    **_policy_checkpoint_metadata(state, _ckpt_store),
-                                },
-                                run_status=loop_ctx.status.value,
-                                run_phase=loop_ctx.phase.value,
                             )
                         tool_contexts = [
                             _build_tool_ctx(
@@ -2274,8 +2190,8 @@ async def _async_composable_loop_impl(
                     from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
                     try:
-                        w = await _maybe_await(
-                            _call_check_done(hook, state, session_log, context, cur_step, tool_call)
+                        w = await _call_check_done_async(
+                            hook, state, session_log, context, cur_step, tool_call
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception(
@@ -2362,31 +2278,16 @@ async def _async_composable_loop_impl(
                 ):
                     await _save_pending_dispatch(
                         _ckpt_store,
-                        calls=[tool_call],
-                        dispatching=[tool_call],
-                        step_number=cur_step,
-                        session_log=session_log,
-                        conversation_data=_conv.serialize(),
-                        config_snapshot={
-                            "max_steps": config.max_steps,
-                            "queries_used": getattr(state, "queries_used", 0),
-                            "budget_remaining": getattr(state, "budget_remaining", 0),
-                        },
-                        tool_results_store=tools.checkpoint_results(),
-                        domain_state=(
-                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                        **build_pending_dispatch_kwargs(
+                            loop_ctx,
+                            calls=[tool_call],
+                            dispatching=[tool_call],
+                            step_number=cur_step,
+                            task=task,
+                            checkpoint_state=checkpoint_state,
+                            ckpt_store=_ckpt_store,
+                            policy_checkpoint_metadata=_policy_checkpoint_metadata,
                         ),
-                        run_envelope=(
-                            loop_ctx.run_envelope.to_dict()
-                            if loop_ctx.run_envelope is not None
-                            else None
-                        ),
-                        metadata={
-                            "task": str(task),
-                            **_policy_checkpoint_metadata(state, _ckpt_store),
-                        },
-                        run_status=loop_ctx.status.value,
-                        run_phase=loop_ctx.phase.value,
                     )
                 if tool_call.metadata.get("completion_source") == "assistant_message":
                     tool_result = ToolResult(

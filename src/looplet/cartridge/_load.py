@@ -38,10 +38,7 @@ from looplet.cartridge._layout import (
 from looplet.cartridge._manifest import (
     CartridgeCompatibility,
     _manifest_present,
-    _read_manifest_compatibility,
     _read_manifest_data,
-    _read_manifest_language,
-    _read_schema_version,
 )
 from looplet.cartridge._render import _apply_runtime_substitutions
 from looplet.cartridge._resources import (
@@ -257,9 +254,10 @@ def _validate_compatibility(compatibility: CartridgeCompatibility, language: str
 def _validate_supported_manifest(root: Path) -> None:
     """Validate one manifest before resolving or importing its cartridge."""
     try:
-        schema_version = _read_schema_version(root)
+        meta = _read_manifest_data(root)
     except FileNotFoundError as exc:
         raise CartridgeSerializationError(f"cartridge manifest not found in {root}") from exc
+    schema_version = int(meta["schema_version"])
     if schema_version != 2:
         raise CartridgeSerializationError(
             f"Cartridge {root} declares schema_version={schema_version}; "
@@ -267,8 +265,10 @@ def _validate_supported_manifest(root: Path) -> None:
             f"removed; run ``looplet migrate <cartridge>`` to upgrade or "
             f'set ``"schema_version": 2`` in cartridge.json.'
         )
-    declared_language = _read_manifest_language(root)
-    _validate_compatibility(_read_manifest_compatibility(root), declared_language)
+    declared_language = str(meta.get("language", "python")).strip().lower()
+    _validate_compatibility(
+        CartridgeCompatibility.from_dict(meta.get("compatibility")), declared_language
+    )
     if declared_language != "python":
         raise CartridgeSerializationError(
             f"Cartridge {root} declares ``language: {declared_language!r}`` "
@@ -324,102 +324,93 @@ def cartridge_to_preset(
             f"is this a Cartridge directory?"
         )
 
-    # ``extends:`` resolution. If config.yaml declares
-    # ``extends: <path>``, we merge the parent workspace under the
-    # current one - for every file under tools/, hooks/, resources/,
-    # prompts/, memory/, and any top-level *.py the child doesn't
-    # provide, we transparently inherit from the parent. Implemented by
-    # materializing a merged directory in a tempdir and loading from
-    # there. Multi-level extends is supported: the parent's own
-    # ``extends:`` is resolved recursively before the merge.
-    extended_root = _resolve_extends(root)
-    if extended_root is not root:
-        # Re-validate metadata in the merged dir.
-        if not _manifest_present(extended_root):
-            raise CartridgeSerializationError(
-                f"merged cartridge at {extended_root} missing cartridge.json "
-                f"(or historical workspace.json)"
-            )
-        root = extended_root
+    with _CARTRIDGE_LOAD_LOCK:
+        extended_root = _resolve_extends(root)
+        if extended_root is not root:
+            # Re-validate metadata in the merged dir.
+            if not _manifest_present(extended_root):
+                raise CartridgeSerializationError(
+                    f"merged cartridge at {extended_root} missing cartridge.json "
+                    f"(or historical workspace.json)"
+                )
+            root = extended_root
 
-    _purge_cartridge_helper_modules()
+        _purge_cartridge_helper_modules()
 
-    # Shared-resource registry - built once, referenced by ``@<name>``
-    # strings throughout hook / tool kwargs. Lets two hooks share the
-    # same live object (e.g. a FileCache) on reload, instead of
-    # silently splitting into two independent instances.
-    runtime_dict = dict(runtime or {})
+        runtime_dict = dict(runtime or {})
+        runtime_dict.setdefault("cartridge_root", str(root))
 
-    # Inject ``cartridge_root`` (absolute path) into the runtime dict
-    # so ``${runtime.cartridge_root}`` substitutes correctly in any
-    # YAML field - most importantly ``mcp_servers.<name>.command``,
-    # which often needs to point at a server bundled alongside the
-    # cartridge (``${runtime.cartridge_root}/_server/foo.py``). The
-    # caller's value (if any) wins so test harnesses can override.
-    runtime_dict.setdefault("cartridge_root", str(root))
-
-    # Cartridges are self-contained. Their tools / hooks / resources
-    # may reference co-located helper modules (conventionally
-    # ``<workspace>/<wsname>_lib.py`` or similar; pick a name unique to
-    # this workspace so two workspaces loaded back-to-back don't share
-    # a cached ``lib`` module). The loader pushes the workspace root
-    # AND its ``resources/`` subdirectory onto ``sys.path`` for the
-    # duration of this load so:
-    #   * ``from <wsname>_lib import X`` resolves to the workspace root
-    #   * ``from <resource_name> import helper`` resolves to a
-    #     ``resources/<resource_name>.py`` module (lets tools call back
-    #     into resource modules without forcing a setup.py shim).
-    root_str = str(root)
-    resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
-    source_finder = _CartridgeSourceFinder(root)
-    pushed_paths: list[str] = []
-    for p in (root_str, resources_dir_str):
-        if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
-            if p not in sys.path:
-                sys.path.insert(0, p)
-                pushed_paths.append(p)
-    load_resources = _LoadResourceTracker()
-    finder_index = (
-        sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
-    )
-    sys.meta_path.insert(finder_index, source_finder)
-    try:
+        root_str = str(root)
+        resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
+        source_finder = _CartridgeSourceFinder(root)
+        pushed_paths: list[str] = []
+        for p in (root_str, resources_dir_str):
+            if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                    pushed_paths.append(p)
+        load_resources = _LoadResourceTracker()
+        finder_index = (
+            sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
+        )
+        sys.meta_path.insert(finder_index, source_finder)
         try:
-            preset = _workspace_to_preset_inner(
-                root,
-                runtime_dict,
-                state_factory=state_factory,
-                strict=strict,
-                load_resources=load_resources,
-            )
-            _remember_cartridge_helper_modules(root)
-            # Stamp the preset with its origin so a subsequent
-            # ``preset_to_cartridge`` call can copy any top-level ``*.py``
-            # helper modules from the source workspace into the snapshot.
-            # Tracked in a module-level WeakKey-style dict (keyed by
-            # ``id(preset)`` with a finalizer) so the public AgentPreset
-            # dataclass surface stays clean.
-            _stamp_preset_origin(preset, root)
-        except BaseException:
-            _remember_cartridge_helper_modules(root)
-            load_resources.close()
-            raise
-        load_resources.disarm()
-        return preset
-    finally:
-        try:
-            sys.meta_path.remove(source_finder)
-        except ValueError:
-            pass
-        for p in pushed_paths:
             try:
-                sys.path.remove(p)
+                preset = _workspace_to_preset_inner(
+                    root,
+                    runtime_dict,
+                    state_factory=state_factory,
+                    strict=strict,
+                    load_resources=load_resources,
+                )
+                _remember_cartridge_helper_modules(root)
+                _stamp_preset_origin(preset, root)
+            except BaseException:
+                _remember_cartridge_helper_modules(root)
+                load_resources.close()
+                raise
+            load_resources.disarm()
+            return preset
+        finally:
+            try:
+                sys.meta_path.remove(source_finder)
             except ValueError:
                 pass
+            for p in pushed_paths:
+                try:
+                    sys.path.remove(p)
+                except ValueError:
+                    pass
 
 
+import threading as _threading  # noqa: E402, PLC0415
+
+_CARTRIDGE_LOAD_LOCK = _threading.RLock()
 _EXTENDS_TEMPDIRS: list[Path] = []
+_EXTENDS_CACHE: dict[str, Path] = {}
 _CARTRIDGE_HELPER_MODULES: set[str] = set()
+
+
+def _directory_tree_digest(directory: Path) -> str:
+    import hashlib as _hashlib
+
+    h = _hashlib.sha256()
+    for p in sorted(directory.rglob("*")):
+        if "__pycache__" in p.parts:
+            continue
+        rel = p.relative_to(directory).as_posix().encode("utf-8")
+        if p.is_file():
+            h.update(b"F")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
+            data = p.read_bytes()
+            h.update(len(data).to_bytes(8, "big"))
+            h.update(data)
+        elif p.is_dir():
+            h.update(b"D")
+            h.update(len(rel).to_bytes(4, "big"))
+            h.update(rel)
+    return h.hexdigest()
 
 
 def _purge_cartridge_helper_modules() -> None:
@@ -450,14 +441,8 @@ def _remember_cartridge_helper_modules(root: Path) -> None:
 
 
 def _cleanup_extends_tempdirs() -> None:
-    """Best-effort rmtree of every merged-extends tempdir at exit.
-
-    Registered as an :mod:`atexit` hook at module import time so the
-    process leaves no per-load tempdirs behind. Cleared in LIFO order
-    (children before parents) which matches the order they were
-    materialized in :func:`_resolve_extends`.
-    """
-
+    """Best-effort rmtree of every merged-extends tempdir at exit."""
+    _EXTENDS_CACHE.clear()
     while _EXTENDS_TEMPDIRS:
         d = _EXTENDS_TEMPDIRS.pop()
         shutil.rmtree(d, ignore_errors=True)
@@ -469,29 +454,7 @@ _atexit.register(_cleanup_extends_tempdirs)
 
 
 def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
-    """Resolve ``extends:`` in a workspace's config.yaml.
-
-    If ``config.yaml`` declares ``extends: <path>`` (relative to ``root``
-    or absolute), the parent workspace is recursively resolved and a
-    *merged* workspace directory is materialized under a tempdir:
-
-    * Parent files are copied first (recursively).
-    * Child files overlay on top - any same-relative-path file in the
-      child wins.
-
-    Returns the path to the merged workspace, or ``root`` itself when
-    there is no ``extends:`` to resolve. Multi-level inheritance works
-    (parent can itself ``extends:`` a grandparent).
-
-    Cycle detection: ``_seen`` carries the resolved paths visited so
-    far; revisiting raises :class:`CartridgeSerializationError`.
-
-    The merged workspace dir is created via :func:`tempfile.mkdtemp`
-    with a stable prefix and tracked in :data:`_EXTENDS_TEMPDIRS`,
-    which means it survives until interpreter exit (the loaded preset's
-    modules may continue importing from it) and is then cleaned up
-    via the module-level ``atexit`` hook.
-    """
+    """Resolve ``extends:`` in a workspace's config.yaml with content-addressed caching."""
     _validate_supported_manifest(root)
     cfg_path = root / CartridgeLayout.CONFIG_YAML
     if not cfg_path.is_file():
@@ -519,71 +482,56 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # Resolve parent's own extends first (recursive).
     parent_root = _resolve_extends(parent_path, _seen=seen)
 
+    import hashlib as _hashlib  # noqa: PLC0415
     import shutil as _shutil  # noqa: PLC0415
     import tempfile as _tempfile  # noqa: PLC0415
 
+    cache_key = _hashlib.sha256(
+        f"{_directory_tree_digest(parent_root)}:{_directory_tree_digest(root)}".encode("utf-8")
+    ).hexdigest()
+    cached = _EXTENDS_CACHE.get(cache_key)
+    if cached is not None and cached.is_dir():
+        return cached
+
     merged = Path(_tempfile.mkdtemp(prefix=f"looplet_extends_{root.name}_"))
-    # Register for cleanup at interpreter exit so the OS doesn't have
-    # to (the merged dir holds .pyc caches and may import modules that
-    # are still bound to its path until process end).
     _EXTENDS_TEMPDIRS.append(merged)
-    # Copy parent first, then overlay child. Directory overlay is
-    # correct for tools/, hooks/, resources/, prompts/, memory/ -
-    # each entry lives in its own subdirectory and the child either
-    # adds a new entry or replaces an entry of the same name.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
     _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)
 
-    # config.yaml needs *key-level* merging, not file-level overlay.
-    # File-level overlay would cause the child's config.yaml to wholly
-    # replace the parent's, silently dropping every parent key the child
-    # didn't redeclare (e.g. ``max_tokens``, ``max_steps``, ``model:``,
-    # ``permissions:``, ...). Builders observing this from outside the
-    # merge would see ``extends:`` as a partial inheritance mechanism
-    # - which is the opposite of what the schema promises.
-    #
-    # The merge strategy is shallow: top-level scalars and lists are
-    # replaced wholesale by the child if redeclared, while top-level
-    # mappings (``model:``, ``permissions:``, ``memory:``,
-    # ``tool_metadata:``) are recursively shallow-merged so a child
-    # can override a single key inside a block (e.g. just
-    # ``model.reasoning_effort``) without losing siblings. Lists are
-    # NOT concatenated - wholesale-replace mirrors how layered config
-    # files (Kubernetes overlays, Terraform locals, Hydra) handle them.
     parent_cfg_path = parent_root / CartridgeLayout.CONFIG_YAML
     child_cfg_path = root / CartridgeLayout.CONFIG_YAML
     parent_cfg = (
-        _load_yaml(parent_cfg_path.read_text(encoding="utf-8"))
+        _load_yaml(parent_cfg_path.read_text(encoding="utf-8"), source_path=parent_cfg_path)
         if parent_cfg_path.is_file()
         else None
     ) or {}
     child_cfg = (
-        _load_yaml(child_cfg_path.read_text(encoding="utf-8")) if child_cfg_path.is_file() else None
+        _load_yaml(child_cfg_path.read_text(encoding="utf-8"), source_path=child_cfg_path)
+        if child_cfg_path.is_file()
+        else None
     ) or {}
-    # Drop the child's ``extends:`` so the inner loader doesn't re-resolve.
     child_cfg.pop("extends", None)
-    parent_cfg.pop("extends", None)  # belt and braces; should already be gone
+    parent_cfg.pop("extends", None)
     merged_cfg = _shallow_merge_config(parent_cfg, child_cfg)
     merged_cfg_path = merged / CartridgeLayout.CONFIG_YAML
     merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
 
-    # ── Cartridge spec v2: merge ``runtime.yaml`` ───────────────
-    # The parent's runtime defaults inherit into the child the same
-    # way contract keys do; the child can override any individual
-    # field in its own ``runtime.yaml``. Without this, splitting
-    # runtime knobs out of the parent's config.yaml would silently
-    # drop them from every child cartridge.
     parent_rt_path = parent_root / "runtime.yaml"
     child_rt_path = root / "runtime.yaml"
     parent_rt = (
-        _load_yaml(parent_rt_path.read_text(encoding="utf-8")) if parent_rt_path.is_file() else None
+        _load_yaml(parent_rt_path.read_text(encoding="utf-8"), source_path=parent_rt_path)
+        if parent_rt_path.is_file()
+        else None
     ) or {}
     child_rt = (
-        _load_yaml(child_rt_path.read_text(encoding="utf-8")) if child_rt_path.is_file() else None
+        _load_yaml(child_rt_path.read_text(encoding="utf-8"), source_path=child_rt_path)
+        if child_rt_path.is_file()
+        else None
     ) or {}
     if parent_rt or child_rt:
         merged_rt = _shallow_merge_config(parent_rt, child_rt)
         (merged / "runtime.yaml").write_text(_dump_yaml(merged_rt) + "\n", encoding="utf-8")
+    _EXTENDS_CACHE[cache_key] = merged
     return merged
 
 
@@ -1822,34 +1770,7 @@ def _workspace_to_preset_inner(
             )
 
     # ── Magic prompt files: briefing + recovery ────────────────────
-    # ``prompts/briefing.md`` and ``prompts/recovery.md`` are not
-    # auto-loaded. The cartridge must declare them explicitly via
-    # ``builtin_hooks: - static_briefing: { path: ... }``.
-    briefing_path = root / CartridgeLayout.BRIEFING_MD
-    recovery_path = root / CartridgeLayout.RECOVERY_MD
-
-    def _builtin_hook_declared(name: str) -> bool:
-        for entry in _builtin_hook_specs:
-            if isinstance(entry, str) and entry == name:
-                return True
-            if isinstance(entry, dict) and name in entry:
-                return True
-        return False
-
-    if briefing_path.is_file() and not _builtin_hook_declared("static_briefing"):
-        raise CartridgeSerializationError(
-            f"Cartridge {root}: magic ``prompts/briefing.md`` auto-load "
-            f"is not supported. Declare it explicitly via "
-            f"``builtin_hooks: - static_briefing: "
-            f"{{ path: prompts/briefing.md }}`` in config.yaml."
-        )
-    if recovery_path.is_file() and not _builtin_hook_declared("recovery_hint"):
-        raise CartridgeSerializationError(
-            f"Cartridge {root}: magic ``prompts/recovery.md`` auto-load "
-            f"is not supported. Declare it explicitly via "
-            f"``builtin_hooks: - recovery_hint: "
-            f"{{ path: prompts/recovery.md }}`` in config.yaml."
-        )
+    _check_v2_briefing_recovery_declared(root, _builtin_hook_specs)
 
     preset = AgentPreset(
         config=config,

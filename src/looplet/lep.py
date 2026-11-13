@@ -100,10 +100,21 @@ class LEPHookAdapter:
         self._env = dict(env) if env is not None else None
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
+        self._rpc_lock = threading.RLock()
         self.capabilities: dict[str, Any] = {}
 
     # ── transport ────────────────────────────────────────────────
     def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        expect_response: bool = True,
+    ) -> dict[str, Any]:
+        with self._rpc_lock:
+            return self._rpc_locked(method, params, expect_response=expect_response)
+
+    def _rpc_locked(
         self,
         method: str,
         params: dict[str, Any] | None = None,
@@ -206,6 +217,22 @@ class LEPHookAdapter:
         """Bind host correlation context for subsequent policy requests."""
         self._run_envelope = envelope
 
+    def _exchange_slot_view(
+        self, slot: str, step: int, view: dict[str, Any]
+    ) -> HookDecision | None:
+        event = {"slot": slot, "type": slot, "step": step, "payload": view}
+        try:
+            result = self._rpc("loop/event", event)
+        except LEPProtocolError:
+            logger.warning("LEP slot %s failed; applying on_failure=%s", slot, self._on_failure)
+            return self._failure_decision(slot)
+        effect = (result or {}).get("effect")
+        try:
+            return HookDecision.from_wire(effect)
+        except (TypeError, ValueError):
+            logger.warning("LEP slot %s returned malformed effect %r", slot, effect)
+            return self._failure_decision(slot)
+
     def _decision(
         self,
         slot: str,
@@ -234,18 +261,7 @@ class LEPHookAdapter:
             step=step,
             usage=usage,
         )
-        event = {"slot": slot, "type": slot, "step": step or 0, "payload": view}
-        try:
-            result = self._rpc("loop/event", event)
-        except LEPProtocolError:
-            logger.warning("LEP slot %s failed; applying on_failure=%s", slot, self._on_failure)
-            return self._failure_decision(slot)
-        effect = (result or {}).get("effect")
-        try:
-            return HookDecision.from_wire(effect)
-        except (TypeError, ValueError):
-            logger.warning("LEP slot %s returned malformed effect %r", slot, effect)
-            return self._failure_decision(slot)
+        return self._exchange_slot_view(slot, step or 0, view)
 
     def _failure_decision(self, slot: str) -> HookDecision | None:
         if self._on_failure == "fail_open" or self._on_failure == "continue":
@@ -260,7 +276,7 @@ class LEPHookAdapter:
     def _invoke_hook_return(self, slot: str, *args: Any, **kwargs: Any) -> Any:
         """Return the complete effect to the loop; direct methods stay legacy."""
         method = getattr(self, slot)
-        if getattr(method, "__func__", None) is not getattr(LEPHookAdapter, slot):
+        if getattr(method, "__func__", None) is not getattr(LEPHookAdapter, slot, None):
             return method(*args, **kwargs)
         arguments = inspect.signature(method).bind(*args, **kwargs).arguments
         decision = self._decision(
@@ -271,6 +287,34 @@ class LEPHookAdapter:
             tool_result=arguments.get("tool_result"),
             step=arguments.get("step_num"),
         )
+        if slot == "check_permission" and decision is not None and decision.is_block():
+            decision = replace(decision, permission="deny")
+        return decision
+
+    async def _invoke_hook_return_async(self, slot: str, *args: Any, **kwargs: Any) -> Any:
+        """Non-blocking async counterpart to :meth:`_invoke_hook_return`."""
+        import asyncio
+
+        method = getattr(self, slot)
+        if getattr(method, "__func__", None) is not getattr(LEPHookAdapter, slot, None):
+            raw = method(*args, **kwargs)
+            return await raw if inspect.isawaitable(raw) else raw
+        if slot in ("pre_loop", "on_loop_end"):
+            return await asyncio.to_thread(method, *args, **kwargs)
+        arguments = inspect.signature(method).bind(*args, **kwargs).arguments
+        if self._proc is None:
+            decision = self._failure_decision(slot)
+        else:
+            view = extract_view(
+                self._view,
+                state=arguments.get("state"),
+                session_log=arguments.get("session_log"),
+                tool_call=arguments.get("tool_call"),
+                tool_result=arguments.get("tool_result"),
+                step=arguments.get("step_num"),
+            )
+            step = arguments.get("step_num") or 0
+            decision = await asyncio.to_thread(self._exchange_slot_view, slot, step, view)
         if slot == "check_permission" and decision is not None and decision.is_block():
             decision = replace(decision, permission="deny")
         return decision

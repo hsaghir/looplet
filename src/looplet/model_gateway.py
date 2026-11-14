@@ -211,11 +211,13 @@ class ModelGatewayServer:
             finally:
                 probe.close()
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        srv.bind(socket_path)
-        srv.listen(16)
-        srv.settimeout(0.5)
-        self._srv = srv
         try:
+            srv.bind(socket_path)
+            srv.settimeout(0.5)
+            self._srv = srv
+            if self._stop.is_set():
+                return 0
+            srv.listen(16)
             while not self._stop.is_set():
                 try:
                     conn, _ = srv.accept()

@@ -280,6 +280,140 @@ class AgentPreset:
     )
     _run_claimed: bool = field(default=False, init=False, repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
+    _borrowed_resource_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False, compare=False
+    )
+    _borrowed_hook_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False, compare=False
+    )
+
+    def fork(
+        self,
+        *,
+        max_steps: int | None = None,
+        hooks: Sequence[Any] | None = None,
+        resources: dict[str, Any] | None = None,
+    ) -> "AgentPreset":
+        """Create a lightweight, isolated runnable copy without reloading disk artifacts.
+
+        Shares immutable :class:`ToolSpec` definitions, cached schema views, and
+        parent-owned resources while isolating mutable ``LoopConfig``,
+        ``DefaultState``, registry active-loop leases, and stateful built-in hooks.
+        Closing a forked preset never closes resources or subprocesses owned by
+        the parent template.
+        """
+        import copy as _copy
+        from dataclasses import replace as _dc_replace
+
+        from looplet.harness import _AutomaticResultStore
+        from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
+        from looplet.permissions import PermissionHook
+        from looplet.stagnation import StagnationHook
+        from looplet.telemetry import Tracer, TracingHook
+        from looplet.tools import StopOnUnknownEffectHook
+        from looplet.validation import ValidatingToolRegistry
+
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Cannot fork a closed AgentPreset")
+            if self.model_gateway is not None or self.llm_gateway_enabled:
+                raise RuntimeError(
+                    "Cannot fork an AgentPreset with an active model_gateway; "
+                    "load a separate preset per gateway server."
+                )
+
+        effective_steps = max_steps if max_steps is not None else self.config.max_steps
+        forked_config = _dc_replace(
+            self.config,
+            max_steps=effective_steps,
+            run_envelope=None,
+            initial_checkpoint=None,
+            disabled_defaults=list(self.config.disabled_defaults),
+            done_tools=list(self.config.done_tools),
+            done_tool_schemas=_copy.deepcopy(self.config.done_tool_schemas),
+            memory_sources=list(self.config.memory_sources),
+            scoped_context_sources=list(self.config.scoped_context_sources),
+            tool_metadata=dict(self.config.tool_metadata),
+            generate_kwargs=dict(self.config.generate_kwargs),
+        )
+        shared_res = {
+            k: v
+            for k, v in {**self.tools.resources, **self.resources}.items()
+            if not isinstance(v, _AutomaticResultStore)
+        }
+        if resources:
+            shared_res.update(resources)
+
+        if isinstance(self.tools, ValidatingToolRegistry):
+            forked_tools: BaseToolRegistry = ValidatingToolRegistry()
+            forked_tools._retain_results = self.tools._retain_results
+            forked_tools._schemas = _copy.deepcopy(self.tools._schemas)
+        else:
+            forked_tools = BaseToolRegistry(retain_results=self.tools._retain_results)
+        forked_tools._tools = {
+            name: _dc_replace(spec, parameters=_copy.deepcopy(spec.parameters))
+            for name, spec in self.tools._tools.items()
+        }
+        forked_tools._resources = dict(shared_res)
+
+        def _clone_hook(h: Any) -> Any:
+            from typing import Literal as _Lit
+
+            if isinstance(h, ThresholdCompactHook):
+                tier = cast(_Lit["warning", "error"], h.fire_tier)
+                return ThresholdCompactHook(h.budget, fire_tier=tier)
+            if isinstance(h, StagnationHook):
+                return StagnationHook(
+                    threshold=h._threshold,
+                    fingerprint=h._fingerprint_fn,
+                    nudge=h._nudge,
+                    progress=h._progress_fn,
+                    reset_after_nudge=h._reset_after_nudge,
+                    ignore_tools=set(h._ignore_tools),
+                )
+            if isinstance(h, ToolCallBudgetHook):
+                return ToolCallBudgetHook(max_calls=h.max_calls)
+            if isinstance(h, PerToolLimitHook):
+                return PerToolLimitHook(
+                    limits=dict(h._limits) if h._limits else None,
+                    default_limit=h._default_limit,
+                    message=h._message,
+                )
+            if isinstance(h, BudgetWarningHook):
+                return BudgetWarningHook(thresholds=h._thresholds, message=h._message)
+            if isinstance(h, StopOnUnknownEffectHook):
+                return StopOnUnknownEffectHook()
+            if isinstance(h, TracingHook):
+                return TracingHook(Tracer())
+            if isinstance(h, PermissionHook):
+                return PermissionHook(h.engine)
+            return h
+
+        source_hooks = list(hooks) if hooks is not None else self.hooks
+        forked_hooks = [_clone_hook(h) for h in source_hooks]
+        parent_hook_ids = {id(h) for h in self.hooks}
+
+        child = AgentPreset(
+            config=forked_config,
+            hooks=forked_hooks,
+            tools=forked_tools,
+            state=DefaultState(max_steps=effective_steps),
+            resources=dict(shared_res),
+            owned_resources=[],
+            mcp_adapters=[],
+            builtin_tool_names=list(self.builtin_tool_names),
+            mcp_servers=dict(self.mcp_servers),
+            state_service_handles=[],
+            state_services=dict(self.state_services),
+            model_gateway=None,
+            llm_gateway_enabled=self.llm_gateway_enabled,
+            cartridge_manifest=dict(self.cartridge_manifest),
+        )
+        child._borrowed_resource_ids = frozenset(id(v) for v in shared_res.values())
+        child._borrowed_hook_ids = frozenset(
+            id(h) for h in forked_hooks if id(h) in parent_hook_ids
+        )
+        return child
 
     def close(self) -> ShutdownReport:
         """Terminate all subprocesses owned by this preset.
@@ -308,7 +442,7 @@ class AgentPreset:
                 logging.getLogger(__name__).warning("error closing %s", label, exc_info=True)
 
         for hook in self.hooks:
-            if not isinstance(hook, LEPHookAdapter):
+            if not isinstance(hook, LEPHookAdapter) or id(hook) in self._borrowed_hook_ids:
                 continue
             _close(hook, "lep_hook")
         for adapter in self.mcp_adapters:
@@ -372,7 +506,9 @@ class AgentPreset:
         ):
             if tool_name in names and not callable(getattr(store, method, None)):
                 errors.append(f"tool_result_store must provide callable {method} for {tool_name}")
-        owned_ids = {id(resource) for resource in self.owned_resources}
+        owned_ids = {id(resource) for resource in self.owned_resources} | set(
+            self._borrowed_resource_ids
+        )
         for handle in self.state_service_handles:
             client = getattr(handle, "client", None)
             if client is not None:

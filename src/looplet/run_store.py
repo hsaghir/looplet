@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,29 @@ from looplet.run_records import ArtifactRef, RunEvent, RunRecord
 from looplet.types import RunEnvelope, RunResult
 
 __all__ = ["RunStore", "MemoryRunStore", "FileRunStore"]
+
+
+class _RunLock:
+    """Weakly referenceable per-run reentrant lock holder."""
+
+    __slots__ = ("lock", "__weakref__")
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+
+
+def _checkpoint_key_sort_key(item: tuple[int, str]) -> tuple[int, int, int]:
+    idx, key = item
+    if key.startswith("step_"):
+        suffix = key[5:]
+        if suffix.isdigit() or (suffix.startswith("-") and suffix[1:].isdigit()):
+            return (0, int(suffix), idx)
+    return (1, 0, idx)
+
+
+def _ordered_checkpoint_keys(existing: Sequence[str], new_key: str) -> tuple[str, ...]:
+    unique = list(dict.fromkeys((*existing, new_key)))
+    return tuple(key for _, key in sorted(enumerate(unique), key=_checkpoint_key_sort_key))
 
 
 class _InterProcessFileLock:
@@ -138,8 +162,8 @@ class MemoryRunStore:
                 validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             self._records[run_id] = record.with_updates(
-                updated_at=checkpoint.created_at,
-                checkpoint_keys=tuple(dict.fromkeys((*record.checkpoint_keys, key))),
+                updated_at=max(record.updated_at, checkpoint.created_at),
+                checkpoint_keys=_ordered_checkpoint_keys(record.checkpoint_keys, key),
             )
             self._checkpoints[(run_id, key)] = copy.deepcopy(checkpoint)
             return key
@@ -215,18 +239,45 @@ class FileRunStore:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._io_gate = threading.BoundedSemaphore(4)
+        self._run_locks: weakref.WeakValueDictionary[str, _RunLock] = weakref.WeakValueDictionary()
+        self._recent_run_locks: OrderedDict[str, _RunLock] = OrderedDict()
         self._header_cache: OrderedDict[str, tuple[int, int, RunRecord]] = OrderedDict()
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        with self._lock:
+        with self._io_gate:
             with _InterProcessFileLock(self.directory / ".run-store.lock"):
                 yield
+
+    def _get_run_lock(self, run_id: str) -> _RunLock:
+        with self._lock:
+            holder = self._run_locks.get(run_id)
+            if holder is None:
+                holder = _RunLock()
+                self._run_locks[run_id] = holder
+            self._recent_run_locks.pop(run_id, None)
+            self._recent_run_locks[run_id] = holder
+            while len(self._recent_run_locks) > 256:
+                self._recent_run_locks.popitem(last=False)
+            return holder
+
+    @contextmanager
+    def _locked_run(self, run_id: str) -> Iterator[Path | None]:
+        holder = self._get_run_lock(run_id)
+        with holder.lock, self._io_gate:
+            root = self._root(run_id)
+            if not root.is_dir():
+                yield None
+                return
+            with _InterProcessFileLock(root / ".run.lock"):
+                yield root
 
     def create(
         self, envelope: RunEnvelope, *, metadata: Mapping[str, Any] | None = None
     ) -> RunRecord:
-        with self._locked():
+        holder = self._get_run_lock(envelope.run_id)
+        with holder.lock, self._locked():
             root = self._root(envelope.run_id)
             try:
                 root.mkdir()
@@ -240,30 +291,35 @@ class FileRunStore:
             return record
 
     def append_event(self, event: RunEvent) -> None:
-        with self._locked():
-            if event.envelope is None:
-                raise ValueError("stored run events require a run envelope")
-            run_id = event.envelope.run_id
-            record = self._require_unlocked(run_id)
+        if event.envelope is None:
+            raise ValueError("stored run events require a run envelope")
+        run_id = event.envelope.run_id
+        with self._locked_run(run_id) as root:
+            if root is None:
+                raise KeyError(f"unknown run: {run_id}")
+            status = self._status_unlocked(run_id)
             with self._file(run_id, "events.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event.to_dict(), default=str) + "\n")
                 handle.flush()
-                os.fsync(handle.fileno())
-            if record.status == "created":
+            if status == "created":
+                record = self._require_unlocked(run_id)
                 updated = record.with_updates(status="running", updated_at=event.timestamp)
-                self._write_record(run_id, self._file(run_id, "run.json"), updated)
+                self._write_record(run_id, self._file(run_id, "run.json"), updated, sync=False)
             else:
-                cached = self._header_cache.get(run_id)
-                if cached is not None:
-                    mtime_ns, size, hdr = cached
-                    self._header_cache[run_id] = (
-                        mtime_ns,
-                        size,
-                        hdr.with_updates(updated_at=max(hdr.updated_at, event.timestamp)),
-                    )
+                with self._lock:
+                    cached = self._header_cache.get(run_id)
+                    if cached is not None:
+                        mtime_ns, size, hdr = cached
+                        self._header_cache[run_id] = (
+                            mtime_ns,
+                            size,
+                            hdr.with_updates(updated_at=max(hdr.updated_at, event.timestamp)),
+                        )
 
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
-        with self._locked():
+        with self._locked_run(run_id) as root:
+            if root is None:
+                raise KeyError(f"unknown run: {run_id}")
             record = self._require_unlocked(run_id)
             if checkpoint.run_id is None:
                 checkpoint = replace(checkpoint, run_envelope={"run_id": run_id})
@@ -271,16 +327,18 @@ class FileRunStore:
                 validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             path = self._file(run_id, f"checkpoints/{key}.json")
-            self._write(path, checkpoint.to_dict())
+            self._write(path, checkpoint.to_dict(), sync=False)
             updated = record.with_updates(
-                updated_at=checkpoint.created_at,
-                checkpoint_keys=tuple(dict.fromkeys((*record.checkpoint_keys, key))),
+                updated_at=max(record.updated_at, checkpoint.created_at),
+                checkpoint_keys=_ordered_checkpoint_keys(record.checkpoint_keys, key),
             )
-            self._write_record(run_id, self._file(run_id, "run.json"), updated)
+            self._write_record(run_id, self._file(run_id, "run.json"), updated, sync=False)
             return key
 
     def load_checkpoint(self, run_id: str, key: str) -> Checkpoint | None:
-        with self._locked():
+        with self._locked_run(run_id) as root:
+            if root is None:
+                return None
             path = self._file(run_id, f"checkpoints/{Path(key).name}.json")
             if not path.is_file():
                 return None
@@ -295,8 +353,14 @@ class FileRunStore:
         *,
         artifacts: Sequence[ArtifactRef] = (),
     ) -> RunRecord:
-        with self._locked():
+        with self._locked_run(run_id) as root:
+            if root is None:
+                raise KeyError(f"unknown run: {run_id}")
             record = self._require_unlocked(run_id)
+            events_path = self._file(run_id, "events.jsonl")
+            if events_path.is_file():
+                with events_path.open("r+", encoding="utf-8") as handle:
+                    os.fsync(handle.fileno())
             events = self._events_unlocked(run_id)
             updated = RunRecord(
                 run_id=record.run_id,
@@ -314,11 +378,17 @@ class FileRunStore:
             return updated
 
     def load(self, run_id: str) -> RunRecord | None:
-        with self._locked():
+        with self._locked_run(run_id) as root:
+            if root is None:
+                with self._lock:
+                    self._header_cache.pop(run_id, None)
+                return None
             return self._load_unlocked(run_id)
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
-        with self._locked():
+        with self._locked_run(run_id) as root:
+            if root is None:
+                return ()
             return self._events_unlocked(run_id)
 
     def _root(self, run_id: str) -> Path:
@@ -333,35 +403,57 @@ class FileRunStore:
     def _file(self, run_id: str, filename: str) -> Path:
         return _artifact_path(self._root(run_id), filename)
 
-    def _write_record(self, run_id: str, path: Path, record: RunRecord) -> None:
+    def _write_record(
+        self, run_id: str, path: Path, record: RunRecord, *, sync: bool = True
+    ) -> None:
         serialized = json.dumps(record.to_dict(), indent=2, default=str) + "\n"
-        self._write_text(path, serialized)
+        self._write_text(path, serialized, sync=sync)
         st = path.stat()
         detached = RunRecord.from_dict(json.loads(serialized), events=())
-        self._header_cache.pop(run_id, None)
-        self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, detached)
-        while len(self._header_cache) > 64:
-            self._header_cache.popitem(last=False)
+        with self._lock:
+            self._header_cache.pop(run_id, None)
+            self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, detached)
+            while len(self._header_cache) > 64:
+                self._header_cache.popitem(last=False)
+
+    def _status_unlocked(self, run_id: str) -> str:
+        path = self._file(run_id, "run.json")
+        if not path.is_file():
+            with self._lock:
+                self._header_cache.pop(run_id, None)
+            raise KeyError(f"unknown run: {run_id}")
+        st = path.stat()
+        with self._lock:
+            cached = self._header_cache.get(run_id)
+            if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                self._header_cache.move_to_end(run_id)
+                return cached[2].status
+        return self._require_unlocked(run_id).status
 
     def _load_unlocked(self, run_id: str, *, include_events: bool = True) -> RunRecord | None:
         path = self._file(run_id, "run.json")
         if not path.is_file():
-            self._header_cache.pop(run_id, None)
+            with self._lock:
+                self._header_cache.pop(run_id, None)
             return None
         st = path.stat()
-        cached = self._header_cache.get(run_id)
-        if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
-            self._header_cache.move_to_end(run_id)
-            header = copy.deepcopy(cached[2])
-        else:
+        with self._lock:
+            cached = self._header_cache.get(run_id)
+            if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                self._header_cache.move_to_end(run_id)
+                header: RunRecord | None = copy.deepcopy(cached[2])
+            else:
+                header = None
+        if header is None:
             header = RunRecord.from_dict(
                 json.loads(path.read_text(encoding="utf-8")),
                 events=(),
             )
-            self._header_cache.pop(run_id, None)
-            self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, copy.deepcopy(header))
-            while len(self._header_cache) > 64:
-                self._header_cache.popitem(last=False)
+            with self._lock:
+                self._header_cache.pop(run_id, None)
+                self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, copy.deepcopy(header))
+                while len(self._header_cache) > 64:
+                    self._header_cache.popitem(last=False)
         if not include_events:
             return header
         ev = self._events_unlocked(run_id)
@@ -388,18 +480,19 @@ class FileRunStore:
         return record
 
     @staticmethod
-    def _write_text(path: Path, text: str) -> None:
+    def _write_text(path: Path, text: str, *, sync: bool = True) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
                 handle.flush()
-                os.fsync(handle.fileno())
+                if sync:
+                    os.fsync(handle.fileno())
             os.replace(temp_name, path)
         finally:
             Path(temp_name).unlink(missing_ok=True)
 
     @staticmethod
-    def _write(path: Path, value: Mapping[str, Any]) -> None:
-        FileRunStore._write_text(path, json.dumps(value, indent=2, default=str) + "\n")
+    def _write(path: Path, value: Mapping[str, Any], *, sync: bool = True) -> None:
+        FileRunStore._write_text(path, json.dumps(value, indent=2, default=str) + "\n", sync=sync)

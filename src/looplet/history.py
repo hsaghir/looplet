@@ -151,15 +151,16 @@ class HistoryRecorder:
                         metadata={**step.metadata, "step_number": step.number},
                     )
                 )
+            projected_tr = (
+                self._project_tool_result(step.tool_result)
+                if self._project_tool_result is not None
+                else step.tool_result
+            )
             self._conversation.append(
                 Message(
                     role=MessageRole.TOOL,
                     content="",
-                    tool_result=(
-                        self._project_tool_result(step.tool_result)
-                        if self._project_tool_result is not None
-                        else step.tool_result
-                    ),
+                    tool_result=projected_tr,
                     metadata={
                         **step.metadata,
                         "step_number": step.number,
@@ -250,7 +251,7 @@ class HistoryRecorder:
                     Message(
                         role=MessageRole.ASSISTANT,
                         content=content,
-                        metadata={**(metadata or {}), "origin": "model"},
+                        metadata={**json_snapshot(metadata or {}), "origin": "model"},
                     )
                 )
             return
@@ -258,7 +259,7 @@ class HistoryRecorder:
             Message(
                 role=MessageRole.USER,
                 content=str(prompt)[: self._max_chars],
-                metadata=dict(metadata or {}),
+                metadata=json_snapshot(metadata or {}),
             )
         )
         if response is None:

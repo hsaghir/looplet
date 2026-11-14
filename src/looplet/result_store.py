@@ -45,6 +45,11 @@ class FileToolResultStore:
     _checkpoint_digest: Any = field(
         default_factory=hashlib.sha256, init=False, repr=False, compare=False
     )
+    _catalog_mutations: int = field(default=0, init=False, repr=False, compare=False)
+    _checkpoint_synced_mutations: int = field(default=-1, init=False, repr=False, compare=False)
+    _checkpoint_cached_ref: dict[str, Any] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.max_bytes is not None and (type(self.max_bytes) is not int or self.max_bytes < 0):
@@ -108,6 +113,7 @@ class FileToolResultStore:
         if isinstance(snapshot, (str, list, dict)):
             entry["size"] = len(snapshot)
         self._catalog[key] = entry
+        self._catalog_mutations += 1
         return key
 
     def store_result(self, data: Any) -> str:
@@ -411,6 +417,16 @@ class FileToolResultStore:
     def checkpoint_results(self) -> dict[str, Any]:
         """Bind an append-only catalog prefix without loading source values."""
         with self._lock:
+            if (
+                self._checkpoint_cached_ref is not None
+                and self._checkpoint_log is not None
+                and self._checkpoint_synced_mutations == self._catalog_mutations
+                and self._checkpoint_log.is_file()
+                and self._checkpoint_log.stat().st_size == self._checkpoint_bytes
+            ):
+                return {
+                    _CHECKPOINT_REFERENCE: dict(self._checkpoint_cached_ref[_CHECKPOINT_REFERENCE])
+                }
             directory = self._root / ".snapshots"
             directory.mkdir(exist_ok=True, mode=0o700)
             if self._checkpoint_log is None:
@@ -436,7 +452,7 @@ class FileToolResultStore:
             self._checkpoint_rowid = position
             self._checkpoint_bytes = length
             self._checkpoint_digest = digest
-            return {
+            ref = {
                 _CHECKPOINT_REFERENCE: {
                     "directory": self.directory,
                     "catalog": self._checkpoint_log.name,
@@ -444,6 +460,9 @@ class FileToolResultStore:
                     "sha256": digest.hexdigest(),
                 }
             }
+            self._checkpoint_synced_mutations = self._catalog_mutations
+            self._checkpoint_cached_ref = ref
+            return {_CHECKPOINT_REFERENCE: dict(ref[_CHECKPOINT_REFERENCE])}
 
     @staticmethod
     def _checkpoint_source(snapshot: dict[str, Any]) -> tuple[FileToolResultStore, Path, int]:
@@ -511,6 +530,8 @@ class FileToolResultStore:
         self._checkpoint_rowid = 0
         self._checkpoint_bytes = 0
         self._checkpoint_digest = hashlib.sha256()
+        self._checkpoint_synced_mutations = -1
+        self._checkpoint_cached_ref = None
 
     def restore_results(self, snapshot: dict[str, Any]) -> None:
         if set(snapshot) == {_CHECKPOINT_REFERENCE}:

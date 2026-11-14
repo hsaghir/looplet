@@ -629,7 +629,7 @@ They should not block.
 
 | API                                             | Use it for                                                                           |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `AgentPreset`                                   | In-memory composition of backend-independent harness pieces.                         |
+| `AgentPreset`                                   | In-memory composition of backend-independent harness pieces (`preset.fork()` clones isolated per-run state, config, and stateful hooks while borrowing live parent resources). |
 | `AgentBlueprint` / `blueprint_from_bundle(...)` | Inspect stable agent structure without retaining the temporary runtime preset.       |
 | `ContextProjection`                             | Immutable snapshot passed to `render_messages_override` for custom prompt rendering. |
 | `validate_preset_contract(...)`                 | Validate a built preset at a bundle/host boundary before execution.                  |
@@ -663,6 +663,7 @@ The async loop awaits async planners and builders.
 Source limits and record retention remain separate from the full prompt limit.
 An advisory `ContextPlan` is not an enforced policy.
 Visible tools do not imply permission to run them.
+Typed-history runs default to prefix-stable prompt rendering (`CachePolicy.stable_prefix=True`), keeping initial task/system messages unchanged across turns while placing dynamic state summaries, step briefings, and budget counters in ephemeral tail turn updates; pass `CachePolicy(stable_prefix=False)` to render dynamic blocks inline in the initial prompt.
 Custom builders and older keyword renderers remain supported.
 
 ## Evidence and replay

@@ -170,8 +170,10 @@ class _AssistantTurns:
                 for name in ("prompt_chars", "response_chars")
             ):
                 raise ValueError("invalid saved assistant-turn request size")
+        from looplet._storage import TrackedList
+
         self.data = copy.deepcopy(saved)
-        self.data.setdefault("requests", [])
+        self.data["requests"] = TrackedList(self.data.get("requests", ()))
         metadata[TURN_STATE_KEY] = self.data
         self.checkpoint: Callable[[], None] | None = None
         self.async_checkpoint: Callable[[], Any] | None = None
@@ -194,7 +196,12 @@ class _AssistantTurns:
         return snapshot
 
     def capture(
-        self, loop_ctx: Any, domain_checkpoint: Any, *, checkpoint_store: Any = None
+        self,
+        loop_ctx: Any,
+        domain_checkpoint: Any,
+        *,
+        checkpoint_store: Any = None,
+        include_tool_results: bool = True,
     ) -> Checkpoint:
         from looplet.checkpoint import _capture_checkpoint
         from looplet.types import DefaultState
@@ -229,6 +236,7 @@ class _AssistantTurns:
                 "queries_used": getattr(self.state, "queries_used", 0),
             },
             metadata=assistant_checkpoint_metadata(self.state, checkpoint_store=checkpoint_store),
+            include_tool_results=include_tool_results,
         )
         return checkpoint
 
@@ -240,10 +248,24 @@ class _AssistantTurns:
 
     async def save_async(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
         if store is not None and self.persistent_admission:
+            from dataclasses import replace as _dc_replace
+
             from looplet.checkpoint import _run_persistence
 
-            checkpoint = self.capture(loop_ctx, domain_checkpoint, checkpoint_store=store)
-            await _run_persistence(store.save, checkpoint, "model_turn")
+            checkpoint = self.capture(
+                loop_ctx,
+                domain_checkpoint,
+                checkpoint_store=store,
+                include_tool_results=False,
+            )
+
+            def _persist_turn_cp() -> None:
+                with_results = _dc_replace(
+                    checkpoint, tool_results_store=loop_ctx.tools.checkpoint_results()
+                )
+                store.save(with_results, "model_turn")
+
+            await _run_persistence(_persist_turn_cp)
 
     @property
     def turn_id(self) -> str:
@@ -413,27 +435,41 @@ def _checkpoint_step_record(step: Any) -> dict[str, Any]:
 
 def assistant_checkpoint_metadata(state: Any, *, checkpoint_store: Any = None) -> dict[str, Any]:
     from looplet._checkpoint_storage import CheckpointSequence
+    from looplet._storage import TrackedList
     from looplet.checkpoint import _IncrementalCheckpointStore
 
     metadata = getattr(state, "metadata", {})
     if not isinstance(metadata, dict) or TURN_STATE_KEY not in metadata:
         return {}
-    result = copy.deepcopy(
-        {
-            TURN_STATE_KEY: metadata[TURN_STATE_KEY],
-            "accepted_terminal_tool": getattr(state, "_accepted_terminal_tool", None),
-            "assistant_usage": {
-                name: metadata[name] for name in ("last_usage", "usage_total") if name in metadata
-            },
-            "assistant_stats": {
-                **getattr(state, "_looplet_run_stats", {}),
-                "llm_calls": metadata[TURN_STATE_KEY]["model_calls"],
-            },
+    raw_turns = metadata[TURN_STATE_KEY]
+    incremental = isinstance(checkpoint_store, _IncrementalCheckpointStore)
+    if (
+        incremental
+        and isinstance(raw_turns, dict)
+        and isinstance(raw_turns.get("requests"), TrackedList)
+    ):
+        turns_copy = {
+            k: (v.snapshot_list() if k == "requests" else json_snapshot(v))
+            for k, v in raw_turns.items()
         }
-    )
+    else:
+        turns_copy = json_snapshot(raw_turns)
+    result: dict[str, Any] = {
+        TURN_STATE_KEY: turns_copy,
+        "accepted_terminal_tool": json_snapshot(getattr(state, "_accepted_terminal_tool", None)),
+        "assistant_usage": {
+            name: json_snapshot(metadata[name])
+            for name in ("last_usage", "usage_total")
+            if name in metadata
+        },
+        "assistant_stats": {
+            **json_snapshot(getattr(state, "_looplet_run_stats", {})),
+            "llm_calls": raw_turns["model_calls"],
+        },
+    }
     result["assistant_steps"] = (
         CheckpointSequence(state.steps, _checkpoint_step_record)
-        if isinstance(checkpoint_store, _IncrementalCheckpointStore)
+        if incremental
         else [_checkpoint_step_record(step) for step in state.steps]
     )
     return result
@@ -610,7 +646,23 @@ class _AdmissionBackend:
         setter = getattr(self.backend, "set_conversation_input", None)
         if callable(setter):
             try:
-                setter(None if is_helper else copy.deepcopy(self.conversation_input))
+                if is_helper or self.conversation_input is None:
+                    setter(None)
+                else:
+                    fast_setter = getattr(self.backend, "_set_detached_conversation_input", None)
+                    if callable(fast_setter):
+                        conv_in = self.conversation_input
+                        fast_setter(
+                            {
+                                **conv_in,
+                                "conversation": {
+                                    **conv_in["conversation"],
+                                    "messages": list(conv_in["conversation"]["messages"]),
+                                },
+                            }
+                        )
+                    else:
+                        setter(json_snapshot(self.conversation_input))
             except TerminalLLMError as error:
                 raise _AdmissionDenied(error.termination_reason) from error
         context = self.turns.data.get("context", {})

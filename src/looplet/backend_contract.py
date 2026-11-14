@@ -269,16 +269,65 @@ class BackendWrapper:
             object.__setattr__(self, name, value)
 
 
+_JSON_SCALAR_TYPES = (str, bool, int, float)
+
+
+def _json_key(key: Any) -> str:
+    if type(key) is str or isinstance(key, str):
+        return key
+    if key is None:
+        return "null"
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if isinstance(key, (int, float)):
+        return str(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+
 def json_snapshot(value: Any) -> Any:
     """Copy JSON-compatible values and provider models without live references."""
+    if value is None or type(value) in _JSON_SCALAR_TYPES:
+        return value
+    if type(value) is list or isinstance(value, (list, tuple)):
+        return [
+            item if (item is None or type(item) in _JSON_SCALAR_TYPES) else json_snapshot(item)
+            for item in value
+        ]
+    if type(value) is dict:
+        return {
+            (k if type(k) is str else _json_key(k)): (
+                v if (v is None or type(v) in _JSON_SCALAR_TYPES) else json_snapshot(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, dict):
+        return {
+            (k if type(k) is str else _json_key(k)): (
+                v if (v is None or type(v) in _JSON_SCALAR_TYPES) else json_snapshot(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, _JSON_SCALAR_TYPES):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            dumped = dump(mode="json", warnings=False)
+        except TypeError:
+            dumped = dump(mode="json")
+        return json_snapshot(dumped)
+    if isinstance(value, SimpleNamespace):
+        return json_snapshot(vars(value))
 
     def serialize(item: Any) -> Any:
-        dump = getattr(item, "model_dump", None)
-        if callable(dump):
+        item_dump = getattr(item, "model_dump", None)
+        if callable(item_dump):
             try:
-                return dump(mode="json", warnings=False)
+                return item_dump(mode="json", warnings=False)
             except TypeError:
-                return dump(mode="json")
+                return item_dump(mode="json")
         if isinstance(item, SimpleNamespace):
             return vars(item)
         return str(item)

@@ -461,3 +461,26 @@ def test_run_store_rejects_checkpoint_from_another_run(tmp_path, store_kind) -> 
 
     with pytest.raises(ValueError, match="belongs to run 'run-b'"):
         store.save_checkpoint("run-a", checkpoint)
+
+
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+def test_run_store_orders_out_of_order_checkpoint_keys_canonically(tmp_path, store_kind) -> None:
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path)
+    store.create(RunEnvelope(run_id="out-of-order"))
+    for step in (10, 2, 1, 2):
+        store.save_checkpoint(
+            "out-of-order",
+            Checkpoint(
+                step_number=step,
+                session_log_data={"entries": [step]},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={},
+            ),
+        )
+    record = store.load("out-of-order")
+    assert record is not None
+    assert record.checkpoint_keys == ("step_1", "step_2", "step_10")
+    latest = store.load_checkpoint("out-of-order", record.checkpoint_keys[-1])
+    assert latest is not None and latest.step_number == 10

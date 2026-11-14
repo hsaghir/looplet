@@ -420,14 +420,18 @@ class FileCheckpointStore:
     def _read_existing(self, path: Path) -> Checkpoint:
         return self._read(path)
 
+    def _documents_reader(self) -> Any:
+        from looplet._checkpoint_storage import CheckpointDocuments
+
+        docs = getattr(self, "_documents", None)
+        return docs if docs is not None else CheckpointDocuments(self._dir)
+
     def _read(self, path: Path, *, summary_only: bool = False) -> Checkpoint:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("schema") == _DOCUMENT_SCHEMA:
-            from looplet._checkpoint_storage import CheckpointDocuments
-
             if set(data) != {"schema", "root"}:
                 raise ValueError("invalid checkpoint document manifest")
-            documents = CheckpointDocuments(self._dir)
+            documents = self._documents_reader()
             fields = None
             if summary_only:
                 from looplet.assistant_turns import TURN_STATE_KEY
@@ -455,9 +459,7 @@ class FileCheckpointStore:
     def _verify_records(self, path: Path, verified: set[str]) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("schema") == _DOCUMENT_SCHEMA:
-            from looplet._checkpoint_storage import CheckpointDocuments
-
-            CheckpointDocuments(self._dir).verify(data["root"], verified)
+            self._documents_reader().verify(data["root"], verified)
 
     @staticmethod
     def _validate_run_id(run_id: str | None) -> None:
@@ -479,8 +481,17 @@ class FileCheckpointStore:
 
     def save(self, checkpoint: Checkpoint, key: str) -> None:
         """Write checkpoint to ``{directory}/{key}.json``."""
+        from looplet.assistant_turns import TURN_STATE_KEY
+
         safe_key = self.key_for(checkpoint, key)
         path = self._dir / f"{safe_key}.json"
+        turns = checkpoint.metadata.get(TURN_STATE_KEY)
+        needs_fsync = bool(
+            checkpoint.is_terminal
+            or checkpoint.metadata.get("pending_calls")
+            or (isinstance(turns, dict) and turns.get("pending_model_call"))
+            or safe_key.endswith(("_pending", "_done", "_terminal"))
+        )
         fd, temporary_name = tempfile.mkstemp(
             dir=self._dir,
             prefix=f".{safe_key}.",
@@ -491,7 +502,8 @@ class FileCheckpointStore:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(self._serialize(checkpoint), indent=2))
                 handle.flush()
-                os.fsync(handle.fileno())
+                if needs_fsync:
+                    os.fsync(handle.fileno())
             try:
                 os.link(temporary, path)
             except FileExistsError:
@@ -640,7 +652,7 @@ class _IncrementalCheckpointStore(FileCheckpointStore):
 
     def _read_existing(self, path: Path) -> Checkpoint:
         checkpoint = self._read(path, summary_only=True)
-        self._verify_records(path, set())
+        self._verify_records(path, self._documents._verified_digests)
         return checkpoint
 
     def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
@@ -667,6 +679,7 @@ def _capture_checkpoint(
     metadata: dict[str, Any],
     checkpoint_state: Callable[..., Any] | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    include_tool_results: bool = True,
 ) -> Checkpoint:
     state = loop_ctx.state
     return Checkpoint(
@@ -685,7 +698,7 @@ def _capture_checkpoint(
                 "budget_remaining": getattr(state, "budget_remaining", 0),
             }
         ),
-        tool_results_store=loop_ctx.tools.checkpoint_results(),
+        tool_results_store=loop_ctx.tools.checkpoint_results() if include_tool_results else {},
         domain_state=checkpoint_state(loop_ctx) if checkpoint_state is not None else {},
         run_envelope=loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None,
         metadata=metadata,

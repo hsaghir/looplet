@@ -91,6 +91,8 @@ logger = logging.getLogger(__name__)
 _CALL_ARTIFACT = re.compile(r"call_\d+_(?:prompt|response)\.txt")
 _CALL_RESPONSE_ARTIFACT = re.compile(r"call_(\d+)_response\.txt")
 _STEP_ARTIFACT = re.compile(r"step_\d+\.json")
+_ATTEMPT_ARTIFACT = re.compile(r".+\.(?:intent|outcome|dispatch-\d+)\.json")
+_BLOB_ARTIFACT = re.compile(r"[0-9a-f]{64}\.json")
 
 
 def _clear_call_artifacts(root: Path) -> None:
@@ -100,15 +102,73 @@ def _clear_call_artifacts(root: Path) -> None:
     (root / "manifest.jsonl").unlink(missing_ok=True)
 
 
+def _clear_model_attempts(attempt_dir: Path) -> None:
+    if attempt_dir.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {attempt_dir}")
+    if not attempt_dir.is_dir():
+        return
+    for entry in attempt_dir.iterdir():
+        if not entry.is_symlink() and entry.is_file() and _ATTEMPT_ARTIFACT.fullmatch(entry.name):
+            entry.unlink()
+    blobs = attempt_dir / "blobs"
+    if blobs.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {blobs}")
+    if blobs.is_dir():
+        for blob in blobs.iterdir():
+            if not blob.is_symlink() and blob.is_file() and _BLOB_ARTIFACT.fullmatch(blob.name):
+                blob.unlink()
+
+
 def _model_attempt_root(directory: Path) -> Path:
     if directory.is_symlink():
         raise ValueError(f"Invalid model attempt directory: {directory}")
     return directory
 
 
+def _load_attempt_blob(blob_root: Path, ref: Any, blob_cache: dict[str, Any]) -> Any:
+    if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{64}", ref):
+        raise ValueError(f"Invalid model attempt blob digest: {ref!r}")
+    if ref not in blob_cache:
+        blob_file = _artifact_path(blob_root, f"{ref}.json")
+        raw_bytes = blob_file.read_bytes()
+        if hashlib.sha256(raw_bytes).hexdigest() != ref:
+            raise ValueError(f"Corrupt model attempt blob: {ref}")
+        blob_cache[ref] = json.loads(raw_bytes.decode("utf-8"))
+    return json_snapshot(blob_cache[ref])
+
+
+def _rehydrate_attempt_provider_request(
+    root: Path, provider_req: Any, blob_cache: dict[str, Any]
+) -> None:
+    if not isinstance(provider_req, dict):
+        return
+    blob_root: Path | None = None
+    if "tools_blob_ref" in provider_req and "tools" not in provider_req:
+        blob_root = _model_attempt_root(root / "blobs")
+        provider_req["tools"] = _load_attempt_blob(
+            blob_root, provider_req.pop("tools_blob_ref"), blob_cache
+        )
+    for list_key, ref_key in (
+        ("messages", "message_blob_refs"),
+        ("input", "input_blob_refs"),
+    ):
+        if ref_key in provider_req and list_key not in provider_req:
+            refs = provider_req.pop(ref_key)
+            if not isinstance(refs, list):
+                raise ValueError(f"Invalid {ref_key} in model attempt")
+            if blob_root is None:
+                blob_root = _model_attempt_root(root / "blobs")
+            provider_req[list_key] = [
+                _load_attempt_blob(blob_root, ref, blob_cache) for ref in refs
+            ]
+
+
 def _rehydrate_attempt_conversation(root: Path, req: Any, blob_cache: dict[str, Any]) -> None:
     if not isinstance(req, dict):
         return
+    if "tools_blob_ref" in req and "tools" not in req:
+        blob_root = _model_attempt_root(root / "blobs")
+        req["tools"] = _load_attempt_blob(blob_root, req.pop("tools_blob_ref"), blob_cache)
     conv_in = req.get("conversation_input")
     if not isinstance(conv_in, dict):
         return
@@ -119,18 +179,7 @@ def _rehydrate_attempt_conversation(root: Path, req: Any, blob_cache: dict[str, 
     if not isinstance(refs, list):
         raise ValueError("Invalid message_blob_refs in model attempt")
     blob_root = _model_attempt_root(root / "blobs")
-    restored_msgs: list[Any] = []
-    for ref in refs:
-        if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{64}", ref):
-            raise ValueError(f"Invalid model attempt blob digest: {ref!r}")
-        if ref not in blob_cache:
-            blob_file = _artifact_path(blob_root, f"{ref}.json")
-            raw_bytes = blob_file.read_bytes()
-            if hashlib.sha256(raw_bytes).hexdigest() != ref:
-                raise ValueError(f"Corrupt model attempt blob: {ref}")
-            blob_cache[ref] = json.loads(raw_bytes.decode("utf-8"))
-        restored_msgs.append(copy.deepcopy(blob_cache[ref]))
-    conv_obj["messages"] = restored_msgs
+    conv_obj["messages"] = [_load_attempt_blob(blob_root, ref, blob_cache) for ref in refs]
 
 
 _ATTEMPT_ID_LOCK = Lock()
@@ -184,21 +233,35 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
             raise ValueError(f"Model attempt has no committed intent: {attempt_id}")
         intent = records["intent"]
         _rehydrate_attempt_conversation(root, intent.get("request"), blob_cache)
+        dispatch_keys = [kind for kind in sorted(records) if kind.startswith("dispatch-")]
+        for dkey in dispatch_keys:
+            _rehydrate_attempt_provider_request(
+                root, records[dkey].get("provider_request"), blob_cache
+            )
         outcome = records.get("outcome")
         if isinstance(outcome, dict) and isinstance(outcome.get("capture"), dict):
             cap = outcome["capture"]
             if "request" not in cap and cap.get("request_ref") == "intent":
                 cap.pop("request_ref", None)
-                cap["request"] = copy.deepcopy(intent.get("request"))
+                cap["request"] = json_snapshot(intent.get("request"))
             else:
                 _rehydrate_attempt_conversation(root, cap.get("request"), blob_cache)
+            pref = cap.get("provider_request_ref")
+            if (
+                "provider_request" not in cap
+                and isinstance(pref, str)
+                and pref in records
+                and isinstance(records[pref], dict)
+            ):
+                cap.pop("provider_request_ref", None)
+                cap["provider_request"] = json_snapshot(records[pref].get("provider_request"))
+            else:
+                _rehydrate_attempt_provider_request(root, cap.get("provider_request"), blob_cache)
         attempts.append(
             {
                 "attempt_id": attempt_id,
                 "intent": intent,
-                "prepared_requests": [
-                    records[kind] for kind in sorted(records) if kind.startswith("dispatch-")
-                ],
+                "prepared_requests": [records[kind] for kind in dispatch_keys],
                 "outcome": outcome,
             }
         )
@@ -286,8 +349,10 @@ def _truncate(s: str, limit: int) -> str:
 def _redact_value(
     value: Any, redact: Callable[[str], str] | None, *, preserve_opaque: bool = False
 ) -> Any:
+    if redact is None:
+        return value
     if isinstance(value, str):
-        return redact(value) if redact is not None else value
+        return redact(value)
     if isinstance(value, (list, tuple)):
         return [_redact_value(item, redact, preserve_opaque=preserve_opaque) for item in value]
     if isinstance(value, dict):
@@ -472,6 +537,9 @@ class _RecordingBase:
         )
         self._blob_lock = Lock()
         self._last_blob_msgs: list[tuple[Any, str]] = []
+        self._last_provider_msgs: list[tuple[Any, str]] = []
+        self._last_tools_blob: tuple[Any, str] | None = None
+        self._last_provider_tools_blob: tuple[Any, str] | None = None
         self._written_blobs: set[tuple[Path, str]] = set()
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
@@ -506,6 +574,7 @@ class _RecordingBase:
         recorder._conversation_input = self._conversation_input
         recorder._blob_lock = self._blob_lock
         recorder._last_blob_msgs = self._last_blob_msgs
+        recorder._last_provider_msgs = self._last_provider_msgs
         recorder._written_blobs = self._written_blobs
         return recorder
 
@@ -547,20 +616,25 @@ class _RecordingBase:
             method(context)
 
     def set_conversation_input(self, snapshot: dict[str, Any] | None) -> Any:
+        return self._set_detached_conversation_input(json_snapshot(snapshot))
+
+    def _set_detached_conversation_input(self, detached: dict[str, Any] | None) -> Any:
         method = getattr(self._backend, "set_conversation_input", None)
         if not callable(method):
-            if snapshot is not None:
+            if detached is not None:
                 raise TerminalLLMError(
                     "Backend lacks conversation input support",
                     termination_reason="unsupported_context",
                 )
             self._conversation_input.set(None)
             return None
-        detached = json_snapshot(snapshot)
-        if self._redact_upstream:
+        if self._redact_upstream and self._redact is not None:
             detached = _redact_value(detached, self._redact, preserve_opaque=True)
-        self._conversation_input.set(json_snapshot(detached))
-        return method(detached)
+        self._conversation_input.set(detached)
+        fast = getattr(self._backend, "_set_detached_conversation_input", None)
+        if callable(fast):
+            return fast(detached)
+        return method(json_snapshot(detached))
 
     def apply_context_compaction(self, snapshot: dict[str, Any]) -> Any:
         method = getattr(self._backend, "apply_context_compaction", None)
@@ -578,6 +652,81 @@ class _RecordingBase:
     def _redact_native_response(self, value: Any) -> Any:
         return _redact_value(value, self._redact)
 
+    def _write_blob_unlocked(self, blob_root: Path, item: Any, *, sync: bool = False) -> str:
+        blob_text = json.dumps(
+            item,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(blob_text.encode("ascii")).hexdigest()
+        if (blob_root, digest) not in self._written_blobs:
+            blob_path = _artifact_path(blob_root, f"{digest}.json")
+            if not blob_path.exists():
+                _atomic_write(blob_path, blob_text, sync=sync)
+            self._written_blobs.add((blob_root, digest))
+        return digest
+
+    def _dedup_blob_list_unlocked(
+        self,
+        blob_root: Path,
+        items: list[Any],
+        memo: list[tuple[Any, str]],
+    ) -> list[str]:
+        refs: list[str] = []
+        new_memo: list[tuple[Any, str]] = []
+        for pos, item in enumerate(items):
+            if pos < len(memo) and memo[pos][0] == item:
+                digest = memo[pos][1]
+                if (blob_root, digest) not in self._written_blobs:
+                    blob_path = _artifact_path(blob_root, f"{digest}.json")
+                    if not blob_path.exists():
+                        blob_text = json.dumps(
+                            item,
+                            ensure_ascii=True,
+                            allow_nan=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        _atomic_write(blob_path, blob_text, sync=False)
+                    self._written_blobs.add((blob_root, digest))
+            else:
+                digest = self._write_blob_unlocked(blob_root, item, sync=False)
+            refs.append(digest)
+            new_memo.append((item, digest))
+        memo[:] = new_memo
+        return refs
+
+    def _dedup_provider_request_unlocked(
+        self, blob_root: Path, preq: dict[str, Any]
+    ) -> dict[str, Any]:
+        out = dict(preq)
+        ptools = out.get("tools")
+        if isinstance(ptools, list) and ptools:
+            prev_pt = self._last_provider_tools_blob
+            if (
+                prev_pt is not None
+                and prev_pt[0] == ptools
+                and (blob_root, prev_pt[1]) in self._written_blobs
+            ):
+                tdigest = prev_pt[1]
+            else:
+                tdigest = self._write_blob_unlocked(blob_root, ptools, sync=False)
+                self._last_provider_tools_blob = (ptools, tdigest)
+            out.pop("tools", None)
+            out["tools_blob_ref"] = tdigest
+        for list_key, ref_key in (
+            ("messages", "message_blob_refs"),
+            ("input", "input_blob_refs"),
+        ):
+            seq = out.get(list_key)
+            if isinstance(seq, list) and seq:
+                refs = self._dedup_blob_list_unlocked(blob_root, seq, self._last_provider_msgs)
+                out.pop(list_key, None)
+                out[ref_key] = refs
+        return out
+
     def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> None:
         assert self._attempt_directory is not None
         root = _model_attempt_root(self._attempt_directory)
@@ -585,7 +734,7 @@ class _RecordingBase:
         policy = _artifact_path(root, ".gitignore")
         record = _artifact_path(root, f"{attempt_id}.{kind}.json")
         if not policy.exists():
-            _atomic_write(policy, "*\n")
+            _atomic_write(policy, "*\n", sync=False)
         raw = json_snapshot(
             {
                 "schema": "looplet.model-attempt.v1",
@@ -596,61 +745,69 @@ class _RecordingBase:
         )
         payload = raw if kind in {"intent", "outcome"} else _redact_model_record(raw, self._redact)
         if kind == "intent" and isinstance(payload.get("request"), dict):
-            conv_in = payload["request"].get("conversation_input")
-            if isinstance(conv_in, dict) and isinstance(conv_in.get("conversation"), dict):
-                conv_obj = conv_in["conversation"]
-                msgs = conv_obj.get("messages")
-                if isinstance(msgs, list) and msgs:
-                    blob_root = _model_attempt_root(root / "blobs")
-                    blob_root.mkdir(mode=0o700, exist_ok=True)
-                    refs: list[str] = []
-                    with self._blob_lock:
-                        prev = list(self._last_blob_msgs)
-                        new_memo: list[tuple[Any, str]] = []
-                        for pos, msg in enumerate(msgs):
-                            if pos < len(prev) and prev[pos][0] == msg:
-                                digest = prev[pos][1]
-                                if (blob_root, digest) not in self._written_blobs:
-                                    blob_text = json.dumps(
-                                        msg,
-                                        ensure_ascii=True,
-                                        allow_nan=False,
-                                        sort_keys=True,
-                                        separators=(",", ":"),
-                                    )
-                                    blob_path = _artifact_path(blob_root, f"{digest}.json")
-                                    if not blob_path.exists():
-                                        _atomic_write(blob_path, blob_text)
-                                    self._written_blobs.add((blob_root, digest))
-                            else:
-                                blob_text = json.dumps(
-                                    msg,
-                                    ensure_ascii=True,
-                                    allow_nan=False,
-                                    sort_keys=True,
-                                    separators=(",", ":"),
-                                )
-                                digest = hashlib.sha256(blob_text.encode("ascii")).hexdigest()
-                                if (blob_root, digest) not in self._written_blobs:
-                                    blob_path = _artifact_path(blob_root, f"{digest}.json")
-                                    if not blob_path.exists():
-                                        _atomic_write(blob_path, blob_text)
-                                    self._written_blobs.add((blob_root, digest))
-                            refs.append(digest)
-                            new_memo.append((msg, digest))
-                        self._last_blob_msgs[:] = new_memo
-                    conv_in["conversation"] = {
-                        k: v for k, v in conv_obj.items() if k != "messages"
-                    } | {"message_blob_refs": refs}
+            req_obj = payload["request"]
+            rtools = req_obj.get("tools")
+            conv_in = req_obj.get("conversation_input")
+            conv_obj = (
+                conv_in.get("conversation")
+                if isinstance(conv_in, dict) and isinstance(conv_in.get("conversation"), dict)
+                else None
+            )
+            msgs = conv_obj.get("messages") if isinstance(conv_obj, dict) else None
+            if (isinstance(rtools, list) and rtools) or (isinstance(msgs, list) and msgs):
+                blob_root = _model_attempt_root(root / "blobs")
+                blob_root.mkdir(mode=0o700, exist_ok=True)
+                with self._blob_lock:
+                    if isinstance(rtools, list) and rtools:
+                        prev_t = self._last_tools_blob
+                        if (
+                            prev_t is not None
+                            and prev_t[0] == rtools
+                            and (blob_root, prev_t[1]) in self._written_blobs
+                        ):
+                            tdigest = prev_t[1]
+                        else:
+                            tdigest = self._write_blob_unlocked(blob_root, rtools, sync=False)
+                            self._last_tools_blob = (rtools, tdigest)
+                        req_obj.pop("tools", None)
+                        req_obj["tools_blob_ref"] = tdigest
+                    if isinstance(conv_obj, dict) and isinstance(msgs, list) and msgs:
+                        refs = self._dedup_blob_list_unlocked(blob_root, msgs, self._last_blob_msgs)
+                        assert isinstance(conv_in, dict)
+                        conv_in["conversation"] = {
+                            k: v for k, v in conv_obj.items() if k != "messages"
+                        } | {"message_blob_refs": refs}
+        elif kind.startswith("dispatch-") and isinstance(payload.get("provider_request"), dict):
+            blob_root = _model_attempt_root(root / "blobs")
+            blob_root.mkdir(mode=0o700, exist_ok=True)
+            with self._blob_lock:
+                payload["provider_request"] = self._dedup_provider_request_unlocked(
+                    blob_root, payload["provider_request"]
+                )
         elif kind == "outcome" and isinstance(payload.get("capture"), dict):
             cap = payload["capture"]
-            if "request" in cap:
-                payload["capture"] = {k: v for k, v in cap.items() if k != "request"} | {
-                    "request_ref": "intent"
-                }
+            new_cap = dict(cap)
+            if "request" in new_cap:
+                new_cap.pop("request", None)
+                new_cap["request_ref"] = "intent"
+            dispatch_ref = value.get("_provider_request_ref")
+            if isinstance(dispatch_ref, str) and "provider_request" in new_cap:
+                new_cap.pop("provider_request", None)
+                new_cap["provider_request_ref"] = dispatch_ref
+                payload.pop("_provider_request_ref", None)
+            elif isinstance(new_cap.get("provider_request"), dict):
+                blob_root = _model_attempt_root(root / "blobs")
+                blob_root.mkdir(mode=0o700, exist_ok=True)
+                with self._blob_lock:
+                    new_cap["provider_request"] = self._dedup_provider_request_unlocked(
+                        blob_root, new_cap["provider_request"]
+                    )
+            payload["capture"] = new_cap
+        payload.pop("_provider_request_ref", None)
         _atomic_write(
             record,
             json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            sync=(kind == "intent"),
         )
 
     def _write_dispatch(self, attempt_id: str, number: int, request: Any) -> None:
@@ -726,9 +883,14 @@ class _RecordingBase:
         persist_prepared: bool = True,
     ) -> Iterator[_ModelRequestCapture]:
         conversation_input = self._conversation_input.get(self._unbound_conversation)
-        bind_conversation = getattr(self._backend, "set_conversation_input", None)
-        if conversation_input is not self._unbound_conversation and callable(bind_conversation):
-            bind_conversation(conversation_input)
+        if conversation_input is not self._unbound_conversation:
+            fast_bind = getattr(self._backend, "_set_detached_conversation_input", None)
+            if callable(fast_bind):
+                fast_bind(conversation_input)
+            else:
+                bind_conversation = getattr(self._backend, "set_conversation_input", None)
+                if callable(bind_conversation):
+                    bind_conversation(json_snapshot(conversation_input))
         with _capture_model_request(native_capture) as captured:
             setter = getattr(self._backend, "set_request_attempt_callback", None)
             if not callable(setter):
@@ -853,7 +1015,7 @@ class _RecordingBase:
             if self._redact_upstream or self._redact is None
             else _redact_value(conv_snapshot, self._redact)
         )
-        redacted_tools = _redact_value(tools, self._redact)
+        redacted_tools = json_snapshot(_redact_value(tools, self._redact))
         redacted_options = _redact_value(options or {}, self._redact)
         redacted_response = (
             self._redact(response)
@@ -962,11 +1124,17 @@ class _RecordingBase:
             try:
                 for number, request in enumerate(prepared_requests or (), 1):
                     self._write_dispatch(attempt_id, number, request)
+                slim_capture = (
+                    {k: v for k, v in call.capture.items() if k != "request"}
+                    | ({"request_ref": "intent"} if "request" in call.capture else {})
+                    if isinstance(call.capture, dict)
+                    else call.capture
+                )
                 self._write_attempt(
                     attempt_id,
                     "outcome",
                     {
-                        "capture": call.capture,
+                        "capture": slim_capture,
                         "scope": "logical_outcome_and_backend_reported_provider_envelopes",
                         "response_complete": call.error is None,
                     },
@@ -996,11 +1164,19 @@ class _RecordingBase:
             begin_artifact_write(root)
         _clear_call_artifacts(root)
         manifest = root / "manifest.jsonl"
+        tools_cache: tuple[Any, str] | None = None
         with manifest.open("w", encoding="utf-8") as mf:
             for c in self.calls:
                 idx = f"{c.index:02d}"
+                tools_text: str | None = None
+                if c.tools:
+                    if tools_cache is not None and tools_cache[0] == c.tools:
+                        tools_text = tools_cache[1]
+                    else:
+                        tools_text = json.dumps(c.tools, indent=2)
+                        tools_cache = (c.tools, tools_text)
                 (root / f"call_{idx}_prompt.txt").write_text(
-                    _format_prompt_block(c), encoding="utf-8"
+                    _format_prompt_block(c, tools_json=tools_text), encoding="utf-8"
                 )
                 (root / f"call_{idx}_response.txt").write_text(
                     _format_response_block(c), encoding="utf-8"
@@ -1021,7 +1197,7 @@ class _RecordingBase:
         self._conversation_input.set(None)
 
 
-def _format_prompt_block(call: LLMCall) -> str:
+def _format_prompt_block(call: LLMCall, *, tools_json: str | None = None) -> str:
     parts = [f"# call {call.index:02d} - method={call.method}"]
     if call.step_num is not None:
         parts.append(f"# step={call.step_num}")
@@ -1036,7 +1212,7 @@ def _format_prompt_block(call: LLMCall) -> str:
     parts.append(call.prompt)
     if call.tools:
         parts.append("\n## TOOLS\n")
-        parts.append(json.dumps(call.tools, indent=2))
+        parts.append(tools_json if tools_json is not None else json.dumps(call.tools, indent=2))
     return "\n".join(parts)
 
 
@@ -2244,6 +2420,7 @@ class ProvenanceSink:
         self._overwrite = overwrite
         self._flushed = False
         self._owns_attempts = False
+        self._cleared_overwrite = False
         self._check_directory()
         self._max_chars = max_chars_per_call
         self._redact = redact
@@ -2287,6 +2464,9 @@ class ProvenanceSink:
                 for method in ("generate", "generate_with_tools")
             )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
+        if self._overwrite and not self._cleared_overwrite:
+            _clear_model_attempts(self._dir / "model-attempts")
+            self._cleared_overwrite = True
         self._owns_attempts = True
         self._recording_llm = cls(
             backend,
@@ -2313,6 +2493,9 @@ class ProvenanceSink:
     def flush(self) -> Path:
         """Write everything to disk and return the directory path."""
         self._check_directory()
+        if self._overwrite and not self._cleared_overwrite:
+            _clear_model_attempts(self._dir / "model-attempts")
+            self._cleared_overwrite = True
         if self._hook is not None:
             output = self._hook.save(self._dir)
         elif self._recording_llm is not None:
@@ -2323,12 +2506,19 @@ class ProvenanceSink:
         self._flushed = True
         return output
 
+    async def flush_async(self) -> Path:
+        """Flush provenance artifacts on a worker thread without blocking the event loop."""
+        from looplet.checkpoint import _run_persistence
+
+        return await _run_persistence(self.flush)
+
     def reset(self) -> None:
         if self._recording_llm is not None:
             self._recording_llm.reset()
         self._hook = None
         self._flushed = False
         self._owns_attempts = False
+        self._cleared_overwrite = False
         if self._automatic_dir:
             self._dir = Path(".looplet/traces") / uuid4().hex
             if self._recording_llm is not None:

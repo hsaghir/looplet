@@ -14,7 +14,7 @@ from looplet.context_projection import (
     model_turn_context,
 )
 from looplet.memory import render_memory
-from looplet.prompts import build_prompt
+from looplet.prompts import _render_facts_generic, build_prompt
 from looplet.result_projection import project_result_batches
 from looplet.scaffolding import ContextBudgetSnapshot, estimate_prompt_tokens
 from looplet.tools import ToolView
@@ -173,7 +173,10 @@ def _finish(
     turn_update = ""
     extra_history_chars = 0
     if config.uses_typed_history and config.render_messages_override is None:
-        if used_default_builder and getattr(config.cache_policy, "stable_prefix", False):
+        stable_prefix = (
+            config.cache_policy.stable_prefix if config.cache_policy is not None else True
+        )
+        if used_default_builder and stable_prefix:
             conversation_prompt = inputs.default_prompt(
                 **{
                     **kwargs,
@@ -183,10 +186,23 @@ def _finish(
                 }
             )
             update_parts: list[str] = []
+            state_summary = kwargs.get("state_summary")
+            if isinstance(state_summary, dict) and state_summary:
+                facts_lines = _render_facts_generic(state_summary)
+                if facts_lines:
+                    update_parts.append("[ESTABLISHED FACTS]\n" + "\n".join(facts_lines))
             if kwargs.get("briefing"):
                 update_parts.append(f"[STEP BRIEFING]\n{kwargs['briefing']}")
             if kwargs["step_number"] > 1:
-                update_parts.append(f"Step {kwargs['step_number']}/{kwargs['max_steps']}.")
+                budget_rem = (
+                    state_summary.get("budget_remaining")
+                    if isinstance(state_summary, dict)
+                    else None
+                )
+                step_line = f"Step {kwargs['step_number']}/{kwargs['max_steps']}."
+                if not inputs.execution_only and isinstance(budget_rem, int) and budget_rem <= 3:
+                    step_line += " ⚠ LOW BUDGET - consolidate and prepare your conclusion."
+                update_parts.append(step_line)
             turn_update = "\n\n".join(update_parts)
         history = conversation.continuation_context()
         if history:

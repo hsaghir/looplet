@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,29 @@ from looplet.run_records import ArtifactRef, RunEvent, RunRecord
 from looplet.types import RunEnvelope, RunResult
 
 __all__ = ["RunStore", "MemoryRunStore", "FileRunStore"]
+
+
+class _RunLock:
+    """Weakly referenceable per-run reentrant lock holder."""
+
+    __slots__ = ("lock", "__weakref__")
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+
+
+def _checkpoint_key_sort_key(item: tuple[int, str]) -> tuple[int, int, int]:
+    idx, key = item
+    if key.startswith("step_"):
+        suffix = key[5:]
+        if suffix.isdigit() or (suffix.startswith("-") and suffix[1:].isdigit()):
+            return (0, int(suffix), idx)
+    return (1, 0, idx)
+
+
+def _ordered_checkpoint_keys(existing: Sequence[str], new_key: str) -> tuple[str, ...]:
+    unique = list(dict.fromkeys((*existing, new_key)))
+    return tuple(key for _, key in sorted(enumerate(unique), key=_checkpoint_key_sort_key))
 
 
 class _InterProcessFileLock:
@@ -138,8 +162,8 @@ class MemoryRunStore:
                 validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             self._records[run_id] = record.with_updates(
-                updated_at=checkpoint.created_at,
-                checkpoint_keys=tuple(dict.fromkeys((*record.checkpoint_keys, key))),
+                updated_at=max(record.updated_at, checkpoint.created_at),
+                checkpoint_keys=_ordered_checkpoint_keys(record.checkpoint_keys, key),
             )
             self._checkpoints[(run_id, key)] = copy.deepcopy(checkpoint)
             return key
@@ -216,29 +240,33 @@ class FileRunStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._io_gate = threading.BoundedSemaphore(4)
-        self._run_locks: dict[str, threading.RLock] = {}
+        self._run_locks: weakref.WeakValueDictionary[str, _RunLock] = weakref.WeakValueDictionary()
+        self._recent_run_locks: OrderedDict[str, _RunLock] = OrderedDict()
         self._header_cache: OrderedDict[str, tuple[int, int, RunRecord]] = OrderedDict()
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        with self._lock:
+        with self._io_gate:
             with _InterProcessFileLock(self.directory / ".run-store.lock"):
                 yield
 
-    def _get_run_lock(self, run_id: str) -> threading.RLock:
+    def _get_run_lock(self, run_id: str) -> _RunLock:
         with self._lock:
-            lock = self._run_locks.get(run_id)
-            if lock is None:
-                if len(self._run_locks) >= 256:
-                    self._run_locks.clear()
-                lock = threading.RLock()
-                self._run_locks[run_id] = lock
-            return lock
+            holder = self._run_locks.get(run_id)
+            if holder is None:
+                holder = _RunLock()
+                self._run_locks[run_id] = holder
+            self._recent_run_locks.pop(run_id, None)
+            self._recent_run_locks[run_id] = holder
+            while len(self._recent_run_locks) > 256:
+                self._recent_run_locks.popitem(last=False)
+            return holder
 
     @contextmanager
     def _locked_run(self, run_id: str) -> Iterator[Path | None]:
-        root = self._root(run_id)
-        with self._get_run_lock(run_id), self._io_gate:
+        holder = self._get_run_lock(run_id)
+        with holder.lock, self._io_gate:
+            root = self._root(run_id)
             if not root.is_dir():
                 yield None
                 return
@@ -248,7 +276,8 @@ class FileRunStore:
     def create(
         self, envelope: RunEnvelope, *, metadata: Mapping[str, Any] | None = None
     ) -> RunRecord:
-        with self._locked():
+        holder = self._get_run_lock(envelope.run_id)
+        with holder.lock, self._locked():
             root = self._root(envelope.run_id)
             try:
                 root.mkdir()
@@ -300,8 +329,8 @@ class FileRunStore:
             path = self._file(run_id, f"checkpoints/{key}.json")
             self._write(path, checkpoint.to_dict(), sync=False)
             updated = record.with_updates(
-                updated_at=checkpoint.created_at,
-                checkpoint_keys=tuple(dict.fromkeys((*record.checkpoint_keys, key))),
+                updated_at=max(record.updated_at, checkpoint.created_at),
+                checkpoint_keys=_ordered_checkpoint_keys(record.checkpoint_keys, key),
             )
             self._write_record(run_id, self._file(run_id, "run.json"), updated, sync=False)
             return key

@@ -582,3 +582,22 @@ def test_server_refuses_live_socket(tmp_path):
     finally:
         owner.close()
         os.unlink(path)
+
+
+def test_start_publishes_listener_before_accepting_readiness_probe(monkeypatch):
+    import time
+
+    orig_listen = socket.socket.listen
+
+    def delayed_listen(sock, *args):
+        orig_listen(sock, *args)
+        time.sleep(0.05)
+
+    monkeypatch.setattr(socket.socket, "listen", delayed_listen)
+    handle = ModelGatewayHandle.start(backend=_ScriptedLLM(["ok"]), export_env=False)
+    try:
+        assert handle.server._srv is not None
+        dup = handle.server._srv.dup()
+        dup.close()
+    finally:
+        handle.close()

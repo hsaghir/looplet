@@ -60,9 +60,6 @@ from looplet.loop import (
     _validate_hooks,
     _validate_loop_inputs,
 )
-from looplet.loop import (
-    _render_projection as _render_projection,
-)
 from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.scaffolding import (
     LLMResult,
@@ -91,13 +88,6 @@ __all__ = [
 # ── Retry constants (mirror scaffolding.py) ──────────────────────
 MAX_LLM_RETRIES = 2
 RETRY_BACKOFF_BASE = 1.0
-
-
-async def _maybe_await(value: Any) -> Any:
-    """Resolve sync or async hook results in registration order."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 class _NestedModelRequest:
@@ -922,6 +912,8 @@ async def _async_composable_loop_impl(
             async_llm=async_tool_llm,
         )
 
+    active_stream_box: list[Any] = [None]
+    stream_workers = 1 if not config.concurrent_dispatch else max(1, config.max_parallel_calls)
     async for step in drive_turn_machine_async(
         run_turn_machine(
             llm=llm,
@@ -940,10 +932,12 @@ async def _async_composable_loop_impl(
             compact_service=_compact_service,
             make_tool_ctx=_make_async_tool_ctx,
             make_stream_executor=lambda: AsyncStreamingToolExecutor(
-                tools, max_concurrent=max(1, config.max_parallel_calls)
+                tools, max_concurrent=stream_workers
             ),
             on_turn_llm_selected=_on_turn_llm,
             build_final_trace=False,
-        )
+            active_stream_box=active_stream_box,
+        ),
+        active_stream_box=active_stream_box,
     ):
         yield step

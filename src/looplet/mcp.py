@@ -346,6 +346,7 @@ class MCPToolAdapter:
         if self._proc.stdout is not None and callable(getattr(self._proc.stdout, "readline", None)):
             stdout_pipe = self._proc.stdout
             max_bytes = self._max_message_bytes
+            max_queued_lines = max(64, self._max_pending_messages * 2)
             with self._stdout_cond:
                 self._stdout_lines.clear()
                 self._stdout_eof = False
@@ -358,6 +359,15 @@ class MCPToolAdapter:
                         raw_line = stdout_pipe.readline(max_bytes + 1)
                         with self._stdout_cond:
                             if not raw_line:
+                                self._stdout_eof = True
+                                self._stdout_cond.notify_all()
+                                break
+                            while (
+                                len(self._stdout_lines) >= max_queued_lines
+                                and self._stdout_reader_active
+                            ):
+                                self._stdout_cond.wait()
+                            if not self._stdout_reader_active:
                                 self._stdout_eof = True
                                 self._stdout_cond.notify_all()
                                 break
@@ -548,7 +558,9 @@ class MCPToolAdapter:
                     raise TimeoutError(f"MCP server response timed out after {limit:g}s")
                 self._stdout_cond.wait(min(0.02, rem) if cancel_token is not None else rem)
             if self._stdout_lines:
-                return self._stdout_lines.pop(0)
+                popped = self._stdout_lines.pop(0)
+                self._stdout_cond.notify_all()
+                return popped
             if self._stdout_error is not None:
                 err = self._stdout_error
                 self._stdout_error = None

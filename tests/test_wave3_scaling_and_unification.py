@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 from contextlib import aclosing, closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from looplet import (
     StreamingHook,
     ToolCall,
     ToolResult,
+    ToolSpec,
     async_composable_loop,
     cartridge_to_preset,
     composable_loop,
@@ -893,3 +895,477 @@ async def test_sans_io_turn_engine_sync_and_async_behavioral_equivalence_and_ear
     assert child_stag is not stag
     assert child_stag._threshold == 2
     assert child_stag._ignore_tools == {"done"}
+
+
+# ── Review Hardening Regressions ──────────────────────────────────────────────
+
+
+async def test_async_speculative_streaming_cancellation_discards_and_drains_inflight_tasks() -> (
+    None
+):
+    tool_entered = asyncio.Event()
+    tool_cleaned_up = False
+    late_effect_ran = False
+
+    @tool(concurrent_safe=True)
+    async def slow_speculative(v: int) -> dict[str, int]:
+        nonlocal tool_cleaned_up, late_effect_ran
+        tool_entered.set()
+        try:
+            await asyncio.sleep(10.0)
+            late_effect_ran = True
+            return {"v": v}
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.02)
+            tool_cleaned_up = True
+            raise
+
+    async def create_async(**_kw: Any) -> Any:
+        async def agen():
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason=None,
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="spec_cancel_1",
+                                    function=SimpleNamespace(
+                                        name="slow_speculative", arguments='{"v": 1}'
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                ],
+                usage=None,
+            )
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="tool_calls",
+                        delta=SimpleNamespace(content=None, tool_calls=None),
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            )
+
+        return agen()
+
+    client = SimpleNamespace(
+        max_retries=0,
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_async)),
+    )
+    state = DefaultState(max_steps=4)
+    cfg = LoopConfig(
+        max_steps=4,
+        concurrent_dispatch=True,
+        streaming_tool_execution=True,
+        disabled_defaults=["persistence"],
+    )
+
+    async def drive() -> None:
+        async with aclosing(
+            async_composable_loop(
+                AsyncOpenAIStreamingBackend(client, model="m"),
+                task="cancel during speculative drain",
+                tools=tools_from([slow_speculative], include_done=True),
+                state=state,
+                config=cfg,
+            )
+        ) as gen:
+            async for _ in gen:
+                pass
+
+    task = asyncio.create_task(drive())
+    await tool_entered.wait()
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert tool_cleaned_up is True
+    assert late_effect_ran is False
+    receipts = state.metadata.get("speculative_tool_receipts", [])
+    assert len(receipts) == 1
+    assert receipts[0]["metadata"]["execution_status"] == "effect_unknown"
+
+
+def test_speculative_streaming_eligibility_for_post_dispatch_and_observability_hooks() -> None:
+    from looplet.limits import BudgetWarningHook
+    from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
+    from looplet.tools import StopOnUnknownEffectHook
+    from looplet.turn_engine import _hooks_allow_speculative_streaming
+
+    assert _hooks_allow_speculative_streaming(
+        [
+            BudgetWarningHook(),
+            TracingHook(Tracer()),
+            MetricsHook(MetricsCollector()),
+        ]
+    )
+    assert not _hooks_allow_speculative_streaming([StopOnUnknownEffectHook()])
+
+    class CustomPostDispatch:
+        def post_dispatch(
+            self, state: Any, session_log: Any, tc: Any, tr: Any, step_num: int
+        ) -> str | None:
+            return "custom"
+
+    class CustomShouldStop:
+        def should_stop(self, state: Any, step_num: int, new_entities: int) -> bool:
+            return True
+
+    assert not _hooks_allow_speculative_streaming([CustomPostDispatch()])
+    assert not _hooks_allow_speculative_streaming([CustomShouldStop()])
+
+
+def test_preset_fork_isolates_mutable_config_tool_schemas_stateful_hooks_and_rejects_gateway() -> (
+    None
+):
+    from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
+    from looplet.presets import AgentPreset
+    from looplet.telemetry import Tracer, TracingHook
+    from looplet.tools import StopOnUnknownEffectHook
+
+    @tool
+    def calc(x: int) -> dict[str, int]:
+        return {"x": x}
+
+    parent_cfg = LoopConfig(
+        max_steps=5,
+        disabled_defaults=["persistence"],
+        tool_metadata={"k": "v1"},
+        generate_kwargs={"top_p": 0.9},
+    )
+    ptl = PerToolLimitHook(limits={"calc": 2})
+    bwh = BudgetWarningHook(thresholds=(0.5,))
+    tcb = ToolCallBudgetHook(max_calls=5)
+    sou = StopOnUnknownEffectHook()
+    trh = TracingHook(Tracer())
+
+    parent = AgentPreset(
+        config=parent_cfg,
+        hooks=[ptl, bwh, tcb, sou, trh],
+        tools=tools_from([calc], include_done=True, validate=True),
+        state=DefaultState(max_steps=5),
+    )
+    child = parent.fork(max_steps=8)
+    child.config.disabled_defaults.append("extra")
+    child.config.tool_metadata["k"] = "mutated"
+    child.config.generate_kwargs["top_p"] = 0.1
+    calc_spec = child.tools.get("calc")
+    assert calc_spec is not None
+    calc_spec.parameters["properties"]["x"]["type"] = "string"
+
+    assert parent.config.disabled_defaults == ["persistence"]
+    assert parent.config.tool_metadata == {"k": "v1"}
+    assert parent.config.generate_kwargs == {"top_p": 0.9}
+    parent_calc = parent.tools.get("calc")
+    assert parent_calc is not None
+    assert parent_calc.parameters["properties"]["x"]["type"] == "integer"
+
+    for h_cls, orig in (
+        (PerToolLimitHook, ptl),
+        (BudgetWarningHook, bwh),
+        (ToolCallBudgetHook, tcb),
+        (StopOnUnknownEffectHook, sou),
+        (TracingHook, trh),
+    ):
+        cloned = next(h for h in child.hooks if isinstance(h, h_cls))
+        assert cloned is not orig
+
+    gw_preset = AgentPreset(
+        config=LoopConfig(),
+        hooks=[],
+        tools=tools_from([calc], include_done=True),
+        state=DefaultState(),
+        llm_gateway_enabled=True,
+    )
+    with pytest.raises(RuntimeError, match="model_gateway"):
+        gw_preset.fork()
+
+    parent.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        parent.fork()
+
+
+def test_in_place_message_mutation_updates_incremental_checkpoint_and_tool_schema_detachment(
+    tmp_path: Path,
+) -> None:
+    from looplet.checkpoint import Checkpoint, _IncrementalCheckpointStore
+    from looplet.conversation import Conversation, Message, MessageRole
+
+    conv = Conversation()
+    conv.append(Message(role=MessageRole.USER, content="hello", metadata={"tag": "v1"}))
+    store = _IncrementalCheckpointStore(tmp_path / "inc_cp")
+    cp1 = Checkpoint(
+        step_number=1,
+        session_log_data={"entries": []},
+        conversation_data=conv.serialize(),
+        config_snapshot={},
+        tool_results_store={},
+        metadata={},
+    )
+    store.save(cp1, "step_1")
+
+    # Mutate metadata dict IN PLACE without reassigning attributes on Message!
+    conv.messages[0].metadata["tag"] = "v2_in_place"
+    cp2 = Checkpoint(
+        step_number=2,
+        session_log_data={"entries": []},
+        conversation_data=conv.serialize(),
+        config_snapshot={},
+        tool_results_store={},
+        metadata={},
+    )
+    store.save(cp2, "step_2")
+    loaded = store.load("step_2")
+    assert loaded is not None and loaded.conversation_data is not None
+    assert loaded.conversation_data["messages"][0]["metadata"]["tag"] == "v2_in_place"
+
+    # Verify ToolView schemas and shorthand ToolSpec.to_api_schema() are detached from caller mutation
+    @tool
+    def typed_fn(a: int) -> dict[str, int]:
+        return {"a": a}
+
+    shorthand = ToolSpec(
+        name="short_fn",
+        description="short",
+        parameters={"q": "str"},
+        execute=lambda q: q,
+    )
+    reg = tools_from([typed_fn, shorthand], include_done=False)
+    view_before = json_snapshot(reg.tool_view().schemas)
+
+    assert typed_fn.to_api_schema()["input_schema"] is typed_fn.parameters
+    s2 = shorthand.to_api_schema()
+    s2["input_schema"]["properties"]["q"]["type"] = "CORRUPTED"
+
+    assert shorthand.to_api_schema()["input_schema"]["properties"]["q"]["type"] == "string"
+    assert json_snapshot(reg.tool_view().schemas) == view_before
+
+
+def test_provenance_overwrite_replaces_prior_model_attempts_and_preserves_same_run_reflush(
+    tmp_path: Path,
+) -> None:
+    trace_dir = tmp_path / "overwritable_trace"
+
+    def make_backend(tag: str) -> OpenAIBackend:
+        return OpenAIBackend(
+            SimpleNamespace(
+                max_retries=0,
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(
+                        create=lambda **_kw: SimpleNamespace(
+                            model="gpt-test",
+                            choices=[
+                                SimpleNamespace(
+                                    finish_reason="tool_calls",
+                                    message=SimpleNamespace(
+                                        content="",
+                                        tool_calls=[
+                                            SimpleNamespace(
+                                                id=f"id_{tag}",
+                                                function=SimpleNamespace(
+                                                    name="done",
+                                                    arguments=json.dumps({"summary": tag}),
+                                                ),
+                                            )
+                                        ],
+                                    ),
+                                )
+                            ],
+                            usage=SimpleNamespace(
+                                prompt_tokens=10, completion_tokens=5, total_tokens=15
+                            ),
+                        )
+                    )
+                ),
+            ),
+            model="gpt-test",
+        )
+
+    sink1 = ProvenanceSink(trace_dir)
+    r1 = run_result(
+        sink1.wrap_llm(make_backend("run1")),
+        task="first",
+        tools=tools_from([], include_done=True),
+        hooks=[sink1.trajectory_hook()],
+        config=LoopConfig(max_steps=3, disabled_defaults=["persistence"]),
+    )
+    assert r1.completed
+    sink1.flush()
+    assert len(load_model_attempts(trace_dir)) == 1
+
+    # Overwrite with a new sink: old attempt & old blobs must be replaced cleanly!
+    sink2 = ProvenanceSink(trace_dir, overwrite=True)
+    r2 = run_result(
+        sink2.wrap_llm(make_backend("run2")),
+        task="second",
+        tools=tools_from([], include_done=True),
+        hooks=[sink2.trajectory_hook()],
+        config=LoopConfig(max_steps=3, disabled_defaults=["persistence"]),
+    )
+    assert r2.completed
+    sink2.flush()
+    # Repeated flush of the same run must keep its own attempts intact
+    sink2.flush()
+    attempts = load_model_attempts(trace_dir)
+    assert len(attempts) == 1
+    assert "run2" in json.dumps(attempts[0]["outcome"])
+    assert "run1" not in json.dumps(attempts[0]["outcome"])
+
+
+def test_hot_window_spill_rollback_preserves_in_memory_records_and_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from looplet._storage import DiskBackedDict, DiskBackedList
+
+    lst: DiskBackedList[dict[str, Any]] = DiskBackedList(lambda x: x, lambda x: x)
+    lst.extend([{"i": 0}, {"i": 1}, {"i": 2}])
+    lst.insert(1, {"i": 99})
+    assert [x["i"] for x in lst] == [0, 99, 1, 2]
+    lst[1:3] = [{"i": 10}, {"i": 20}]
+    assert [x["i"] for x in lst] == [0, 10, 20, 2]
+    del lst[1]
+    assert lst.pop()["i"] == 2
+    cloned = lst.clone()
+    assert [x["i"] for x in cloned] == [0, 20]
+
+    dct: DiskBackedDict[dict[str, Any]] = DiskBackedDict(lambda x: x, lambda x: x)
+    dct["a"] = {"v": 1}
+    dct["b"] = {"v": 2}
+    snap = dict(dct)
+    assert snap == {"a": {"v": 1}, "b": {"v": 2}}
+    del dct["a"]
+    assert list(dct.keys()) == ["b"]
+
+    # Simulate SQLite OperationalError during _spill_to_spool: in-memory records must survive!
+    class FailingConn:
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        def execute(self, sql: str, *args: Any) -> Any:
+            return self._real.execute(sql, *args)
+
+        def executemany(self, sql: str, *args: Any) -> Any:
+            raise sqlite3.OperationalError("simulated disk full")
+
+    monkeypatch.setattr(lst._spool, "connection", FailingConn(lst._spool.connection))
+    with pytest.raises(sqlite3.OperationalError, match="simulated disk full"):
+        lst._spill_to_spool()
+    assert lst._mem is not None
+    assert [x["i"] for x in lst] == [0, 20]
+
+    assert dct._spool is not None
+    monkeypatch.setattr(dct._spool, "connection", FailingConn(dct._spool.connection))
+    with pytest.raises(sqlite3.OperationalError, match="simulated disk full"):
+        dct._spill_dict_to_spool()
+    assert dct._mem is not None
+    assert dct["b"] == {"v": 2}
+
+
+def test_lep_close_unblocks_waiting_rpc_and_shared_backend_first_use_thread_race(
+    tmp_path: Path,
+) -> None:
+    # 1. Hung LEP server after initialize: close() from another thread must return promptly!
+    hung_lep = tmp_path / "hung_lep.py"
+    hung_lep.write_text(
+        "import json, sys, time\n"
+        "line = sys.stdin.readline()\n"
+        "m = json.loads(line)\n"
+        "sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': {'capabilities': {}}}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "for _ in sys.stdin:\n"
+        "    time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    lep = LEPHookAdapter(
+        [sys.executable, "-I", "-B", str(hung_lep)], timeout=30.0, on_failure="fail_open"
+    )
+    lep.pre_loop(DefaultState(), None, None)
+
+    entered = threading.Event()
+    worker_done = threading.Event()
+
+    def blocked_caller() -> None:
+        entered.set()
+        _ = lep.check_permission(ToolCall(tool="echo", args={}), DefaultState())
+        worker_done.set()
+
+    t = threading.Thread(target=blocked_caller, daemon=True)
+    t.start()
+    assert entered.wait(timeout=2.0)
+    time.sleep(0.05)
+    t0 = time.perf_counter()
+    lep.close()
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0, f"lep.close() blocked for {elapsed:.2f}s"
+    assert worker_done.wait(timeout=2.0)
+
+    # 2. Simultaneous first-use _conv_state_var() across 12 threads sharing one OpenAIBackend
+    captured_by_thread: dict[int, str] = {}
+    cap_lock = threading.Lock()
+    barrier = threading.Barrier(12)
+
+    def create_shared(**kw: Any) -> Any:
+        msgs = kw["messages"]
+        with cap_lock:
+            captured_by_thread[threading.get_ident()] = msgs[0]["content"]
+        return SimpleNamespace(
+            model="m",
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="d1",
+                                function=SimpleNamespace(
+                                    name="done", arguments='{"summary": "ok"}'
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+        )
+
+    shared_backend = OpenAIBackend(
+        SimpleNamespace(
+            max_retries=0,
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create_shared)),
+        ),
+        model="m",
+    )
+    errors: list[BaseException] = []
+
+    def thread_worker(idx: int) -> None:
+        try:
+            barrier.wait(timeout=5.0)
+            res = run_result(
+                shared_backend,
+                task=f"unique-thread-task-{idx}",
+                tools=tools_from([], include_done=True),
+                config=LoopConfig(max_steps=2, disabled_defaults=["persistence"]),
+            )
+            assert res.completed
+            with cap_lock:
+                seen = captured_by_thread[threading.get_ident()]
+            assert f"unique-thread-task-{idx}" in seen
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=thread_worker, args=(i,)) for i in range(12)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=10.0)
+    assert errors == []

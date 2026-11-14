@@ -106,7 +106,7 @@ class _YieldStep:
 
 
 def _hooks_allow_speculative_streaming(hooks: list[Any]) -> bool:
-    """Allow speculative streaming when hooks do not gate pre-tool execution."""
+    """Allow speculative streaming when hooks do not gate or rewrite tool execution."""
     if not hooks:
         return True
     from looplet.budget import ThresholdCompactHook
@@ -114,6 +114,7 @@ def _hooks_allow_speculative_streaming(hooks: list[Any]) -> bool:
     from looplet.cache import CacheBreakDetector
     from looplet.cartridge.hot_reload import ReloadHook
     from looplet.checkpoint import CheckpointHook
+    from looplet.limits import BudgetWarningHook
     from looplet.presets import _ModelGatewayBinding
     from looplet.provenance import TrajectoryRecorder
     from looplet.runtime import _RuntimeEventHook
@@ -121,17 +122,21 @@ def _hooks_allow_speculative_streaming(hooks: list[Any]) -> bool:
     from looplet.skills import SkillActivationHook
     from looplet.stagnation import StagnationHook
     from looplet.streaming import StreamingHook
+    from looplet.telemetry import MetricsHook, TracingHook
 
     passive_types = (
         StreamingHook,
         TrajectoryRecorder,
         SessionTreeRecorder,
         ThresholdCompactHook,
+        BudgetWarningHook,
         CacheBreakDetector,
         StagnationHook,
         ReloadHook,
         SkillActivationHook,
         DeferredToolViewHook,
+        TracingHook,
+        MetricsHook,
         _RuntimeEventHook,
         _ModelGatewayBinding,
     )
@@ -145,10 +150,15 @@ def _hooks_allow_speculative_streaming(hooks: list[Any]) -> bool:
             continue
         if isinstance(raw, CheckpointHook) or getattr(raw, "checkpoint_owner", False) is True:
             return False
-        if (
-            hasattr(raw, "pre_dispatch")
-            or hasattr(raw, "check_permission")
-            or hasattr(raw, "on_event")
+        if any(
+            hasattr(raw, slot)
+            for slot in (
+                "pre_dispatch",
+                "post_dispatch",
+                "check_permission",
+                "should_stop",
+                "on_event",
+            )
         ):
             return False
     return True
@@ -868,6 +878,7 @@ def run_turn_machine(
     make_stream_executor: Callable[[], Any],
     on_turn_llm_selected: Callable[[Any], None] | None = None,
     build_final_trace: bool = True,
+    active_stream_box: list[Any] | None = None,
 ) -> Generator[Any, Any, Any]:
     """Unified Sans-I/O turn machine shared by ``composable_loop`` and ``async_composable_loop``."""
     from looplet.assistant_turns import _AdmissionDenied, _AssistantTurns
@@ -1373,9 +1384,11 @@ def run_turn_machine(
             nonlocal stream_consumed
             if stream_executor is None or stream_consumed:
                 return []
-            stream_consumed = True
             stream_executor.discard()
             raw_res = yield _DrainStreamExecutor(stream_executor)
+            stream_consumed = True
+            if active_stream_box is not None:
+                active_stream_box[0] = None
             receipts = [
                 r.to_dict() for r in raw_res if r.metadata.get("execution_status") != "not_executed"
             ]
@@ -1461,6 +1474,8 @@ def run_turn_machine(
             stream_submitted_ids: set[str] = set()
             if allow_speculative:
                 stream_executor = make_stream_executor()
+                if active_stream_box is not None:
+                    active_stream_box[0] = (stream_executor, state)
 
             def _on_stream_tool_call(block: dict[str, Any]) -> None:
                 nonlocal stream_submitted_count, stream_halted
@@ -1975,11 +1990,14 @@ def run_turn_machine(
             pre_streamed_calls = (
                 stream_executor.submitted_calls() if stream_executor is not None else {}
             )
-            stream_consumed = True
             if stream_executor is not None:
                 raw_streamed = yield _DrainStreamExecutor(stream_executor)
+                stream_consumed = True
+                if active_stream_box is not None:
+                    active_stream_box[0] = None
                 pre_streamed = {r.call_id: r for r in raw_streamed if r.call_id is not None}
             else:
+                stream_consumed = True
                 pre_streamed = {}
 
             dispatched_triples: list[tuple[int, Any, Any, bool]] = []
@@ -2797,47 +2815,78 @@ async def run_async_gen(gen: Generator[Any, Any, Any]) -> Any:
             throwing = exc
 
 
-def drive_turn_machine_sync(gen: Generator[Any, Any, Any]) -> Generator[Any, Any, Any]:
+def _record_aborted_stream_receipts(state: Any, raw_res: list[Any]) -> None:
+    receipts = [
+        r.to_dict() for r in raw_res if r.metadata.get("execution_status") != "not_executed"
+    ]
+    s_meta = getattr(state, "metadata", None)
+    if receipts and isinstance(s_meta, dict):
+        s_meta.setdefault("speculative_tool_receipts", []).extend(receipts)
+
+
+def drive_turn_machine_sync(
+    gen: Generator[Any, Any, Any],
+    *,
+    active_stream_box: list[Any] | None = None,
+) -> Generator[Any, Any, Any]:
     """PEP 380-faithful synchronous generator driver for ``run_turn_machine``."""
     sent: Any = None
     throwing: BaseException | None = None
-    while True:
-        try:
-            eff = gen.throw(throwing) if throwing is not None else gen.send(sent)
-        except StopIteration as stop:
-            return stop.value
-        throwing = None
-        sent = None
-        try:
-            if isinstance(eff, _YieldStep):
-                sent = yield eff.step
-            else:
-                sent = execute_effect_sync(eff)
-        except GeneratorExit:
-            gen.close()
-            raise
-        except BaseException as exc:
-            throwing = exc
+    try:
+        while True:
+            try:
+                eff = gen.throw(throwing) if throwing is not None else gen.send(sent)
+            except StopIteration as stop:
+                return stop.value
+            throwing = None
+            sent = None
+            try:
+                if isinstance(eff, _YieldStep):
+                    sent = yield eff.step
+                else:
+                    sent = execute_effect_sync(eff)
+            except GeneratorExit:
+                gen.close()
+                raise
+            except BaseException as exc:
+                throwing = exc
+    finally:
+        if active_stream_box and active_stream_box[0] is not None:
+            ex, st = active_stream_box[0]
+            active_stream_box[0] = None
+            ex.discard()
+            _record_aborted_stream_receipts(st, ex.results())
 
 
-async def drive_turn_machine_async(gen: Generator[Any, Any, Any]) -> AsyncIterator[Any]:
+async def drive_turn_machine_async(
+    gen: Generator[Any, Any, Any],
+    *,
+    active_stream_box: list[Any] | None = None,
+) -> AsyncIterator[Any]:
     """PEP 380-faithful asynchronous generator driver for ``run_turn_machine``."""
     sent: Any = None
     throwing: BaseException | None = None
-    while True:
-        try:
-            eff = gen.throw(throwing) if throwing is not None else gen.send(sent)
-        except StopIteration:
-            return
-        throwing = None
-        sent = None
-        try:
-            if isinstance(eff, _YieldStep):
-                sent = yield eff.step
-            else:
-                sent = await execute_effect_async(eff)
-        except GeneratorExit:
-            gen.close()
-            raise
-        except BaseException as exc:
-            throwing = exc
+    try:
+        while True:
+            try:
+                eff = gen.throw(throwing) if throwing is not None else gen.send(sent)
+            except StopIteration:
+                return
+            throwing = None
+            sent = None
+            try:
+                if isinstance(eff, _YieldStep):
+                    sent = yield eff.step
+                else:
+                    sent = await execute_effect_async(eff)
+            except GeneratorExit:
+                gen.close()
+                raise
+            except BaseException as exc:
+                throwing = exc
+    finally:
+        if active_stream_box and active_stream_box[0] is not None:
+            ex, st = active_stream_box[0]
+            active_stream_box[0] = None
+            ex.discard()
+            _record_aborted_stream_receipts(st, await ex.results())

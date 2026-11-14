@@ -111,6 +111,7 @@ class LEPHookAdapter:
         self._stdout_eof = False
         self._stdout_error: BaseException | None = None
         self._stdout_reader: threading.Thread | None = None
+        self._closing = False
         self.capabilities: dict[str, Any] = {}
 
     # ── transport ────────────────────────────────────────────────
@@ -181,6 +182,7 @@ class LEPHookAdapter:
                             self._stdout_cond.wait(rem)
                         if self._stdout_lines:
                             line = self._stdout_lines.pop(0)
+                            self._stdout_cond.notify_all()
                         elif self._stdout_error is not None:
                             err = self._stdout_error
                             self._stdout_error = None
@@ -408,9 +410,11 @@ class LEPHookAdapter:
             start_new_session=os.name == "posix",
         )
         self._proc = proc
+        self._closing = False
         if proc.stdout is not None and callable(getattr(proc.stdout, "readline", None)):
             stdout_pipe = proc.stdout
             max_chars = self._max_message_bytes + 1
+            max_queued_lines = 256
             with self._stdout_cond:
                 self._stdout_lines.clear()
                 self._stdout_eof = False
@@ -422,6 +426,12 @@ class LEPHookAdapter:
                         raw_line = stdout_pipe.readline(max_chars)
                         with self._stdout_cond:
                             if not raw_line:
+                                self._stdout_eof = True
+                                self._stdout_cond.notify_all()
+                                break
+                            while len(self._stdout_lines) >= max_queued_lines and not self._closing:
+                                self._stdout_cond.wait()
+                            if self._closing:
                                 self._stdout_eof = True
                                 self._stdout_cond.notify_all()
                                 break
@@ -523,21 +533,39 @@ class LEPHookAdapter:
         proc = self._proc
         if proc is None:
             return
+        self._closing = True
+        locked = self._rpc_lock.acquire(blocking=False)
         try:
-            self._rpc(
-                "loop/shutdown",
-                {"run_id": self._run_id, "outcome": "ok"},
-                expect_response=False,
-            )
-        except Exception:  # pragma: no cover - best effort
-            pass
+            if locked:
+                try:
+                    self._rpc_locked(
+                        "loop/shutdown",
+                        {"run_id": self._run_id, "outcome": "ok"},
+                        expect_response=False,
+                    )
+                except Exception:  # pragma: no cover - best effort
+                    pass
+        finally:
+            if locked:
+                self._rpc_lock.release()
+        with self._stdout_cond:
+            self._stdout_eof = True
+            self._stdout_cond.notify_all()
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
         except Exception:  # pragma: no cover - best effort
             pass
+        if not locked:
+            try:
+                proc.terminate()
+            except Exception:  # pragma: no cover - best effort
+                pass
+        wait_limit = (
+            0.2 if not locked else (min(5.0, max(0.1, self._timeout)) if self._timeout else 1.0)
+        )
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=wait_limit)
         except subprocess.TimeoutExpired:  # pragma: no cover - best effort
             try:
                 proc.kill()

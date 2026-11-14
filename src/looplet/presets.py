@@ -302,17 +302,25 @@ class AgentPreset:
         Closing a forked preset never closes resources or subprocesses owned by
         the parent template.
         """
+        import copy as _copy
         from dataclasses import replace as _dc_replace
 
         from looplet.harness import _AutomaticResultStore
-        from looplet.limits import ToolCallBudgetHook
+        from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
         from looplet.permissions import PermissionHook
         from looplet.stagnation import StagnationHook
+        from looplet.telemetry import Tracer, TracingHook
+        from looplet.tools import StopOnUnknownEffectHook
         from looplet.validation import ValidatingToolRegistry
 
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("Cannot fork a closed AgentPreset")
+            if self.model_gateway is not None or self.llm_gateway_enabled:
+                raise RuntimeError(
+                    "Cannot fork an AgentPreset with an active model_gateway; "
+                    "load a separate preset per gateway server."
+                )
 
         effective_steps = max_steps if max_steps is not None else self.config.max_steps
         forked_config = _dc_replace(
@@ -320,6 +328,13 @@ class AgentPreset:
             max_steps=effective_steps,
             run_envelope=None,
             initial_checkpoint=None,
+            disabled_defaults=list(self.config.disabled_defaults),
+            done_tools=list(self.config.done_tools),
+            done_tool_schemas=_copy.deepcopy(self.config.done_tool_schemas),
+            memory_sources=list(self.config.memory_sources),
+            scoped_context_sources=list(self.config.scoped_context_sources),
+            tool_metadata=dict(self.config.tool_metadata),
+            generate_kwargs=dict(self.config.generate_kwargs),
         )
         shared_res = {
             k: v
@@ -332,13 +347,14 @@ class AgentPreset:
         if isinstance(self.tools, ValidatingToolRegistry):
             forked_tools: BaseToolRegistry = ValidatingToolRegistry()
             forked_tools._retain_results = self.tools._retain_results
-            forked_tools._schemas = dict(self.tools._schemas)
+            forked_tools._schemas = _copy.deepcopy(self.tools._schemas)
         else:
             forked_tools = BaseToolRegistry(retain_results=self.tools._retain_results)
-        forked_tools._tools = dict(self.tools._tools)
+        forked_tools._tools = {
+            name: _dc_replace(spec, parameters=_copy.deepcopy(spec.parameters))
+            for name, spec in self.tools._tools.items()
+        }
         forked_tools._resources = dict(shared_res)
-        if "_view_cache" in self.tools.__dict__:
-            forked_tools.__dict__["_view_cache"] = dict(self.tools.__dict__["_view_cache"])
 
         def _clone_hook(h: Any) -> Any:
             from typing import Literal as _Lit
@@ -357,6 +373,18 @@ class AgentPreset:
                 )
             if isinstance(h, ToolCallBudgetHook):
                 return ToolCallBudgetHook(max_calls=h.max_calls)
+            if isinstance(h, PerToolLimitHook):
+                return PerToolLimitHook(
+                    limits=dict(h._limits) if h._limits else None,
+                    default_limit=h._default_limit,
+                    message=h._message,
+                )
+            if isinstance(h, BudgetWarningHook):
+                return BudgetWarningHook(thresholds=h._thresholds, message=h._message)
+            if isinstance(h, StopOnUnknownEffectHook):
+                return StopOnUnknownEffectHook()
+            if isinstance(h, TracingHook):
+                return TracingHook(Tracer())
             if isinstance(h, PermissionHook):
                 return PermissionHook(h.engine)
             return h

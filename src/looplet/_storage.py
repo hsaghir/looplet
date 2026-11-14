@@ -352,17 +352,25 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         if self._mem is None:
             return
         rows = self._mem
-        self._mem = None
-        self._mem_bytes = 0
         if rows:
             with self._spool.lock:
-                self._spool.connection.executemany(
-                    "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
-                    [
-                        (self._cid, pos, payload, w, rev)
-                        for pos, (payload, w, rev) in enumerate(rows)
-                    ],
-                )
+                conn = self._spool.connection
+                conn.execute("SAVEPOINT looplet_list_spill")
+                try:
+                    conn.executemany(
+                        "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                        [
+                            (self._cid, pos, payload, w, rev)
+                            for pos, (payload, w, rev) in enumerate(rows)
+                        ],
+                    )
+                except BaseException:
+                    conn.execute("ROLLBACK TO looplet_list_spill")
+                    conn.execute("RELEASE looplet_list_spill")
+                    raise
+                conn.execute("RELEASE looplet_list_spill")
+        self._mem = None
+        self._mem_bytes = 0
 
     def _dumps(self, value: Record) -> str | bytes:
         encoded = self._encode(value)
@@ -817,15 +825,22 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
         if self._mem is None or self._cid is None or self._spool is None:
             return
         items = list(self._mem.items())
-        self._mem = None
-        self._mem_bytes = 0
         if items:
             items.sort(key=lambda pair: pair[1][0])
             with self._db() as conn:
-                conn.executemany(
-                    "INSERT INTO dict_records (cid, key, payload) VALUES (?, ?, ?)",
-                    [(self._cid, k, payload) for k, (_, payload) in items],
-                )
+                conn.execute("SAVEPOINT looplet_dict_spill")
+                try:
+                    conn.executemany(
+                        "INSERT INTO dict_records (cid, key, payload) VALUES (?, ?, ?)",
+                        [(self._cid, k, payload) for k, (_, payload) in items],
+                    )
+                except BaseException:
+                    conn.execute("ROLLBACK TO looplet_dict_spill")
+                    conn.execute("RELEASE looplet_dict_spill")
+                    raise
+                conn.execute("RELEASE looplet_dict_spill")
+        self._mem = None
+        self._mem_bytes = 0
 
     @staticmethod
     def _close_file(connection: sqlite3.Connection) -> None:

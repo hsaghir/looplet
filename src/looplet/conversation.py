@@ -88,12 +88,6 @@ class Message:
         # serializers) doesn't trip on a plain str.
         if not isinstance(self.role, MessageRole):
             self.role = MessageRole(self.role)
-        object.__setattr__(self, "_init_done", True)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        object.__setattr__(self, name, value)
-        if name != "_sealed" and self.__dict__.get("_init_done"):
-            object.__setattr__(self, "_sealed", False)
 
     @property
     def text(self) -> str:
@@ -228,10 +222,7 @@ class Conversation:
             return tracked
         existing = len(self._stamps)
         for pos in range(existing):
-            msg = tracked[pos]
-            if getattr(msg, "_sealed", False):
-                continue
-            stamp = _message_stamp(msg)
+            stamp = _message_stamp(tracked[pos])
             if stamp != self._stamps[pos]:
                 self._stamps[pos] = stamp
                 tracked.mark_modified(pos)

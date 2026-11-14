@@ -924,9 +924,27 @@ class AsyncStreamingToolExecutor:
 
     async def results(self) -> list[ToolResult]:
         """Await all submitted tools and return results in submission order."""
-        await self._done_event.wait()
-        await asyncio.gather(
-            *(item.task for item in self._items if item.task is not None),
-            return_exceptions=True,
-        )
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            while not self._done_event.is_set():
+                try:
+                    await asyncio.shield(self._done_event.wait())
+                except asyncio.CancelledError as err:
+                    cancelled = cancelled or err
+                    self.discard()
+                    break
+            pending_tasks = [item.task for item in self._items if item.task is not None]
+            if pending_tasks:
+                shielded_gather = asyncio.gather(*pending_tasks, return_exceptions=True)
+                while True:
+                    try:
+                        await asyncio.shield(shielded_gather)
+                        break
+                    except asyncio.CancelledError as err:
+                        cancelled = cancelled or err
+                        if shielded_gather.done():
+                            break
+        finally:
+            if cancelled is not None:
+                raise cancelled
         return [item.result for item in self._items if item.result is not None]

@@ -28,14 +28,10 @@ from weakref import WeakKeyDictionary
 
 from looplet.capabilities import ExecutionPolicy
 from looplet.context_plan import ContextPlan, ScopedContextSource
-from looplet.context_projection import ContextProjection
 from looplet.hook_decision import (
     _hook_accepts_keyword,
-    _invoke_hook,
     _invoke_hook_async,
-    normalize_hook_return,
 )
-from looplet.prompt_preparation import render_projection
 from looplet.scaffolding import (
     ContextBudgetSnapshot,
     LLMResult,
@@ -1069,36 +1065,6 @@ def _default_extract_step_metadata(state: Any, step_num: int) -> tuple[list[str]
     return [], []
 
 
-def _bind_loop_context(loop_ctx: LoopContext, hooks: list[Any]) -> None:
-    """Bind the live loop context to hooks that opt into the protocol."""
-
-    for hook in hooks:
-        bind_fn = getattr(hook, "bind", None)
-        if bind_fn is None:
-            continue
-        try:
-            import inspect as _inspect  # noqa: PLC0415
-
-            sig = _inspect.signature(bind_fn)
-            positional = [
-                parameter
-                for parameter in sig.parameters.values()
-                if parameter.kind
-                in (
-                    _inspect.Parameter.POSITIONAL_ONLY,
-                    _inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    _inspect.Parameter.VAR_POSITIONAL,
-                )
-            ]
-            if positional:
-                bind_fn(loop_ctx)
-        except (TypeError, ValueError):
-            try:
-                bind_fn(loop_ctx)
-            except TypeError:
-                pass
-
-
 def _set_run_lifecycle(
     loop_ctx: LoopContext,
     *,
@@ -1669,64 +1635,6 @@ async def _emit_hook_decision_event_async(
     )
 
 
-async def _bind_loop_context_async(loop_ctx: LoopContext, hooks: list[Any]) -> None:
-    """Bind hooks while awaiting async ``bind`` implementations."""
-    for hook in hooks:
-        bind_fn = getattr(hook, "bind", None)
-        if bind_fn is None:
-            continue
-        try:
-            result = bind_fn(loop_ctx)
-            if inspect.isawaitable(result):
-                await result
-        except (TypeError, ValueError):
-            continue
-
-
-async def _intercept_tool_calls_async(
-    calls: list[ToolCall],
-    hooks: list[Any],
-    state: AgentState,
-    session_log: SessionLog,
-    context: Any,
-    step_num: int,
-) -> _InterceptResult:
-    """Awaitable version of :func:`_intercept_tool_calls`."""
-    from looplet.turn_engine import _intercept_tool_calls_gen, run_async_gen
-
-    return await run_async_gen(
-        _intercept_tool_calls_gen(calls, hooks, state, session_log, context, step_num)
-    )
-
-
-async def _run_post_dispatch_hooks_async(
-    tool_call: ToolCall,
-    tool_result: ToolResult,
-    hooks: list[Any],
-    state: AgentState,
-    session_log: SessionLog,
-    context: Any,
-    step_num: int,
-    *,
-    emit_lifecycle: bool = True,
-) -> _PostDispatchOutcome:
-    """Awaitable version of :func:`_run_post_dispatch_hooks`."""
-    from looplet.turn_engine import _run_post_dispatch_hooks_gen, run_async_gen
-
-    return await run_async_gen(
-        _run_post_dispatch_hooks_gen(
-            tool_call,
-            tool_result,
-            hooks,
-            state,
-            session_log,
-            context,
-            step_num,
-            emit_lifecycle=emit_lifecycle,
-        )
-    )
-
-
 def _emit_hook_decision_event(
     hooks: list[Any],
     *,
@@ -1806,135 +1714,6 @@ def _accepts_tool_call_kwarg(method: Any) -> bool:
     if cacheable:
         _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
     return accepts
-
-
-def _notify_post_step(hooks: list[Any], state: Any, session_log: Any, step_num: int) -> None:
-    """Notify step observers for every recorded step kind."""
-    for hook in hooks:
-        method = getattr(hook, "post_step", None)
-        if method is not None:
-            method(state, session_log, step_num)
-
-
-async def _notify_post_step_async(
-    hooks: list[Any], state: Any, session_log: Any, step_num: int
-) -> None:
-    """Await the same step observer contract in the async driver."""
-    for hook in hooks:
-        method = getattr(hook, "post_step", None)
-        if method is not None:
-            result = method(state, session_log, step_num)
-            if inspect.isawaitable(result):
-                await result
-
-
-def _post_step_stop_reason(
-    hooks: list[Any],
-    *,
-    state: Any,
-    session_log: Any,
-    context: Any,
-    step_num: int,
-    new_entities: int,
-    requested_reason: str | None,
-) -> str | None:
-    """Apply post-step stopping to ordinary, rejected, and synthetic turns."""
-    if requested_reason is not None:
-        return requested_reason
-    for hook in hooks:
-        if hasattr(hook, "should_stop"):
-            decision = normalize_hook_return(
-                _invoke_hook(hook, "should_stop", state, step_num, new_entities),
-                slot="should_stop",
-            )
-            if decision is not None:
-                _emit_hook_decision_event(
-                    hooks,
-                    decision=decision,
-                    hook_slot="should_stop",
-                    hook_name=type(hook).__name__,
-                    step_num=step_num,
-                    state=state,
-                    session_log=session_log,
-                    context=context,
-                )
-                if decision.is_stop():
-                    return decision.stop or "hook_stop"
-    return None
-
-
-async def _post_step_stop_reason_async(
-    hooks: list[Any],
-    *,
-    state: Any,
-    session_log: Any,
-    context: Any,
-    step_num: int,
-    new_entities: int,
-    requested_reason: str | None,
-) -> str | None:
-    """Await hook invocations with the same post-step stopping policy."""
-    if requested_reason is not None:
-        return requested_reason
-    for hook in hooks:
-        if hasattr(hook, "should_stop"):
-            raw = await _invoke_hook_async(hook, "should_stop", state, step_num, new_entities)
-            decision = normalize_hook_return(raw, slot="should_stop")
-            if decision is not None:
-                await _emit_hook_decision_event_async(
-                    hooks,
-                    decision=decision,
-                    hook_slot="should_stop",
-                    hook_name=type(hook).__name__,
-                    step_num=step_num,
-                    state=state,
-                    session_log=session_log,
-                    context=context,
-                )
-                if decision.is_stop():
-                    return decision.stop or "hook_stop"
-    return None
-
-
-def _call_check_done(
-    hook: Any,
-    state: Any,
-    session_log: Any,
-    context: Any,
-    step_num: int,
-    tool_call: Any,
-) -> Any:
-    """Invoke a hook's ``check_done`` with or without the ``tool_call``
-    kwarg depending on its signature. Lets new gates inspect the agent's
-    pending ``done()`` answer without breaking legacy hooks."""
-    return _invoke_hook(
-        hook,
-        "check_done",
-        state,
-        session_log,
-        context,
-        step_num,
-        _optional_kwargs={"tool_call": tool_call},
-    )
-
-
-async def _call_check_done_async(
-    hook: Any,
-    state: Any,
-    session_log: Any,
-    context: Any,
-    step_num: int,
-    tool_call: Any,
-) -> Any:
-    return await _invoke_hook_async(
-        hook,
-        "check_done",
-        state,
-        session_log,
-        context,
-        step_num,
-        _optional_kwargs={"tool_call": tool_call},
-    )
 
 
 # ── Hook method names (for typo detection) ──────────────────────
@@ -2107,14 +1886,6 @@ def _mark_terminal_state(state: Any, *, status: str, reason: str) -> None:
         )
 
 
-def _render_projection(
-    renderer: Callable[..., str],
-    projection: ContextProjection,
-) -> str:
-    """Invoke a new projection renderer or a legacy keyword renderer."""
-    return render_projection(renderer, projection)
-
-
 # ── Composable Agent Loop ───────────────────────────────────────
 
 
@@ -2176,22 +1947,6 @@ class _InterceptResult:
     """Additional context strings to inject into the next prompt."""
 
 
-def _intercept_tool_calls(
-    calls: list[ToolCall],
-    hooks: list[Any],
-    state: AgentState,
-    session_log: SessionLog,
-    context: Any,
-    step_num: int,
-) -> _InterceptResult:
-    """Run pre-dispatch hooks and permission checks on tool calls."""
-    from looplet.turn_engine import _intercept_tool_calls_gen, run_sync_gen
-
-    return run_sync_gen(
-        _intercept_tool_calls_gen(calls, hooks, state, session_log, context, step_num)
-    )
-
-
 @dataclass
 class _PostDispatchOutcome:
     """Return value of _run_post_dispatch_hooks."""
@@ -2204,34 +1959,6 @@ class _PostDispatchOutcome:
 
     stop_reason: str | None = None
     """Non-None if any hook requested stop."""
-
-
-def _run_post_dispatch_hooks(
-    tool_call: ToolCall,
-    tool_result: ToolResult,
-    hooks: list[Any],
-    state: AgentState,
-    session_log: SessionLog,
-    context: Any,
-    step_num: int,
-    *,
-    emit_lifecycle: bool = True,
-) -> _PostDispatchOutcome:
-    """Run post_dispatch hooks + POST_TOOL_USE/FAILURE events."""
-    from looplet.turn_engine import _run_post_dispatch_hooks_gen, run_sync_gen
-
-    return run_sync_gen(
-        _run_post_dispatch_hooks_gen(
-            tool_call,
-            tool_result,
-            hooks,
-            state,
-            session_log,
-            context,
-            step_num,
-            emit_lifecycle=emit_lifecycle,
-        )
-    )
 
 
 # ── Composable Agent Loop ───────────────────────────────────────
@@ -2670,6 +2397,8 @@ def _composable_loop_impl(
     from looplet.streaming import StreamingToolExecutor
     from looplet.turn_engine import drive_turn_machine_sync, run_turn_machine
 
+    active_stream_box: list[Any] = [None]
+    stream_workers = 1 if not config.concurrent_dispatch else max(1, config.max_parallel_calls)
     return (
         yield from drive_turn_machine_sync(
             run_turn_machine(
@@ -2698,9 +2427,11 @@ def _composable_loop_impl(
                     llm=eff_llm,
                 ),
                 make_stream_executor=lambda: StreamingToolExecutor(
-                    tools, max_workers=max(1, config.max_parallel_calls)
+                    tools, max_workers=stream_workers
                 ),
                 build_final_trace=True,
-            )
+                active_stream_box=active_stream_box,
+            ),
+            active_stream_box=active_stream_box,
         )
     )

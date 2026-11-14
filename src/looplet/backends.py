@@ -762,6 +762,8 @@ class _ConversationBackend:
             else self._client
         )
 
+    _CONV_STATE_VAR_LOCK = threading.Lock()
+
     def _conv_state_var(
         self,
     ) -> ContextVar[tuple[dict[str, Any] | None, list[dict[str, Any]] | None, bool | None]]:
@@ -770,15 +772,18 @@ class _ConversationBackend:
             | None
         ) = self.__dict__.get("_conversation_state_var")
         if var is None:
-            default_state: tuple[
-                dict[str, Any] | None, list[dict[str, Any]] | None, bool | None
-            ] = (
-                None,
-                None,
-                None,
-            )
-            var = ContextVar(f"looplet_backend_conv_{id(self)}", default=default_state)
-            self.__dict__["_conversation_state_var"] = var
+            with _ConversationBackend._CONV_STATE_VAR_LOCK:
+                var = self.__dict__.get("_conversation_state_var")
+                if var is None:
+                    default_state: tuple[
+                        dict[str, Any] | None, list[dict[str, Any]] | None, bool | None
+                    ] = (
+                        None,
+                        None,
+                        None,
+                    )
+                    var = ContextVar(f"looplet_backend_conv_{id(self)}", default=default_state)
+                    self.__dict__["_conversation_state_var"] = var
         return var
 
     @property

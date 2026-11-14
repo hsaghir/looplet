@@ -735,6 +735,23 @@ class ToolSpec:
         self.__dict__["_spec_text_cache"] = (stamp, rendered)
         return rendered
 
+    def _cached_api_schema(self) -> dict[str, Any]:
+        from looplet.conversation import _value_stamp
+
+        stamp = (self.name, self.description, _value_stamp(self.parameters))
+        cached = self.__dict__.get("_api_schema_cache")
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        schema = {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": deepcopy(self.parameters)
+            if self.is_json_schema
+            else self.to_json_schema(),
+        }
+        self.__dict__["_api_schema_cache"] = (stamp, schema)
+        return schema
+
     def to_api_schema(self) -> dict[str, Any]:
         """Generate API-compatible tool schema for native tool calling.
 
@@ -748,19 +765,7 @@ class ToolSpec:
                 "description": self.description,
                 "input_schema": self.parameters,
             }
-        from looplet.conversation import _value_stamp
-
-        stamp = (self.name, self.description, _value_stamp(self.parameters))
-        cached = self.__dict__.get("_api_schema_cache")
-        if cached is not None and cached[0] == stamp:
-            return cached[1]
-        schema = {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.to_json_schema(),
-        }
-        self.__dict__["_api_schema_cache"] = (stamp, schema)
-        return schema
+        return deepcopy(self._cached_api_schema())
 
     def to_json_schema(self) -> dict[str, Any]:
         """Return the parameter schema as a JSON Schema object.
@@ -1254,7 +1259,7 @@ class BaseToolRegistry:
         view = ToolView(
             names=tuple(spec.name for spec in specs),
             catalog_text="\n".join(["Available tools:", *(spec.spec_text() for spec in specs)]),
-            schemas=tuple(spec.to_api_schema() for spec in specs),
+            schemas=tuple(spec._cached_api_schema() for spec in specs),
         )
         if len(view_cache) >= 16:
             view_cache.clear()

@@ -91,6 +91,8 @@ logger = logging.getLogger(__name__)
 _CALL_ARTIFACT = re.compile(r"call_\d+_(?:prompt|response)\.txt")
 _CALL_RESPONSE_ARTIFACT = re.compile(r"call_(\d+)_response\.txt")
 _STEP_ARTIFACT = re.compile(r"step_\d+\.json")
+_ATTEMPT_ARTIFACT = re.compile(r".+\.(?:intent|outcome|dispatch-\d+)\.json")
+_BLOB_ARTIFACT = re.compile(r"[0-9a-f]{64}\.json")
 
 
 def _clear_call_artifacts(root: Path) -> None:
@@ -98,6 +100,23 @@ def _clear_call_artifacts(root: Path) -> None:
         if path.is_file() and _CALL_ARTIFACT.fullmatch(path.name):
             path.unlink()
     (root / "manifest.jsonl").unlink(missing_ok=True)
+
+
+def _clear_model_attempts(attempt_dir: Path) -> None:
+    if attempt_dir.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {attempt_dir}")
+    if not attempt_dir.is_dir():
+        return
+    for entry in attempt_dir.iterdir():
+        if not entry.is_symlink() and entry.is_file() and _ATTEMPT_ARTIFACT.fullmatch(entry.name):
+            entry.unlink()
+    blobs = attempt_dir / "blobs"
+    if blobs.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {blobs}")
+    if blobs.is_dir():
+        for blob in blobs.iterdir():
+            if not blob.is_symlink() and blob.is_file() and _BLOB_ARTIFACT.fullmatch(blob.name):
+                blob.unlink()
 
 
 def _model_attempt_root(directory: Path) -> Path:
@@ -2401,6 +2420,7 @@ class ProvenanceSink:
         self._overwrite = overwrite
         self._flushed = False
         self._owns_attempts = False
+        self._cleared_overwrite = False
         self._check_directory()
         self._max_chars = max_chars_per_call
         self._redact = redact
@@ -2444,6 +2464,9 @@ class ProvenanceSink:
                 for method in ("generate", "generate_with_tools")
             )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
+        if self._overwrite and not self._cleared_overwrite:
+            _clear_model_attempts(self._dir / "model-attempts")
+            self._cleared_overwrite = True
         self._owns_attempts = True
         self._recording_llm = cls(
             backend,
@@ -2470,6 +2493,9 @@ class ProvenanceSink:
     def flush(self) -> Path:
         """Write everything to disk and return the directory path."""
         self._check_directory()
+        if self._overwrite and not self._cleared_overwrite:
+            _clear_model_attempts(self._dir / "model-attempts")
+            self._cleared_overwrite = True
         if self._hook is not None:
             output = self._hook.save(self._dir)
         elif self._recording_llm is not None:
@@ -2492,6 +2518,7 @@ class ProvenanceSink:
         self._hook = None
         self._flushed = False
         self._owns_attempts = False
+        self._cleared_overwrite = False
         if self._automatic_dir:
             self._dir = Path(".looplet/traces") / uuid4().hex
             if self._recording_llm is not None:

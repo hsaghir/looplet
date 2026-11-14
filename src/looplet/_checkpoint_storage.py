@@ -57,6 +57,13 @@ class CheckpointDocuments:
         self._lock = RLock()
         self._record_cache: OrderedDict[str, bytes] | None = None
         self._record_cache_bytes = 0
+        self._verified_digests: set[str] = set()
+        self._pending_verified: set[str] | None = None
+        self._tx_staged: dict[str, bytes] | None = None
+        self._spine_cache: dict[str, list[Any]] = {}
+        self._tx_spines: dict[str, list[Any]] | None = None
+        self._seq_cursors: dict[tuple[str, str], tuple[int, int, int, str]] = {}
+        self._tx_seqs: dict[tuple[str, str], tuple[int, int, int, str]] | None = None
 
     def _connect(self, *, write: bool) -> sqlite3.Connection:
         if write:
@@ -91,6 +98,22 @@ class CheckpointDocuments:
     def _put(self, connection: sqlite3.Connection, value: Any) -> str:
         payload = json.dumps(value, allow_nan=False, separators=(",", ":")).encode("utf-8")
         digest = sha256(payload).hexdigest()
+        staged = self._tx_staged if connection is self._write_connection else None
+        if staged is not None:
+            previous = staged.get(digest)
+            if previous is not None:
+                if previous != payload:
+                    raise ValueError("checkpoint record hash mismatch")
+                return digest
+            staged[digest] = payload
+            if (
+                self._tx_spines is not None
+                and isinstance(value, list)
+                and len(value) == 2
+                and value[0] in {"list", "concat"}
+            ):
+                self._tx_spines[digest] = [value[0], list(value[1])]
+            return digest
         cache = self._record_cache if connection is self._write_connection else None
         if cache is not None:
             previous = cache.pop(digest, None)
@@ -103,11 +126,13 @@ class CheckpointDocuments:
             "INSERT OR IGNORE INTO records VALUES (?, ?)", (digest, payload)
         )
         if not inserted.rowcount:
-            previous = connection.execute(
+            previous_row = connection.execute(
                 "SELECT payload FROM records WHERE digest = ?", (digest,)
             ).fetchone()
-            if previous is None or previous[0] != payload:
+            if previous_row is None or previous_row[0] != payload:
                 raise ValueError("checkpoint record hash mismatch")
+        if self._pending_verified is not None and connection is self._write_connection:
+            self._pending_verified.add(digest)
         if cache is not None and len(payload) <= _CACHE_BYTES:
             cache[digest] = payload
             self._record_cache_bytes += len(payload)
@@ -115,6 +140,17 @@ class CheckpointDocuments:
                 _, removed = cache.popitem(last=False)
                 self._record_cache_bytes -= len(removed)
         return digest
+
+    def _fast_spine_node(self, connection: sqlite3.Connection, digest: str) -> list[Any]:
+        if connection is self._write_connection:
+            if self._tx_spines is not None and digest in self._tx_spines:
+                return self._tx_spines[digest]
+            if digest in self._spine_cache:
+                return self._spine_cache[digest]
+        node = self._node(connection, digest)
+        if connection is self._write_connection and self._tx_spines is not None:
+            self._tx_spines[digest] = node
+        return node
 
     def _sequence_set(
         self,
@@ -134,7 +170,9 @@ class CheckpointDocuments:
 
         def replace(reference: str | None, level: int, offset: int) -> str:
             kind = "concat" if level else "list"
-            children = [] if reference is None else list(self._node(connection, reference)[1])
+            children = (
+                [] if reference is None else list(self._fast_spine_node(connection, reference)[1])
+            )
             if level:
                 index, child_offset = divmod(offset, _FANOUT**level)
                 child = replace(
@@ -157,11 +195,15 @@ class CheckpointDocuments:
         if encoder is None:
             encoder = self._encoders[value.encode] = uuid4().hex
         source = value.values._record_identity
-        previous = connection.execute(
-            "SELECT generation, revision, length, root FROM checkpoint_sequences "
-            "WHERE source = ? AND encoder = ?",
-            (source, encoder),
-        ).fetchone()
+        key = (source, encoder)
+        if connection is self._write_connection and self._tx_seqs is not None:
+            previous = self._tx_seqs.get(key) or self._seq_cursors.get(key)
+        else:
+            previous = connection.execute(
+                "SELECT generation, revision, length, root FROM checkpoint_sequences "
+                "WHERE source = ? AND encoder = ?",
+                (source, encoder),
+            ).fetchone()
         cursor = (previous[0], previous[1], previous[2]) if previous is not None else (-1, -1, 0)
         with value.values.changes_since(cursor, value.length) as (generation, revision, records):
             if previous is not None and cursor[0] == generation and cursor[2] <= value.length:
@@ -174,12 +216,15 @@ class CheckpointDocuments:
                 root = self._encode_list(
                     connection, (value.encode(record) for _, record in records), active
                 )
-            connection.execute(
-                "INSERT INTO checkpoint_sequences VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(source, encoder) DO UPDATE SET generation = excluded.generation, "
-                "revision = excluded.revision, length = excluded.length, root = excluded.root",
-                (source, encoder, generation, revision, value.length, root),
-            )
+            if connection is self._write_connection and self._tx_seqs is not None:
+                self._tx_seqs[key] = (generation, revision, value.length, root)
+            else:
+                connection.execute(
+                    "INSERT INTO checkpoint_sequences VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(source, encoder) DO UPDATE SET generation = excluded.generation, "
+                    "revision = excluded.revision, length = excluded.length, root = excluded.root",
+                    (source, encoder, generation, revision, value.length, root),
+                )
             return root
 
     def _encode_list(self, connection: sqlite3.Connection, values: Any, active: set[int]) -> str:
@@ -249,21 +294,51 @@ class CheckpointDocuments:
             identity = self.path.stat()
             if (identity.st_dev, identity.st_ino) != self._file_identity:
                 raise ValueError("checkpoint record database was replaced")
-            self._record_cache = OrderedDict()
+            tx_staged: dict[str, bytes] = {}
+            tx_spines: dict[str, list[Any]] = {}
+            tx_seqs: dict[tuple[str, str], tuple[int, int, int, str]] = {}
+            self._tx_staged = tx_staged
+            self._tx_spines = tx_spines
+            self._tx_seqs = tx_seqs
             try:
                 with connection:
                     connection.execute("BEGIN IMMEDIATE")
                     version = connection.execute("PRAGMA data_version").fetchone()[0]
                     if version != self._data_version:
                         connection.execute("DELETE FROM checkpoint_sequences")
+                        self._verified_digests.clear()
+                        self._spine_cache.clear()
+                        self._seq_cursors.clear()
                     root = self._encode(
                         connection, {"checkpoint": payload, "summary": summary}, set()
                     )
+                    if tx_staged:
+                        unverified = [d for d in tx_staged if d not in self._verified_digests]
+                        if unverified:
+                            for offset in range(0, len(unverified), 500):
+                                chunk = unverified[offset : offset + 500]
+                                placeholders = ",".join("?" for _ in chunk)
+                                for db_dig, db_pay in connection.execute(
+                                    f"SELECT digest, payload FROM records WHERE digest IN ({placeholders})",
+                                    chunk,
+                                ):
+                                    if db_pay != tx_staged[db_dig]:
+                                        raise ValueError("checkpoint record hash mismatch")
+                        connection.executemany(
+                            "INSERT OR IGNORE INTO records VALUES (?, ?)",
+                            list(tx_staged.items()),
+                        )
+                self._verified_digests.update(tx_staged)
+                if len(self._spine_cache) > 2048:
+                    self._spine_cache.clear()
+                self._spine_cache.update(tx_spines)
+                self._seq_cursors.update(tx_seqs)
                 self._data_version = version
                 return root
             finally:
-                self._record_cache = None
-                self._record_cache_bytes = 0
+                self._tx_staged = None
+                self._tx_spines = None
+                self._tx_seqs = None
 
     @staticmethod
     def _node(connection: sqlite3.Connection, digest: str) -> list[Any]:
@@ -313,6 +388,21 @@ class CheckpointDocuments:
             verified.add(digest)
 
         try:
+            with self._lock:
+                if self._write_connection is not None and self.path.is_file():
+                    identity = self.path.stat()
+                    if (identity.st_dev, identity.st_ino) == self._file_identity:
+                        version = self._write_connection.execute("PRAGMA data_version").fetchone()[
+                            0
+                        ]
+                        if version != self._data_version:
+                            self._verified_digests.clear()
+                            self._spine_cache.clear()
+                            self._seq_cursors.clear()
+                            self._data_version = version
+                        if verified is self._verified_digests:
+                            visit(self._write_connection, root)
+                            return
             with closing(self._connect(write=False)) as connection:
                 visit(connection, root)
         except sqlite3.Error as error:
@@ -357,18 +447,26 @@ class CheckpointDocuments:
     def load(
         self, root: str, *, summary_only: bool = False, fields: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        def _load_from(connection: sqlite3.Connection) -> dict[str, Any]:
+            kind, members = self._node(connection, root)
+            if kind != "object" or not isinstance(members, list):
+                raise ValueError("invalid checkpoint document")
+            references = dict(members)
+            if set(references) != {"checkpoint", "summary"}:
+                raise ValueError("invalid checkpoint document fields")
+            selected = references["summary" if summary_only else "checkpoint"]
+            result = self._decode(connection, selected, fields)
+            if not isinstance(result, dict):
+                raise ValueError("checkpoint document must be an object")
+            return result
+
         try:
+            with self._lock:
+                if self._write_connection is not None and self.path.is_file():
+                    identity = self.path.stat()
+                    if (identity.st_dev, identity.st_ino) == self._file_identity:
+                        return _load_from(self._write_connection)
             with closing(self._connect(write=False)) as connection:
-                kind, members = self._node(connection, root)
-                if kind != "object" or not isinstance(members, list):
-                    raise ValueError("invalid checkpoint document")
-                references = dict(members)
-                if set(references) != {"checkpoint", "summary"}:
-                    raise ValueError("invalid checkpoint document fields")
-                selected = references["summary" if summary_only else "checkpoint"]
-                result = self._decode(connection, selected, fields)
-                if not isinstance(result, dict):
-                    raise ValueError("checkpoint document must be an object")
-                return result
+                return _load_from(connection)
         except sqlite3.Error as error:
             raise ValueError("cannot read checkpoint records") from error

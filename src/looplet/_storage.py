@@ -303,6 +303,10 @@ class TrackedList(list):
         yield self._generation, self._revision, iter(changed)
 
 
+_HOT_MAX_BYTES = 65_536
+_HOT_MAX_ITEMS = 128
+
+
 class DiskBackedList(MutableSequence[Record], Generic[Record]):
     """Store detached records on private temporary disk, caching one live record.
 
@@ -336,11 +340,29 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         self._length = 0
         self._cache: tuple[int, Record] | None = None
         self._cache_payload: str | bytes | None = None
+        self._mem: list[tuple[str | bytes, int, int]] | None = []
+        self._mem_bytes = 0
         self._lock = RLock()
         self._record_identity = uuid4().hex
         self._generation = 0
         self._revision = 0
         self.extend(values)
+
+    def _spill_to_spool(self) -> None:
+        if self._mem is None:
+            return
+        rows = self._mem
+        self._mem = None
+        self._mem_bytes = 0
+        if rows:
+            with self._spool.lock:
+                self._spool.connection.executemany(
+                    "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (self._cid, pos, payload, w, rev)
+                        for pos, (payload, w, rev) in enumerate(rows)
+                    ],
+                )
 
     def _dumps(self, value: Record) -> str | bytes:
         encoded = self._encode(value)
@@ -360,11 +382,15 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             position, value = self._cache
             weight = self._weight(value)
             if weight != self._cache_weight:
-                with self._spool.lock:
-                    self._spool.connection.execute(
-                        "UPDATE list_records SET weight = ? WHERE cid = ? AND position = ?",
-                        (weight, self._cid, position),
-                    )
+                if self._mem is not None:
+                    payload, _, rev = self._mem[position]
+                    self._mem[position] = (payload, weight, rev)
+                else:
+                    with self._spool.lock:
+                        self._spool.connection.execute(
+                            "UPDATE list_records SET weight = ? WHERE cid = ? AND position = ?",
+                            (weight, self._cid, position),
+                        )
                 self._total_weight += weight - self._cache_weight
                 self._cache_weight = weight
 
@@ -389,12 +415,20 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             payload = self._dumps(value)
             if payload != self._cache_payload:
                 self._revision += 1
-                with self._spool.lock:
-                    self._spool.connection.execute(
-                        "UPDATE list_records SET payload = ?, revision = ? "
-                        "WHERE cid = ? AND position = ?",
-                        (payload, self._revision, self._cid, index),
-                    )
+                if self._mem is not None:
+                    old_payload, w, _ = self._mem[index]
+                    new_bytes = self._mem_bytes - len(old_payload) + len(payload)
+                    self._mem[index] = (payload, w, self._revision)
+                    self._mem_bytes = new_bytes
+                    if self._mem_bytes > _HOT_MAX_BYTES:
+                        self._spill_to_spool()
+                else:
+                    with self._spool.lock:
+                        self._spool.connection.execute(
+                            "UPDATE list_records SET payload = ?, revision = ? "
+                            "WHERE cid = ? AND position = ?",
+                            (payload, self._revision, self._cid, index),
+                        )
                 self._cache_payload = payload
 
     @overload
@@ -410,14 +444,18 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             position = self._index(index)
             if self._cache is None or self._cache[0] != position:
                 self._flush()
-                with self._spool.lock:
-                    row = self._spool.connection.execute(
-                        "SELECT payload, weight FROM list_records WHERE cid = ? AND position = ?",
-                        (self._cid, position),
-                    ).fetchone()
-                self._cache = (position, self._loads(row[0]))
-                self._cache_payload = row[0]
-                self._cache_weight = row[1]
+                if self._mem is not None:
+                    raw_payload, raw_weight, _ = self._mem[position]
+                else:
+                    with self._spool.lock:
+                        row = self._spool.connection.execute(
+                            "SELECT payload, weight FROM list_records WHERE cid = ? AND position = ?",
+                            (self._cid, position),
+                        ).fetchone()
+                    raw_payload, raw_weight = row[0], row[1]
+                self._cache = (position, self._loads(raw_payload))
+                self._cache_payload = raw_payload
+                self._cache_weight = raw_weight
             return self._cache[1]
 
     def __setitem__(self, index: Any, value: Any) -> None:
@@ -441,16 +479,23 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             payload = self._dumps(value)
             weight = self._weight(value) if self._weight is not None else 0
             self._revision += 1
-            with self._spool.lock:
-                previous_weight = self._spool.connection.execute(
-                    "SELECT weight FROM list_records WHERE cid = ? AND position = ?",
-                    (self._cid, position),
-                ).fetchone()[0]
-                self._spool.connection.execute(
-                    "UPDATE list_records SET payload = ?, weight = ?, revision = ? "
-                    "WHERE cid = ? AND position = ?",
-                    (payload, weight, self._revision, self._cid, position),
-                )
+            if self._mem is not None:
+                old_payload, previous_weight, _ = self._mem[position]
+                self._mem[position] = (payload, weight, self._revision)
+                self._mem_bytes += len(payload) - len(old_payload)
+                if self._mem_bytes > _HOT_MAX_BYTES:
+                    self._spill_to_spool()
+            else:
+                with self._spool.lock:
+                    previous_weight = self._spool.connection.execute(
+                        "SELECT weight FROM list_records WHERE cid = ? AND position = ?",
+                        (self._cid, position),
+                    ).fetchone()[0]
+                    self._spool.connection.execute(
+                        "UPDATE list_records SET payload = ?, weight = ?, revision = ? "
+                        "WHERE cid = ? AND position = ?",
+                        (payload, weight, self._revision, self._cid, position),
+                    )
             self._total_weight += weight - previous_weight
             self._cache = (position, value)
             self._cache_payload = payload
@@ -465,38 +510,108 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             position = self._index(index)
             self._flush()
             self._cache = None
-            with self._spool.lock:
-                weight = self._spool.connection.execute(
-                    "SELECT weight FROM list_records WHERE cid = ? AND position = ?",
-                    (self._cid, position),
-                ).fetchone()[0]
-                self._spool.connection.execute(
-                    "DELETE FROM list_records WHERE cid = ? AND position = ?",
-                    (self._cid, position),
-                )
-                self._spool.connection.execute(
-                    "UPDATE list_records SET position = -position WHERE cid = ? AND position > ?",
-                    (self._cid, position),
-                )
-                self._spool.connection.execute(
-                    "UPDATE list_records SET position = -position - 1 "
-                    "WHERE cid = ? AND position < 0",
-                    (self._cid,),
-                )
+            if self._mem is not None:
+                old_payload, weight, _ = self._mem.pop(position)
+                self._mem_bytes -= len(old_payload)
+            else:
+                with self._spool.lock:
+                    weight = self._spool.connection.execute(
+                        "SELECT weight FROM list_records WHERE cid = ? AND position = ?",
+                        (self._cid, position),
+                    ).fetchone()[0]
+                    self._spool.connection.execute(
+                        "DELETE FROM list_records WHERE cid = ? AND position = ?",
+                        (self._cid, position),
+                    )
+                    self._spool.connection.execute(
+                        "UPDATE list_records SET position = -position WHERE cid = ? AND position > ?",
+                        (self._cid, position),
+                    )
+                    self._spool.connection.execute(
+                        "UPDATE list_records SET position = -position - 1 "
+                        "WHERE cid = ? AND position < 0",
+                        (self._cid,),
+                    )
             self._generation += 1
             self._length -= 1
             self._total_weight -= weight
 
+    def append(self, value: Record) -> None:
+        with self._lock:
+            self._flush()
+            payload = self._dumps(value)
+            weight = self._weight(value) if self._weight is not None else 0
+            self._revision += 1
+            position = self._length
+            if self._mem is not None:
+                if (
+                    len(self._mem) < _HOT_MAX_ITEMS
+                    and self._mem_bytes + len(payload) <= _HOT_MAX_BYTES
+                ):
+                    self._mem.append((payload, weight, self._revision))
+                    self._mem_bytes += len(payload)
+                else:
+                    self._spill_to_spool()
+                    with self._spool.lock:
+                        self._spool.connection.execute(
+                            "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                            (self._cid, position, payload, weight, self._revision),
+                        )
+            else:
+                with self._spool.lock:
+                    self._spool.connection.execute(
+                        "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                        (self._cid, position, payload, weight, self._revision),
+                    )
+            self._length += 1
+            self._total_weight += weight
+            if len(payload) <= _HOT_MAX_BYTES:
+                self._cache = (position, value)
+                self._cache_payload = payload
+                self._cache_weight = weight
+            else:
+                self._cache = None
+                self._cache_payload = None
+                self._cache_weight = 0
+
     def insert(self, index: int, value: Record) -> None:
         with self._lock:
             position = max(0, min(index if index >= 0 else self._length + index, self._length))
+            if position == self._length:
+                self.append(value)
+                return
             self._flush()
             self._cache = None
             payload = self._dumps(value)
             weight = self._weight(value) if self._weight is not None else 0
             self._revision += 1
-            with self._spool.lock:
-                if position < self._length:
+            self._generation += 1
+            if self._mem is not None:
+                if (
+                    len(self._mem) < _HOT_MAX_ITEMS
+                    and self._mem_bytes + len(payload) <= _HOT_MAX_BYTES
+                ):
+                    self._mem.insert(position, (payload, weight, self._revision))
+                    self._mem_bytes += len(payload)
+                else:
+                    self._spill_to_spool()
+                    with self._spool.lock:
+                        self._spool.connection.execute(
+                            "UPDATE list_records SET position = -position - 1 "
+                            "WHERE cid = ? AND position >= ?",
+                            (self._cid, position),
+                        )
+                        self._spool.connection.execute(
+                            "UPDATE list_records SET position = -position "
+                            "WHERE cid = ? AND position < 0",
+                            (self._cid,),
+                        )
+                        self._spool.connection.execute(
+                            "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                            (self._cid, position, payload, weight, self._revision),
+                        )
+            else:
+                with self._spool.lock:
                     self._spool.connection.execute(
                         "UPDATE list_records SET position = -position - 1 "
                         "WHERE cid = ? AND position >= ?",
@@ -507,24 +622,32 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
                         "WHERE cid = ? AND position < 0",
                         (self._cid,),
                     )
-                    self._generation += 1
-                self._spool.connection.execute(
-                    "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
-                    (self._cid, position, payload, weight, self._revision),
-                )
+                    self._spool.connection.execute(
+                        "INSERT INTO list_records VALUES (?, ?, ?, ?, ?)",
+                        (self._cid, position, payload, weight, self._revision),
+                    )
             self._length += 1
             self._total_weight += weight
-            self._cache = (position, value)
-            self._cache_payload = payload
-            self._cache_weight = weight
+            if len(payload) <= _HOT_MAX_BYTES:
+                self._cache = (position, value)
+                self._cache_payload = payload
+                self._cache_weight = weight
 
     def clear(self) -> None:
         with self._lock:
             self._cache = None
-            with self._spool.lock:
-                self._spool.connection.execute(
-                    "DELETE FROM list_records WHERE cid = ?", (self._cid,)
-                )
+            self._cache_payload = None
+            self._cache_weight = 0
+            if self._mem is not None:
+                self._mem.clear()
+                self._mem_bytes = 0
+            else:
+                with self._spool.lock:
+                    self._spool.connection.execute(
+                        "DELETE FROM list_records WHERE cid = ?", (self._cid,)
+                    )
+                self._mem = []
+                self._mem_bytes = 0
             self._generation += 1
             self._length = 0
             self._total_weight = 0
@@ -537,16 +660,19 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             self._flush()
             self._cache = None
             self._generation += 1
-            with self._spool.lock:
-                self._spool.connection.execute(
-                    "UPDATE list_records SET position = -position - 1 WHERE cid = ?",
-                    (self._cid,),
-                )
-                for position, original in enumerate(positions):
+            if self._mem is not None:
+                self._mem = [self._mem[orig] for orig in positions]
+            else:
+                with self._spool.lock:
                     self._spool.connection.execute(
-                        "UPDATE list_records SET position = ? WHERE cid = ? AND position = ?",
-                        (position, self._cid, -original - 1),
+                        "UPDATE list_records SET position = -position - 1 WHERE cid = ?",
+                        (self._cid,),
                     )
+                    for position, original in enumerate(positions):
+                        self._spool.connection.execute(
+                            "UPDATE list_records SET position = ? WHERE cid = ? AND position = ?",
+                            (position, self._cid, -original - 1),
+                        )
 
     @contextmanager
     def changes_since(
@@ -560,14 +686,22 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             generation, revision, length = cursor
             if generation != self._generation or stop < length:
                 revision, length = -1, 0
-            with self._spool.lock:
-                rows = self._spool.connection.execute(
-                    "SELECT position, payload FROM list_records INDEXED BY list_records_revision "
-                    "WHERE cid = ? AND revision > ? AND position < ? "
-                    "UNION ALL SELECT position, payload FROM list_records "
-                    "WHERE cid = ? AND position >= ? AND position < ? ORDER BY position",
-                    (self._cid, revision, min(length, stop), self._cid, length, stop),
-                ).fetchall()
+            if self._mem is not None:
+                limit = min(length, stop)
+                rows = [
+                    (pos, self._mem[pos][0]) for pos in range(limit) if self._mem[pos][2] > revision
+                ]
+                if stop > length:
+                    rows.extend((pos, self._mem[pos][0]) for pos in range(length, stop))
+            else:
+                with self._spool.lock:
+                    rows = self._spool.connection.execute(
+                        "SELECT position, payload FROM list_records INDEXED BY list_records_revision "
+                        "WHERE cid = ? AND revision > ? AND position < ? "
+                        "UNION ALL SELECT position, payload FROM list_records "
+                        "WHERE cid = ? AND position >= ? AND position < ? ORDER BY position",
+                        (self._cid, revision, min(length, stop), self._cid, length, stop),
+                    ).fetchall()
             yield (
                 self._generation,
                 self._revision,
@@ -594,13 +728,19 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
                 preserve_python=self._preserve_python,
                 weight=self._weight,
             )
-            with self._spool.lock:
-                self._spool.connection.execute(
-                    "INSERT INTO list_records (cid, position, payload, weight, revision) "
-                    "SELECT ?, position, payload, weight, revision "
-                    "FROM list_records WHERE cid = ?",
-                    (records._cid, self._cid),
-                )
+            if self._mem is not None:
+                records._mem = list(self._mem)
+                records._mem_bytes = self._mem_bytes
+            else:
+                records._mem = None
+                records._mem_bytes = 0
+                with self._spool.lock:
+                    self._spool.connection.execute(
+                        "INSERT INTO list_records (cid, position, payload, weight, revision) "
+                        "SELECT ?, position, payload, weight, revision "
+                        "FROM list_records WHERE cid = ?",
+                        (records._cid, self._cid),
+                    )
             records._length = self._length
             records._total_weight = self._total_weight
             records._generation = self._generation
@@ -659,12 +799,33 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
         else:
             self._spool = None
             self._cid = None
-            self._connection = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+            self._connection = sqlite3.connect(
+                path, timeout=10.0, isolation_level=None, check_same_thread=False
+            )
             self._connection.execute("PRAGMA cache_size = -1024")
+            self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection.execute("PRAGMA synchronous = NORMAL")
             self._connection.execute(
                 "CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, payload TEXT)"
             )
             self._finalizer = weakref.finalize(self, self._close_file, self._connection)
+        self._mem: dict[str, tuple[int, str]] | None = {} if path is None else None
+        self._mem_bytes = 0
+        self._next_ord = 0
+
+    def _spill_dict_to_spool(self) -> None:
+        if self._mem is None or self._cid is None or self._spool is None:
+            return
+        items = list(self._mem.items())
+        self._mem = None
+        self._mem_bytes = 0
+        if items:
+            items.sort(key=lambda pair: pair[1][0])
+            with self._db() as conn:
+                conn.executemany(
+                    "INSERT INTO dict_records (cid, key, payload) VALUES (?, ?, ?)",
+                    [(self._cid, k, payload) for k, (_, payload) in items],
+                )
 
     @staticmethod
     def _close_file(connection: sqlite3.Connection) -> None:
@@ -685,53 +846,78 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
             key, value = self._cache
             payload = json.dumps(self._encode(value), default=str)
             if payload != self._cache_payload:
-                with self._db() as conn:
-                    if self._cid is not None:
-                        conn.execute(
-                            "UPDATE dict_records SET payload = ? WHERE cid = ? AND key = ?",
-                            (payload, self._cid, key),
-                        )
-                    else:
-                        conn.execute("UPDATE records SET payload = ? WHERE key = ?", (payload, key))
+                if self._mem is not None and key in self._mem:
+                    ord_val, old_p = self._mem[key]
+                    self._mem[key] = (ord_val, payload)
+                    self._mem_bytes += len(payload) - len(old_p)
+                    if self._mem_bytes > _HOT_MAX_BYTES:
+                        self._spill_dict_to_spool()
+                else:
+                    with self._db() as conn:
+                        if self._cid is not None:
+                            conn.execute(
+                                "UPDATE dict_records SET payload = ? WHERE cid = ? AND key = ?",
+                                (payload, self._cid, key),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE records SET payload = ? WHERE key = ?", (payload, key)
+                            )
                 self._cache_payload = payload
 
     def __len__(self) -> int:
-        with self._lock, self._db() as conn:
-            if self._cid is not None:
-                return conn.execute(
-                    "SELECT count(*) FROM dict_records WHERE cid = ?", (self._cid,)
-                ).fetchone()[0]
-            return conn.execute("SELECT count(*) FROM records").fetchone()[0]
+        with self._lock:
+            if self._mem is not None:
+                return len(self._mem)
+            with self._db() as conn:
+                if self._cid is not None:
+                    return conn.execute(
+                        "SELECT count(*) FROM dict_records WHERE cid = ?", (self._cid,)
+                    ).fetchone()[0]
+                return conn.execute("SELECT count(*) FROM records").fetchone()[0]
 
     def __iter__(self) -> Iterator[str]:
         with self._lock:
             self.flush()
-            with self._db() as conn:
-                if self._cid is not None:
-                    rows = conn.execute(
-                        "SELECT key FROM dict_records WHERE cid = ? ORDER BY ord", (self._cid,)
-                    ).fetchall()
-                else:
-                    rows = conn.execute("SELECT key FROM records ORDER BY rowid").fetchall()
-            for row in rows:
-                yield row[0]
+            if self._mem is not None:
+                keys = [k for k, _ in sorted(self._mem.items(), key=lambda pair: pair[1][0])]
+            else:
+                with self._db() as conn:
+                    if self._cid is not None:
+                        rows = conn.execute(
+                            "SELECT key FROM dict_records WHERE cid = ? ORDER BY ord", (self._cid,)
+                        ).fetchall()
+                    else:
+                        rows = conn.execute("SELECT key FROM records ORDER BY rowid").fetchall()
+                keys = [row[0] for row in rows]
+            for key in keys:
+                yield key
 
     def items_after(self, position: int) -> Iterator[tuple[int, str, Record]]:
         """Iterate newly appended catalog records from a stable row position."""
         with self._lock:
             self.flush()
-            with self._db() as conn:
-                if self._cid is not None:
-                    rows = conn.execute(
-                        "SELECT ord, key, payload FROM dict_records "
-                        "WHERE cid = ? AND ord > ? ORDER BY ord",
-                        (self._cid, position),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT rowid, key, payload FROM records WHERE rowid > ? ORDER BY rowid",
-                        (position,),
-                    ).fetchall()
+            if self._mem is not None:
+                entries = [
+                    (ord_val, k, payload)
+                    for k, (ord_val, payload) in self._mem.items()
+                    if ord_val > position
+                ]
+                entries.sort(key=lambda item: item[0])
+                rows = entries
+            else:
+                with self._db() as conn:
+                    if self._cid is not None:
+                        rows = conn.execute(
+                            "SELECT ord, key, payload FROM dict_records "
+                            "WHERE cid = ? AND ord > ? ORDER BY ord",
+                            (self._cid, position),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT rowid, key, payload FROM records WHERE rowid > ? ORDER BY rowid",
+                            (position,),
+                        ).fetchall()
             for row in rows:
                 yield row[0], row[1], self._decode(json.loads(row[2]))
 
@@ -739,50 +925,84 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
         with self._lock:
             if self._cache is None or self._cache[0] != key:
                 self.flush()
-                with self._db() as conn:
-                    if self._cid is not None:
-                        row = conn.execute(
-                            "SELECT payload FROM dict_records WHERE cid = ? AND key = ?",
-                            (self._cid, key),
-                        ).fetchone()
-                    else:
-                        row = conn.execute(
-                            "SELECT payload FROM records WHERE key = ?", (key,)
-                        ).fetchone()
-                if row is None:
-                    raise KeyError(key)
-                self._cache = (key, self._decode(json.loads(row[0])))
-                self._cache_payload = row[0]
+                if self._mem is not None:
+                    item = self._mem.get(key)
+                    if item is None:
+                        raise KeyError(key)
+                    raw_payload = item[1]
+                else:
+                    with self._db() as conn:
+                        if self._cid is not None:
+                            row = conn.execute(
+                                "SELECT payload FROM dict_records WHERE cid = ? AND key = ?",
+                                (self._cid, key),
+                            ).fetchone()
+                        else:
+                            row = conn.execute(
+                                "SELECT payload FROM records WHERE key = ?", (key,)
+                            ).fetchone()
+                    if row is None:
+                        raise KeyError(key)
+                    raw_payload = row[0]
+                self._cache = (key, self._decode(json.loads(raw_payload)))
+                self._cache_payload = raw_payload
             return self._cache[1]
 
     def __setitem__(self, key: str, value: Record) -> None:
         with self._lock:
             self.flush()
             payload = json.dumps(self._encode(value), default=str)
-            with self._db() as conn:
-                if self._cid is not None:
-                    updated = conn.execute(
-                        "UPDATE dict_records SET payload = ? WHERE cid = ? AND key = ?",
-                        (payload, self._cid, key),
-                    )
-                    if not updated.rowcount:
-                        conn.execute(
-                            "INSERT INTO dict_records (cid, key, payload) VALUES (?, ?, ?)",
-                            (self._cid, key, payload),
-                        )
+            if self._mem is not None:
+                existing = self._mem.get(key)
+                if existing is not None:
+                    self._mem[key] = (existing[0], payload)
+                    self._mem_bytes += len(payload) - len(existing[1])
+                elif (
+                    len(self._mem) < _HOT_MAX_ITEMS
+                    and self._mem_bytes + len(payload) <= _HOT_MAX_BYTES
+                ):
+                    self._next_ord += 1
+                    self._mem[key] = (self._next_ord, payload)
+                    self._mem_bytes += len(payload)
                 else:
-                    conn.execute(
-                        "INSERT INTO records VALUES (?, ?) "
-                        "ON CONFLICT(key) DO UPDATE SET payload = excluded.payload",
-                        (key, payload),
-                    )
-            self._cache = (key, value)
-            self._cache_payload = payload
+                    self._spill_dict_to_spool()
+                if self._mem is not None and self._mem_bytes > _HOT_MAX_BYTES:
+                    self._spill_dict_to_spool()
+            if self._mem is None:
+                with self._db() as conn:
+                    if self._cid is not None:
+                        updated = conn.execute(
+                            "UPDATE dict_records SET payload = ? WHERE cid = ? AND key = ?",
+                            (payload, self._cid, key),
+                        )
+                        if not updated.rowcount:
+                            conn.execute(
+                                "INSERT INTO dict_records (cid, key, payload) VALUES (?, ?, ?)",
+                                (self._cid, key, payload),
+                            )
+                    else:
+                        conn.execute(
+                            "INSERT INTO records VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET payload = excluded.payload",
+                            (key, payload),
+                        )
+            if len(payload) <= _HOT_MAX_BYTES:
+                self._cache = (key, value)
+                self._cache_payload = payload
+            else:
+                self._cache = None
+                self._cache_payload = None
 
     def __delitem__(self, key: str) -> None:
         with self._lock:
             self.flush()
             self._cache = None
+            if self._mem is not None:
+                removed = self._mem.pop(key, None)
+                if removed is None:
+                    raise KeyError(key)
+                self._mem_bytes -= len(removed[1])
+                return
             with self._db() as conn:
                 if self._cid is not None:
                     deleted = conn.execute(
@@ -796,9 +1016,16 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
     def clear(self) -> None:
         with self._lock:
             self._cache = None
+            self._cache_payload = None
+            if self._mem is not None:
+                self._mem.clear()
+                self._mem_bytes = 0
+                return
             with self._db() as conn:
                 if self._cid is not None:
                     conn.execute("DELETE FROM dict_records WHERE cid = ?", (self._cid,))
+                    self._mem = {}
+                    self._mem_bytes = 0
                 else:
                     conn.execute("DELETE FROM records")
 
@@ -806,24 +1033,46 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
     def transaction(self) -> Iterator[None]:
         from contextlib import nullcontext
 
-        spool_guard = self._spool.lock if self._spool is not None else nullcontext()
-        with self._lock, spool_guard:
+        with self._lock:
             self.flush()
             self._cache = None
-            savepoint = (
-                self._spool.next_savepoint() if self._spool is not None else "catalog_update_file"
-            )
-            with self._db() as conn:
-                conn.execute(f"SAVEPOINT {savepoint}")
-            try:
-                yield
-                self.flush()
-            except BaseException:
-                self._cache = None
+            if self._mem is not None:
+                saved_mem = dict(self._mem)
+                saved_bytes = self._mem_bytes
+                saved_ord = self._next_ord
+                try:
+                    yield
+                    self.flush()
+                except BaseException:
+                    self._cache = None
+                    if self._mem is None and self._cid is not None:
+                        with self._db() as conn:
+                            conn.execute("DELETE FROM dict_records WHERE cid = ?", (self._cid,))
+                    self._mem = saved_mem
+                    self._mem_bytes = saved_bytes
+                    self._next_ord = saved_ord
+                    raise
+                finally:
+                    self._cache = None
+                return
+            spool_guard = self._spool.lock if self._spool is not None else nullcontext()
+            with spool_guard:
+                savepoint = (
+                    self._spool.next_savepoint()
+                    if self._spool is not None
+                    else "catalog_update_file"
+                )
                 with self._db() as conn:
-                    conn.execute(f"ROLLBACK TO {savepoint}")
-                raise
-            finally:
-                self._cache = None
-                with self._db() as conn:
-                    conn.execute(f"RELEASE {savepoint}")
+                    conn.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    yield
+                    self.flush()
+                except BaseException:
+                    self._cache = None
+                    with self._db() as conn:
+                        conn.execute(f"ROLLBACK TO {savepoint}")
+                    raise
+                finally:
+                    self._cache = None
+                    with self._db() as conn:
+                        conn.execute(f"RELEASE {savepoint}")

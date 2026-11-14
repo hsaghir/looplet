@@ -29,6 +29,11 @@ from looplet.session import SessionLog
 from looplet.types import Step, ToolCall, ToolResult
 
 
+def _sealed_msg(msg: Message) -> Message:
+    object.__setattr__(msg, "_sealed", True)
+    return msg
+
+
 class HistoryRecorder:
     """Route every step and LLM turn through a single write path.
 
@@ -151,15 +156,16 @@ class HistoryRecorder:
                         metadata={**step.metadata, "step_number": step.number},
                     )
                 )
+            projected_tr = (
+                self._project_tool_result(step.tool_result)
+                if self._project_tool_result is not None
+                else step.tool_result
+            )
             self._conversation.append(
                 Message(
                     role=MessageRole.TOOL,
                     content="",
-                    tool_result=(
-                        self._project_tool_result(step.tool_result)
-                        if self._project_tool_result is not None
-                        else step.tool_result
-                    ),
+                    tool_result=projected_tr,
                     metadata={
                         **step.metadata,
                         "step_number": step.number,
@@ -247,27 +253,33 @@ class HistoryRecorder:
                     else str(snapshot)
                 )
                 self._conversation.append(
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content=content,
-                        metadata={**(metadata or {}), "origin": "model"},
+                    _sealed_msg(
+                        Message(
+                            role=MessageRole.ASSISTANT,
+                            content=content,
+                            metadata={**json_snapshot(metadata or {}), "origin": "model"},
+                        )
                     )
                 )
             return
         self._conversation.append(
-            Message(
-                role=MessageRole.USER,
-                content=str(prompt)[: self._max_chars],
-                metadata=dict(metadata or {}),
+            _sealed_msg(
+                Message(
+                    role=MessageRole.USER,
+                    content=str(prompt)[: self._max_chars],
+                    metadata=json_snapshot(metadata or {}),
+                )
             )
         )
         if response is None:
             return
         response_text = response if isinstance(response, str) else str(response)
         self._conversation.append(
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=response_text[: self._max_chars],
+            _sealed_msg(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content=response_text[: self._max_chars],
+                )
             )
         )
 

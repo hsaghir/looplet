@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -67,7 +68,7 @@ def write_artifact_descriptor(
     return descriptor
 
 
-def _atomic_write(path: Path, text: str) -> None:
+def _atomic_write(path: Path, text: str, *, sync: bool = True) -> None:
     fd, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -78,7 +79,8 @@ def _atomic_write(path: Path, text: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
-            os.fsync(handle.fileno())
+            if sync:
+                os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -87,6 +89,21 @@ def _atomic_write(path: Path, text: str) -> None:
 def _artifact_path(root: Path, filename: str) -> Path:
     """Resolve a saved file inside the selected artifact directory."""
     path = root / filename
+    if "/" not in filename and "\\" not in filename and filename not in {"", ".", ".."}:
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            if not root.is_symlink() and root.is_dir():
+                return path
+        except OSError as exc:
+            raise ValueError(f"Invalid saved artifact file {filename!r} in {root}") from exc
+        else:
+            if not stat.S_ISLNK(st.st_mode):
+                if not stat.S_ISREG(st.st_mode):
+                    raise ValueError(
+                        f"could not read saved artifact file {filename!r} in {root}: expected a regular file"
+                    )
+                return path
     try:
         resolved = path.resolve()
         contained = resolved.is_relative_to(root.resolve())

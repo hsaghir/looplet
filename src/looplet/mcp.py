@@ -173,6 +173,11 @@ class MCPToolAdapter:
         self._stderr_chunks: list[bytes] = []
         self._stderr_bytes = 0
         self._stderr_lock = threading.Lock()
+        self._stdout_cond = threading.Condition()
+        self._stdout_lines: list[bytes] = []
+        self._stdout_eof = False
+        self._stdout_error: BaseException | None = None
+        self._stdout_reader_active = False
         self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
         self._registrations: WeakKeyDictionary[BaseToolRegistry, tuple[ToolSpec, ...]] = (
@@ -260,6 +265,12 @@ class MCPToolAdapter:
         self._proc = None
         self._started = False
         self._tools_dirty = False
+        self._stdout_reader_active = False
+        with self._stdout_cond:
+            self._stdout_lines.clear()
+            self._stdout_eof = True
+            self._stdout_error = None
+            self._stdout_cond.notify_all()
         self._pending_messages.clear()
         self._tool_schemas.clear()
         if proc is not None:
@@ -332,6 +343,41 @@ class MCPToolAdapter:
                     pass
 
             threading.Thread(target=_drain_stderr, daemon=True, name="looplet-mcp-stderr").start()
+        if self._proc.stdout is not None and callable(getattr(self._proc.stdout, "readline", None)):
+            stdout_pipe = self._proc.stdout
+            max_bytes = self._max_message_bytes
+            with self._stdout_cond:
+                self._stdout_lines.clear()
+                self._stdout_eof = False
+                self._stdout_error = None
+            self._stdout_reader_active = True
+
+            def _drain_stdout() -> None:
+                try:
+                    while True:
+                        raw_line = stdout_pipe.readline(max_bytes + 1)
+                        with self._stdout_cond:
+                            if not raw_line:
+                                self._stdout_eof = True
+                                self._stdout_cond.notify_all()
+                                break
+                            self._stdout_lines.append(raw_line)
+                            self._stdout_cond.notify_all()
+                except BaseException as exc:  # noqa: BLE001
+                    with self._stdout_cond:
+                        self._stdout_error = exc
+                        self._stdout_eof = True
+                        self._stdout_cond.notify_all()
+                finally:
+                    with self._reader_lock:
+                        self._reader_threads.discard(threading.current_thread())
+
+            stdout_thread = threading.Thread(
+                target=_drain_stdout, daemon=True, name="looplet-mcp-stdout"
+            )
+            with self._reader_lock:
+                self._reader_threads.add(stdout_thread)
+            stdout_thread.start()
         try:
             # Initialize the MCP session
             init_resp = self._send_request(
@@ -453,6 +499,19 @@ class MCPToolAdapter:
         if len(line) > self._max_message_bytes:
             raise MCPProtocolError("MCP request exceeded max_message_bytes")
         stdin = self._proc.stdin
+        if self._stdout_reader_active and len(line) <= 65536:
+            cancel_token = _ACTIVE_CANCEL_TOKEN.get()
+            limit = self._timeout if deadline is None else deadline - time.monotonic()
+            rem_dl = remaining_deadline(self._run_envelope)
+            if rem_dl is not None:
+                limit = min(limit, rem_dl)
+            if limit <= 0:
+                raise TimeoutError("MCP server request exceeded run deadline")
+            if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                raise ToolCancelledError("Tool execution cancelled")
+            stdin.write(line)
+            stdin.flush()
+            return
 
         def write() -> bytes:
             stdin.write(line)
@@ -464,6 +523,37 @@ class MCPToolAdapter:
             operation="request",
             timeout=None if deadline is None else deadline - time.monotonic(),
         )
+
+    def _next_stdout_line(self, *, timeout: float) -> bytes:
+        cancel_token = _ACTIVE_CANCEL_TOKEN.get()
+        limit = timeout
+        rem_dl = remaining_deadline(self._run_envelope)
+        if rem_dl is not None:
+            limit = min(limit, rem_dl)
+        if limit <= 0:
+            raise TimeoutError("MCP server response exceeded run deadline")
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            raise ToolCancelledError("Tool execution cancelled")
+        end_ts = time.monotonic() + limit
+        with self._stdout_cond:
+            while not self._stdout_lines and not self._stdout_eof and self._stdout_error is None:
+                if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                    if self._proc is not None:
+                        self._stop_process_tree(self._proc, wait_timeout=0.2)
+                    raise ToolCancelledError("Tool execution cancelled")
+                rem = end_ts - time.monotonic()
+                if rem <= 0:
+                    if self._proc is not None:
+                        self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))
+                    raise TimeoutError(f"MCP server response timed out after {limit:g}s")
+                self._stdout_cond.wait(min(0.02, rem) if cancel_token is not None else rem)
+            if self._stdout_lines:
+                return self._stdout_lines.pop(0)
+            if self._stdout_error is not None:
+                err = self._stdout_error
+                self._stdout_error = None
+                raise err
+            return b""
 
     def _read_message(
         self, expected_id: int | None = None, *, deadline: float | None = None
@@ -484,11 +574,14 @@ class MCPToolAdapter:
                 raise TimeoutError("MCP response exceeded request deadline")
             data = self._pop_pending_message(expected_id)
             if data is None:
-                line = self._run_io_with_timeout(
-                    lambda: stdout.readline(self._max_message_bytes + 1),
-                    operation="response",
-                    timeout=remaining,
-                )
+                if self._stdout_reader_active:
+                    line = self._next_stdout_line(timeout=remaining)
+                else:
+                    line = self._run_io_with_timeout(
+                        lambda: stdout.readline(self._max_message_bytes + 1),
+                        operation="response",
+                        timeout=remaining,
+                    )
                 if not line:
                     return None
                 if len(line) > self._max_message_bytes:

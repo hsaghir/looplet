@@ -232,6 +232,7 @@ class SessionTreeRecorder:
     """Record executed tools and accepted terminal outputs into a session tree."""
 
     tree: SessionTree
+    _subscribed_events = frozenset({LifecycleEvent.POST_TOOL_USE, LifecycleEvent.DONE_ACCEPTED})
 
     def on_event(self, payload: EventPayload) -> None:
         if payload.event not in {LifecycleEvent.POST_TOOL_USE, LifecycleEvent.DONE_ACCEPTED}:

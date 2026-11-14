@@ -714,6 +714,12 @@ class ToolSpec:
 
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""
+        from looplet.conversation import _value_stamp
+
+        stamp = (self.name, self.description, _value_stamp(self.parameters))
+        cached = self.__dict__.get("_spec_text_cache")
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
         if self.is_json_schema:
             props = self.parameters.get("properties", {})
             required = set(self.parameters.get("required", []))
@@ -725,7 +731,9 @@ class ToolSpec:
             params = ", ".join(parts)
         else:
             params = ", ".join(f"{k}: {v}" for k, v in self.parameters.items())
-        return f"  {self.name}({params})\n    {self.description}"
+        rendered = f"  {self.name}({params})\n    {self.description}"
+        self.__dict__["_spec_text_cache"] = (stamp, rendered)
+        return rendered
 
     def to_api_schema(self) -> dict[str, Any]:
         """Generate API-compatible tool schema for native tool calling.
@@ -734,11 +742,25 @@ class ToolSpec:
         as the ``input_schema``. Compatibility inputs use the same
         normalization as dispatch and introspection.
         """
-        return {
+        if self.is_json_schema:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "input_schema": self.parameters,
+            }
+        from looplet.conversation import _value_stamp
+
+        stamp = (self.name, self.description, _value_stamp(self.parameters))
+        cached = self.__dict__.get("_api_schema_cache")
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        schema = {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.parameters if self.is_json_schema else self.to_json_schema(),
+            "input_schema": self.to_json_schema(),
         }
+        self.__dict__["_api_schema_cache"] = (stamp, schema)
+        return schema
 
     def to_json_schema(self) -> dict[str, Any]:
         """Return the parameter schema as a JSON Schema object.
@@ -1211,20 +1233,33 @@ class BaseToolRegistry:
 
     def tool_view(self, names: Sequence[str] | None = None) -> ToolView:
         """Select model-visible tools without restricting registry dispatch."""
+        from looplet.conversation import _value_stamp
+
         if names is None:
             specs = tuple(self._tools.values())
+            names_key: tuple[str, ...] | None = None
         else:
-            if len(set(names)) != len(names):
+            names_key = tuple(names)
+            if len(set(names_key)) != len(names_key):
                 raise ValueError("Duplicate tool names in tool view")
-            unknown = set(names) - self._tools.keys()
+            unknown = set(names_key) - self._tools.keys()
             if unknown:
                 raise ValueError(f"Unknown tools in tool view: {sorted(unknown)}")
-            specs = tuple(self._tools[name] for name in names)
-        return ToolView(
+            specs = tuple(self._tools[name] for name in names_key)
+        view_cache: dict[Any, tuple[Any, ToolView]] = self.__dict__.setdefault("_view_cache", {})
+        stamp = tuple((id(s), s.name, s.description, _value_stamp(s.parameters)) for s in specs)
+        cached = view_cache.get(names_key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        view = ToolView(
             names=tuple(spec.name for spec in specs),
             catalog_text="\n".join(["Available tools:", *(spec.spec_text() for spec in specs)]),
             schemas=tuple(spec.to_api_schema() for spec in specs),
         )
+        if len(view_cache) >= 16:
+            view_cache.clear()
+        view_cache[names_key] = (stamp, view)
+        return view
 
     def prepare_call(self, call: ToolCall) -> None:
         """Apply the selected tool's preparation before policy decisions."""

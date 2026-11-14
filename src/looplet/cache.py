@@ -110,7 +110,7 @@ class CachePolicy:
     system_prompt: CacheControl | None = None
     tool_schemas: CacheControl | None = None
     memory: CacheControl | None = None
-    stable_prefix: bool = False
+    stable_prefix: bool = True
 
     @classmethod
     def stable(cls, ttl: _CacheTTL = "ephemeral") -> "CachePolicy":

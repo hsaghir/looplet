@@ -38,6 +38,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -105,6 +106,11 @@ class LEPHookAdapter:
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self._rpc_lock = threading.RLock()
+        self._stdout_cond = threading.Condition()
+        self._stdout_lines: list[str] = []
+        self._stdout_eof = False
+        self._stdout_error: BaseException | None = None
+        self._stdout_reader: threading.Thread | None = None
         self.capabilities: dict[str, Any] = {}
 
     # ── transport ────────────────────────────────────────────────
@@ -150,7 +156,38 @@ class LEPHookAdapter:
                 proc.stdin.flush()
                 return proc.stdout.readline(self._max_message_bytes + 1) if expect_response else ""
 
-            if effective_timeout is None:
+            if self._stdout_reader is not None:
+                assert proc.stdin is not None
+                proc.stdin.write(payload_str)
+                proc.stdin.flush()
+                if not expect_response:
+                    line = ""
+                else:
+                    end_ts = (
+                        None if effective_timeout is None else time.monotonic() + effective_timeout
+                    )
+                    with self._stdout_cond:
+                        while (
+                            not self._stdout_lines
+                            and not self._stdout_eof
+                            and self._stdout_error is None
+                        ):
+                            rem = None if end_ts is None else end_ts - time.monotonic()
+                            if rem is not None and rem <= 0:
+                                self._abort_process(proc)
+                                if remaining is not None and effective_timeout == remaining:
+                                    raise LEPProtocolError("LEP call exceeded run deadline")
+                                raise LEPProtocolError("LEP call timed out")
+                            self._stdout_cond.wait(rem)
+                        if self._stdout_lines:
+                            line = self._stdout_lines.pop(0)
+                        elif self._stdout_error is not None:
+                            err = self._stdout_error
+                            self._stdout_error = None
+                            raise err
+                        else:
+                            line = ""
+            elif effective_timeout is None:
                 line = exchange()
             else:
                 done = threading.Event()
@@ -212,6 +249,8 @@ class LEPHookAdapter:
 
     def _abort_process(self, proc: subprocess.Popen[str]) -> None:
         self._proc = None
+        reader = self._stdout_reader
+        self._stdout_reader = None
         try:
             if os.name == "posix":
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -226,6 +265,11 @@ class LEPHookAdapter:
             proc.wait(timeout=1.0)
         except Exception:
             pass
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=1.0)
+        with self._stdout_cond:
+            self._stdout_eof = True
+            self._stdout_cond.notify_all()
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent policy requests."""
@@ -355,7 +399,7 @@ class LEPHookAdapter:
         return env
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
-        self._proc = subprocess.Popen(  # noqa: S603 - argv is operator-supplied
+        proc = subprocess.Popen(  # noqa: S603 - argv is operator-supplied
             self._argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -363,6 +407,37 @@ class LEPHookAdapter:
             env=self._server_env(self._env),
             start_new_session=os.name == "posix",
         )
+        self._proc = proc
+        if proc.stdout is not None and callable(getattr(proc.stdout, "readline", None)):
+            stdout_pipe = proc.stdout
+            max_chars = self._max_message_bytes + 1
+            with self._stdout_cond:
+                self._stdout_lines.clear()
+                self._stdout_eof = False
+                self._stdout_error = None
+
+            def _drain_lep_stdout() -> None:
+                try:
+                    while True:
+                        raw_line = stdout_pipe.readline(max_chars)
+                        with self._stdout_cond:
+                            if not raw_line:
+                                self._stdout_eof = True
+                                self._stdout_cond.notify_all()
+                                break
+                            self._stdout_lines.append(raw_line)
+                            self._stdout_cond.notify_all()
+                except BaseException as exc:  # noqa: BLE001
+                    with self._stdout_cond:
+                        self._stdout_error = exc
+                        self._stdout_eof = True
+                        self._stdout_cond.notify_all()
+
+            reader = threading.Thread(
+                target=_drain_lep_stdout, daemon=True, name="looplet-lep-stdout"
+            )
+            self._stdout_reader = reader
+            reader.start()
         try:
             self.capabilities = self._rpc(
                 "loop/initialize",
@@ -476,6 +551,15 @@ class LEPHookAdapter:
             pass
         finally:
             self._proc = None
+            reader = self._stdout_reader
+            self._stdout_reader = None
+            if reader is not None and reader is not threading.current_thread():
+                reader.join(timeout=1.0)
+            with self._stdout_cond:
+                self._stdout_lines.clear()
+                self._stdout_eof = True
+                self._stdout_error = None
+                self._stdout_cond.notify_all()
 
 
 def server_argv(server_path: str, *args: str) -> list[str]:

@@ -431,20 +431,16 @@ def _to_anthropic_image_block(block: dict[str, Any]) -> dict[str, Any]:
 # ── OpenAI Backend ───────────────────────────────────────────────
 
 
-def _conversation_messages(
-    backend: Any, prompt: str, *, native_blocks: bool
-) -> list[dict[str, Any]]:
+def _translate_conversation_slice(
+    raw_messages: list[Any],
+    messages: list[dict[str, Any]],
+    pending: set[str],
+    *,
+    native_blocks: bool,
+) -> None:
     from looplet.result_projection import model_result_payload
 
-    snapshot = getattr(backend, "_conversation_input", None)
-    if snapshot is None:
-        return [{"role": "user", "content": prompt}]
-    cached = getattr(backend, "_translated_conversation_messages", None)
-    if cached is not None and getattr(backend, "_translated_native_blocks", None) is native_blocks:
-        return copy.deepcopy(cached)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": snapshot["prompt"]}]
-    pending: set[str] = set()
-    for message in snapshot["conversation"].get("messages", []):
+    for message in raw_messages:
         content = message.get("content", "")
         metadata = message.get("metadata", {})
         role = message["role"]
@@ -550,32 +546,72 @@ def _conversation_messages(
                     for call in calls
                 ]
             messages.append(translated)
+
+
+def _finalize_translated_messages(
+    messages: list[dict[str, Any]],
+    *,
+    turn_update: Any,
+    native_blocks: bool,
+) -> list[dict[str, Any]]:
+    out = list(messages)
+    if isinstance(turn_update, str) and turn_update:
+        out.append({"role": "user", "content": turn_update})
+    if out[-1]["role"] not in ({"user"} if native_blocks else {"user", "tool"}):
+        out.append({"role": "user", "content": "Continue the task."})
+    if native_blocks:
+        merged: list[dict[str, Any]] = []
+        for message in out:
+            if merged and message["role"] == merged[-1]["role"]:
+                previous = merged[-1]["content"]
+                following = message["content"]
+                merged.append(
+                    {
+                        "role": merged.pop()["role"],
+                        "content": (
+                            list(previous)
+                            if isinstance(previous, list)
+                            else [{"type": "text", "text": previous}]
+                        )
+                        + (
+                            list(following)
+                            if isinstance(following, list)
+                            else [{"type": "text", "text": following}]
+                        ),
+                    }
+                )
+            else:
+                merged.append(dict(message))
+        return merged
+    return out
+
+
+def _conversation_messages(
+    backend: Any, prompt: str, *, native_blocks: bool
+) -> list[dict[str, Any]]:
+    snapshot = getattr(backend, "_conversation_input", None)
+    if snapshot is None:
+        return [{"role": "user", "content": prompt}]
+    cached = getattr(backend, "_translated_conversation_messages", None)
+    if cached is not None and getattr(backend, "_translated_native_blocks", None) is native_blocks:
+        return json_snapshot(cached)
+    messages: list[dict[str, Any]] = [{"role": "user", "content": snapshot["prompt"]}]
+    pending: set[str] = set()
+    _translate_conversation_slice(
+        snapshot["conversation"].get("messages", []),
+        messages,
+        pending,
+        native_blocks=native_blocks,
+    )
     if pending:
         raise TerminalLLMError(
             "Provider tool calls lack results", termination_reason="unsupported_context"
         )
-    turn_update = snapshot.get("turn_update")
-    if isinstance(turn_update, str) and turn_update:
-        messages.append({"role": "user", "content": turn_update})
-    if messages[-1]["role"] != "user":
-        messages.append({"role": "user", "content": "Continue the task."})
-    if native_blocks:
-        merged: list[dict[str, Any]] = []
-        for message in messages:
-            if merged and message["role"] == merged[-1]["role"]:
-                previous = merged[-1]["content"]
-                following = message["content"]
-                merged[-1]["content"] = (
-                    previous if isinstance(previous, list) else [{"type": "text", "text": previous}]
-                ) + (
-                    following
-                    if isinstance(following, list)
-                    else [{"type": "text", "text": following}]
-                )
-            else:
-                merged.append(message)
-        return merged
-    return messages
+    return _finalize_translated_messages(
+        messages,
+        turn_update=snapshot.get("turn_update"),
+        native_blocks=native_blocks,
+    )
 
 
 _CALL_ATTR_UNSET = object()
@@ -762,15 +798,52 @@ class _ConversationBackend:
         return self._conv_state_var().get()[2]
 
     def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
-        detached = json_snapshot(snapshot)
+        self._set_detached_conversation_input(json_snapshot(snapshot))
+
+    def _set_detached_conversation_input(self, detached: dict[str, Any] | None) -> None:
         translated = None
         if detached is not None:
-            from types import SimpleNamespace
-
-            translated = _conversation_messages(
-                SimpleNamespace(_conversation_input=detached),
-                detached["prompt"],
-                native_blocks=self._native_blocks,
+            conv_obj = detached.get("conversation")
+            raw_msgs = conv_obj.get("messages", []) if isinstance(conv_obj, dict) else []
+            prompt_str = detached["prompt"]
+            native = self._native_blocks
+            memo = self.__dict__.get("_prefix_translation_memo")
+            if (
+                isinstance(memo, tuple)
+                and len(memo) == 4
+                and memo[0] == prompt_str
+                and memo[3] is native
+                and len(raw_msgs) >= len(memo[1])
+                and raw_msgs[: len(memo[1])] == memo[1]
+            ):
+                base_messages = list(memo[2])
+                delta_msgs = raw_msgs[len(memo[1]) :]
+            else:
+                base_messages = [{"role": "user", "content": prompt_str}]
+                delta_msgs = raw_msgs
+            pending: set[str] = set()
+            if delta_msgs:
+                _translate_conversation_slice(
+                    delta_msgs,
+                    base_messages,
+                    pending,
+                    native_blocks=native,
+                )
+                if pending:
+                    raise TerminalLLMError(
+                        "Provider tool calls lack results",
+                        termination_reason="unsupported_context",
+                    )
+            self.__dict__["_prefix_translation_memo"] = (
+                prompt_str,
+                list(raw_msgs),
+                list(base_messages),
+                native,
+            )
+            translated = _finalize_translated_messages(
+                base_messages,
+                turn_update=detached.get("turn_update"),
+                native_blocks=native,
             )
         self._conv_state_var().set((detached, translated, self._native_blocks))
 

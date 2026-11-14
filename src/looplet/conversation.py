@@ -88,6 +88,12 @@ class Message:
         # serializers) doesn't trip on a plain str.
         if not isinstance(self.role, MessageRole):
             self.role = MessageRole(self.role)
+        object.__setattr__(self, "_init_done", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name != "_sealed" and self.__dict__.get("_init_done"):
+            object.__setattr__(self, "_sealed", False)
 
     @property
     def text(self) -> str:
@@ -222,7 +228,10 @@ class Conversation:
             return tracked
         existing = len(self._stamps)
         for pos in range(existing):
-            stamp = _message_stamp(tracked[pos])
+            msg = tracked[pos]
+            if getattr(msg, "_sealed", False):
+                continue
+            stamp = _message_stamp(msg)
             if stamp != self._stamps[pos]:
                 self._stamps[pos] = stamp
                 tracked.mark_modified(pos)
@@ -557,8 +566,40 @@ class Conversation:
 
     @staticmethod
     def _json_safe_message(msg: Message) -> dict[str, Any]:
+        import math
+
+        def _copy_strict(val: Any) -> Any:
+            if val is None or isinstance(val, (str, bool, int)):
+                return val
+            if isinstance(val, float):
+                if not math.isfinite(val):
+                    raise ValueError("non-finite float")
+                return val
+            if isinstance(val, (list, tuple)):
+                return [_copy_strict(item) for item in val]
+            if isinstance(val, dict):
+                out: dict[str, Any] = {}
+                for k, v in val.items():
+                    if isinstance(k, str):
+                        sk = k
+                    elif k is None:
+                        sk = "null"
+                    elif k is True:
+                        sk = "true"
+                    elif k is False:
+                        sk = "false"
+                    elif isinstance(k, (int, float)):
+                        if isinstance(k, float) and not math.isfinite(k):
+                            raise ValueError("non-finite float key")
+                        sk = str(k)
+                    else:
+                        raise ValueError("non-JSON key")
+                    out[sk] = _copy_strict(v)
+                return out
+            raise ValueError("non-JSON value")
+
         try:
-            return json.loads(json.dumps(_serialize_message(msg), allow_nan=False))
+            return _copy_strict(_serialize_message(msg))
         except (TypeError, ValueError) as exc:
             raise ValueError("conversation contains non-JSON-safe data") from exc
 

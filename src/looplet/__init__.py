@@ -145,6 +145,7 @@ if TYPE_CHECKING:
         promote_to_offline,
         pytest_param_cases,
         run_cartridge_evals,
+        run_cartridge_evals_async,
         save_cartridge_cases,
         save_case,
         save_cases,
@@ -212,6 +213,9 @@ if TYPE_CHECKING:
         ProvenanceSink,
         TrajectoryRecorder,
         async_replay_loop,
+        load_model_attempts,
+        load_trace_events,
+        load_trajectory,
         replay_loop,
     )
     from looplet.resilient import AsyncResilientBackend, ResilientBackend, RetryExhausted
@@ -417,6 +421,7 @@ _EXPORT_MODULES: dict[str, tuple[str, ...]] = {
         "promote_to_offline",
         "pytest_param_cases",
         "run_cartridge_evals",
+        "run_cartridge_evals_async",
         "save_cartridge_cases",
         "save_case",
         "save_cases",
@@ -476,6 +481,9 @@ _EXPORT_MODULES: dict[str, tuple[str, ...]] = {
         "ProvenanceSink",
         "TrajectoryRecorder",
         "async_replay_loop",
+        "load_model_attempts",
+        "load_trace_events",
+        "load_trajectory",
         "replay_loop",
     ),
     "looplet.resilient": ("AsyncResilientBackend", "ResilientBackend", "RetryExhausted"),
@@ -706,6 +714,9 @@ __all__ = [
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
     "ProvenanceSink",
+    "load_model_attempts",
+    "load_trace_events",
+    "load_trajectory",
     "replay_loop",
     "async_replay_loop",
     "serialize_harness",
@@ -760,6 +771,7 @@ __all__ = [
     "seed_case_workspace",
     "promote_to_offline",
     "run_cartridge_evals",
+    "run_cartridge_evals_async",
     # ── TESTING ─────────────────────────────────────────────────
     "MockLLMBackend",
     "AsyncMockLLMBackend",

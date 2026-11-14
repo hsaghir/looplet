@@ -102,6 +102,10 @@ def _clear_call_artifacts(root: Path) -> None:
     (root / "manifest.jsonl").unlink(missing_ok=True)
 
 
+TRACE_EVENT_SCHEMA = "looplet.trace-event.v1"
+LARGE_RESULT_BLOB_BYTES = 8192
+
+
 def _clear_model_attempts(attempt_dir: Path) -> None:
     if attempt_dir.is_symlink():
         raise ValueError(f"Invalid model attempt directory: {attempt_dir}")
@@ -119,17 +123,72 @@ def _clear_model_attempts(attempt_dir: Path) -> None:
                 blob.unlink()
 
 
+def _clear_trace_blobs_and_stream(trace_dir: Path) -> None:
+    if trace_dir.is_symlink():
+        raise ValueError(f"Invalid trace directory: {trace_dir}")
+    if not trace_dir.is_dir():
+        return
+    trace_file = trace_dir / "trace.jsonl"
+    if trace_file.is_symlink():
+        raise ValueError(f"Invalid trace stream path: {trace_file}")
+    trace_file.unlink(missing_ok=True)
+    blobs = trace_dir / "blobs"
+    if blobs.is_symlink():
+        raise ValueError(f"Invalid trace blob directory: {blobs}")
+    if blobs.is_dir():
+        for blob in blobs.iterdir():
+            if not blob.is_symlink() and blob.is_file() and _BLOB_ARTIFACT.fullmatch(blob.name):
+                blob.unlink()
+
+
 def _model_attempt_root(directory: Path) -> Path:
     if directory.is_symlink():
         raise ValueError(f"Invalid model attempt directory: {directory}")
     return directory
 
 
-def _load_attempt_blob(blob_root: Path, ref: Any, blob_cache: dict[str, Any]) -> Any:
+def _canonical_blob_json(item: Any) -> str:
+    return json.dumps(
+        item,
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _resolve_blob_roots(base_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for candidate in (
+        base_dir / "blobs",
+        base_dir / "model-attempts" / "blobs",
+        base_dir.parent / "blobs" if base_dir.name == "model-attempts" else None,
+    ):
+        if candidate is None:
+            continue
+        if candidate.is_symlink():
+            raise ValueError(f"Invalid model attempt directory: {candidate}")
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _load_cas_blob(blob_roots: Sequence[Path], ref: Any, blob_cache: dict[str, Any]) -> Any:
     if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{64}", ref):
         raise ValueError(f"Invalid model attempt blob digest: {ref!r}")
     if ref not in blob_cache:
-        blob_file = _artifact_path(blob_root, f"{ref}.json")
+        blob_file: Path | None = None
+        for root in blob_roots:
+            if root.is_symlink():
+                raise ValueError(f"Invalid model attempt directory: {root}")
+            if root.is_dir():
+                candidate = _artifact_path(root, f"{ref}.json")
+                if candidate.exists():
+                    blob_file = candidate
+                    break
+        if blob_file is None:
+            primary = blob_roots[0] if blob_roots else Path(".")
+            blob_file = _artifact_path(primary, f"{ref}.json")
         raw_bytes = blob_file.read_bytes()
         if hashlib.sha256(raw_bytes).hexdigest() != ref:
             raise ValueError(f"Corrupt model attempt blob: {ref}")
@@ -137,49 +196,692 @@ def _load_attempt_blob(blob_root: Path, ref: Any, blob_cache: dict[str, Any]) ->
     return json_snapshot(blob_cache[ref])
 
 
+def _load_attempt_blob(blob_root: Path, ref: Any, blob_cache: dict[str, Any]) -> Any:
+    roots = [_model_attempt_root(blob_root)]
+    if blob_root.name == "blobs" and blob_root.parent.name == "model-attempts":
+        trace_blobs = blob_root.parent.parent / "blobs"
+        if not trace_blobs.is_symlink():
+            roots.append(trace_blobs)
+    return _load_cas_blob(roots, ref, blob_cache)
+
+
+_SKIP_SPOOL_REHYDRATE: ContextVar[bool] = ContextVar("looplet_skip_spool_rehydrate", default=False)
+
+
+@contextmanager
+def _without_spool_rehydrate() -> Iterator[None]:
+    token = _SKIP_SPOOL_REHYDRATE.set(True)
+    try:
+        yield
+    finally:
+        _SKIP_SPOOL_REHYDRATE.reset(token)
+
+
+class _TraceBlobStore:
+    """Thread-safe content-addressed JSON blob store under ``<trace_dir>/blobs``."""
+
+    def __init__(self, blob_root: Path, *, mirror_root: Path | None = None) -> None:
+        self.blob_root = blob_root
+        self.mirror_root = mirror_root
+        self._lock = Lock()
+        self._ensured_dirs: set[Path] = set()
+        self._written: set[tuple[Path, str]] = set()
+        self._list_memos: dict[str, list[tuple[Any, str]]] = {}
+        self._single_memos: dict[str, tuple[Any, str]] = {}
+
+    def _ensure_dir_unlocked(self, directory: Path) -> Path:
+        if directory in self._ensured_dirs:
+            return directory
+        root = _model_attempt_root(directory)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._ensured_dirs.add(root)
+        return root
+
+    def _mirror_blob_unlocked(self, src_path: Path, digest: str, blob_text: str | None) -> None:
+        if self.mirror_root is None:
+            return
+        if (self.mirror_root, digest) in self._written:
+            return
+        mroot = self._ensure_dir_unlocked(self.mirror_root)
+        dst_path = _artifact_path(mroot, f"{digest}.json")
+        if not dst_path.exists():
+            try:
+                os.link(src_path, dst_path)
+            except OSError:
+                text = blob_text if blob_text is not None else src_path.read_text(encoding="utf-8")
+                _atomic_write(dst_path, text, sync=False)
+        self._written.add((mroot, digest))
+
+    def put_unlocked(self, item: Any, *, sync: bool = False, mirror: bool = False) -> str:
+        root = self._ensure_dir_unlocked(self.blob_root)
+        try:
+            blob_text = _canonical_blob_json(item)
+        except (TypeError, ValueError):
+            blob_text = _canonical_blob_json(json_snapshot(item))
+        digest = hashlib.sha256(blob_text.encode("ascii")).hexdigest()
+        if (root, digest) not in self._written:
+            blob_path = _artifact_path(root, f"{digest}.json")
+            if not blob_path.exists():
+                _atomic_write(blob_path, blob_text, sync=sync)
+            self._written.add((root, digest))
+            if mirror:
+                self._mirror_blob_unlocked(blob_path, digest, blob_text)
+        elif (
+            mirror
+            and self.mirror_root is not None
+            and (self.mirror_root, digest) not in self._written
+        ):
+            self._mirror_blob_unlocked(root / f"{digest}.json", digest, blob_text)
+        return digest
+
+    def put_single(self, item: Any, slot: str, *, mirror: bool = False) -> str:
+        with self._lock:
+            return self.put_single_unlocked(item, slot, mirror=mirror)
+
+    def put_single_unlocked(self, item: Any, slot: str, *, mirror: bool = False) -> str:
+        root = self._ensure_dir_unlocked(self.blob_root)
+        prev = self._single_memos.get(slot)
+        if prev is not None and prev[0] == item and (root, prev[1]) in self._written:
+            digest = prev[1]
+            if (
+                mirror
+                and self.mirror_root is not None
+                and (self.mirror_root, digest) not in self._written
+            ):
+                self._mirror_blob_unlocked(root / f"{digest}.json", digest, None)
+            return digest
+        digest = self.put_unlocked(item, sync=False, mirror=mirror)
+        self._single_memos[slot] = (item, digest)
+        return digest
+
+    def put_list_unlocked(self, items: list[Any], slot: str, *, mirror: bool = False) -> list[str]:
+        root = self._ensure_dir_unlocked(self.blob_root)
+        memo = self._list_memos.setdefault(slot, [])
+        refs: list[str] = []
+        new_memo: list[tuple[Any, str]] = []
+        mroot = self.mirror_root if mirror else None
+        for pos, item in enumerate(items):
+            if pos < len(memo) and (memo[pos][0] is item or memo[pos][0] == item):
+                digest = memo[pos][1]
+                if (root, digest) not in self._written:
+                    blob_path = _artifact_path(root, f"{digest}.json")
+                    if not blob_path.exists():
+                        _atomic_write(blob_path, _canonical_blob_json(item), sync=False)
+                    self._written.add((root, digest))
+                if mroot is not None and (mroot, digest) not in self._written:
+                    self._mirror_blob_unlocked(root / f"{digest}.json", digest, None)
+            else:
+                digest = self.put_unlocked(item, sync=False, mirror=mirror)
+            refs.append(digest)
+            new_memo.append((item, digest))
+        memo[:] = new_memo
+        return refs
+
+    def put_large_data(
+        self, data: Any, *, threshold_bytes: int = LARGE_RESULT_BLOB_BYTES
+    ) -> tuple[str, int, str] | None:
+        if data is None or isinstance(data, (bool, int, float)):
+            return None
+        if isinstance(data, str) and len(data) * 4 < threshold_bytes:
+            return None
+        blob_text = _canonical_blob_json(data)
+        raw_bytes = blob_text.encode("ascii")
+        if len(raw_bytes) <= threshold_bytes:
+            return None
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        preview_src = data if isinstance(data, str) else blob_text
+        preview = preview_src[:200] + ("..." if len(preview_src) > 200 else "")
+        with self._lock:
+            root = self._ensure_dir_unlocked(self.blob_root)
+            if (root, digest) not in self._written:
+                blob_path = _artifact_path(root, f"{digest}.json")
+                if not blob_path.exists():
+                    _atomic_write(blob_path, blob_text, sync=False)
+                self._written.add((root, digest))
+        return digest, len(raw_bytes), preview
+
+    def compact_provider_request_unlocked(
+        self,
+        preq: dict[str, Any],
+        *,
+        slot_prefix: str = "provider",
+        min_seq_len: int = 1,
+        mirror: bool = False,
+        compact_list_manifest: bool = False,
+    ) -> dict[str, Any]:
+        out = dict(preq)
+        ptools = out.get("tools")
+        if isinstance(ptools, list) and ptools:
+            tdigest = self.put_single_unlocked(ptools, f"{slot_prefix}_tools", mirror=mirror)
+            out.pop("tools", None)
+            out["tools_blob_ref"] = tdigest
+        for list_key, ref_key, manifest_key in (
+            ("messages", "message_blob_refs", "messages_manifest_blob_ref"),
+            ("input", "input_blob_refs", "input_manifest_blob_ref"),
+        ):
+            seq = out.get(list_key)
+            if isinstance(seq, list) and len(seq) >= min_seq_len:
+                refs = self.put_list_unlocked(seq, f"{slot_prefix}_{list_key}", mirror=mirror)
+                out.pop(list_key, None)
+                if compact_list_manifest and len(refs) > 12:
+                    out[manifest_key] = self.put_unlocked(refs, sync=False, mirror=False)
+                else:
+                    out[ref_key] = refs
+            elif (
+                compact_list_manifest
+                and ref_key in out
+                and isinstance(out[ref_key], list)
+                and len(out[ref_key]) > 12
+            ):
+                refs = out.pop(ref_key)
+                out[manifest_key] = self.put_unlocked(refs, sync=False, mirror=False)
+        return out
+
+    def compact_request_unlocked(
+        self,
+        req: dict[str, Any],
+        *,
+        slot_prefix: str = "req",
+        min_msg_len: int = 1,
+        mirror: bool = False,
+        compact_list_manifest: bool = False,
+    ) -> dict[str, Any]:
+        out = dict(req)
+        rtools = out.get("tools")
+        if isinstance(rtools, list) and rtools:
+            tdigest = self.put_single_unlocked(rtools, f"{slot_prefix}_tools", mirror=mirror)
+            out.pop("tools", None)
+            out["tools_blob_ref"] = tdigest
+        conv_in = out.get("conversation_input")
+        if isinstance(conv_in, dict):
+            conv_obj = conv_in.get("conversation")
+            if isinstance(conv_obj, dict):
+                msgs = conv_obj.get("messages")
+                if isinstance(msgs, list) and len(msgs) >= min_msg_len:
+                    refs = self.put_list_unlocked(msgs, f"{slot_prefix}_conv_msgs", mirror=mirror)
+                    new_conv = {k: v for k, v in conv_obj.items() if k != "messages"}
+                    if compact_list_manifest and len(refs) > 12:
+                        new_conv["messages_manifest_blob_ref"] = self.put_unlocked(
+                            refs, sync=False, mirror=False
+                        )
+                    else:
+                        new_conv["message_blob_refs"] = refs
+                    out["conversation_input"] = {**conv_in, "conversation": new_conv}
+                elif (
+                    compact_list_manifest
+                    and "message_blob_refs" in conv_obj
+                    and isinstance(conv_obj["message_blob_refs"], list)
+                    and len(conv_obj["message_blob_refs"]) > 12
+                ):
+                    new_conv = dict(conv_obj)
+                    refs = new_conv.pop("message_blob_refs")
+                    new_conv["messages_manifest_blob_ref"] = self.put_unlocked(
+                        refs, sync=False, mirror=False
+                    )
+                    out["conversation_input"] = {**conv_in, "conversation": new_conv}
+        return out
+
+    def compact_capture(
+        self,
+        capture: dict[str, Any],
+        *,
+        slot_prefix: str = "disk",
+        min_conv_msgs: int = 5,
+        min_provider_msgs: int = 3,
+        mirror: bool = False,
+        compact_list_manifest: bool = True,
+    ) -> dict[str, Any]:
+        if not isinstance(capture, dict) or not capture:
+            return capture
+        req = capture.get("request")
+        preq = capture.get("provider_request")
+        needs_req = False
+        if isinstance(req, dict):
+            rtools = req.get("tools")
+            conv_in = req.get("conversation_input")
+            conv_obj = conv_in.get("conversation") if isinstance(conv_in, dict) else None
+            msgs = conv_obj.get("messages") if isinstance(conv_obj, dict) else None
+            needs_req = (
+                bool(isinstance(rtools, list) and rtools)
+                or bool(isinstance(msgs, list) and len(msgs) >= min_conv_msgs)
+                or bool(
+                    compact_list_manifest
+                    and isinstance(conv_obj, dict)
+                    and isinstance(conv_obj.get("message_blob_refs"), list)
+                    and len(conv_obj["message_blob_refs"]) > 12
+                )
+            )
+        needs_preq = False
+        if isinstance(preq, dict):
+            ptools = preq.get("tools")
+            pmsgs = preq.get("messages")
+            pinput = preq.get("input")
+            needs_preq = (
+                bool(isinstance(ptools, list) and ptools)
+                or bool(isinstance(pmsgs, list) and len(pmsgs) >= min_provider_msgs)
+                or bool(isinstance(pinput, list) and len(pinput) >= min_provider_msgs)
+                or bool(
+                    compact_list_manifest
+                    and (
+                        (
+                            isinstance(preq.get("message_blob_refs"), list)
+                            and len(preq["message_blob_refs"]) > 12
+                        )
+                        or (
+                            isinstance(preq.get("input_blob_refs"), list)
+                            and len(preq["input_blob_refs"]) > 12
+                        )
+                    )
+                )
+            )
+        if not needs_req and not needs_preq:
+            return capture
+        out = dict(capture)
+        with self._lock:
+            if needs_req and isinstance(req, dict):
+                out["request"] = self.compact_request_unlocked(
+                    req,
+                    slot_prefix=f"{slot_prefix}_req",
+                    min_msg_len=min_conv_msgs,
+                    mirror=mirror,
+                    compact_list_manifest=compact_list_manifest,
+                )
+            if needs_preq and isinstance(preq, dict):
+                out["provider_request"] = self.compact_provider_request_unlocked(
+                    preq,
+                    slot_prefix=f"{slot_prefix}_preq",
+                    min_seq_len=min_provider_msgs,
+                    mirror=mirror,
+                    compact_list_manifest=compact_list_manifest,
+                )
+        return out
+
+    def reset(self, blob_root: Path | None = None, *, mirror_root: Path | None = None) -> None:
+        with self._lock:
+            if blob_root is not None:
+                self.blob_root = blob_root
+                self.mirror_root = mirror_root
+            self._ensured_dirs.clear()
+            self._written.clear()
+            self._list_memos.clear()
+            self._single_memos.clear()
+
+
+class _TraceEventStream:
+    """Live append-only JSONL stream at ``<trace_dir>/trace.jsonl``."""
+
+    def __init__(self, trace_dir: Path, *, run_id: str | None = None) -> None:
+        self.trace_dir = trace_dir
+        self.run_id = run_id or uuid4().hex[:12]
+        self._lock = Lock()
+        self._seq = 0
+        self._handle: Any = None
+
+    def set_run_id(self, run_id: str) -> None:
+        with self._lock:
+            self.run_id = run_id
+
+    def _close_unlocked(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+            self._handle = None
+
+    def emit(self, kind: str, payload: dict[str, Any], *, sync: bool = False) -> int:
+        with self._lock:
+            if self._handle is None:
+                root = _model_attempt_root(self.trace_dir)
+                root.mkdir(parents=True, exist_ok=True)
+                trace_path = _artifact_path(root, "trace.jsonl")
+                self._handle = trace_path.open("a", encoding="utf-8")
+            seq = self._seq
+            self._seq += 1
+            record = {
+                "schema": TRACE_EVENT_SCHEMA,
+                "seq": seq,
+                "timestamp": time.time(),
+                "run_id": self.run_id,
+                "kind": kind,
+                "payload": payload,
+            }
+            line = (
+                json.dumps(
+                    record,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                + "\n"
+            )
+            self._handle.write(line)
+            self._handle.flush()
+            if sync:
+                os.fsync(self._handle.fileno())
+            if kind == "run_end":
+                self._close_unlocked()
+            return seq
+
+    def reset(self, trace_dir: Path | None = None, *, run_id: str | None = None) -> None:
+        with self._lock:
+            self._close_unlocked()
+            if trace_dir is not None:
+                self.trace_dir = trace_dir
+            self.run_id = run_id or uuid4().hex[:12]
+            self._seq = 0
+
+
 def _rehydrate_attempt_provider_request(
     root: Path, provider_req: Any, blob_cache: dict[str, Any]
 ) -> None:
+    _rehydrate_provider_request_blobs(_resolve_blob_roots(root), provider_req, blob_cache)
+
+
+def _rehydrate_provider_request_blobs(
+    blob_roots: Sequence[Path], provider_req: Any, blob_cache: dict[str, Any]
+) -> None:
     if not isinstance(provider_req, dict):
         return
-    blob_root: Path | None = None
     if "tools_blob_ref" in provider_req and "tools" not in provider_req:
-        blob_root = _model_attempt_root(root / "blobs")
-        provider_req["tools"] = _load_attempt_blob(
-            blob_root, provider_req.pop("tools_blob_ref"), blob_cache
+        provider_req["tools"] = _load_cas_blob(
+            blob_roots, provider_req.pop("tools_blob_ref"), blob_cache
         )
-    for list_key, ref_key in (
-        ("messages", "message_blob_refs"),
-        ("input", "input_blob_refs"),
+    for list_key, ref_key, manifest_key in (
+        ("messages", "message_blob_refs", "messages_manifest_blob_ref"),
+        ("input", "input_blob_refs", "input_manifest_blob_ref"),
     ):
-        if ref_key in provider_req and list_key not in provider_req:
+        if manifest_key in provider_req and list_key not in provider_req:
+            manifest_ref = provider_req.pop(manifest_key)
+            refs = _load_cas_blob(blob_roots, manifest_ref, blob_cache)
+            if not isinstance(refs, list):
+                raise ValueError(f"Invalid {manifest_key} in model attempt")
+            provider_req[list_key] = [_load_cas_blob(blob_roots, ref, blob_cache) for ref in refs]
+        elif ref_key in provider_req and list_key not in provider_req:
             refs = provider_req.pop(ref_key)
             if not isinstance(refs, list):
                 raise ValueError(f"Invalid {ref_key} in model attempt")
-            if blob_root is None:
-                blob_root = _model_attempt_root(root / "blobs")
-            provider_req[list_key] = [
-                _load_attempt_blob(blob_root, ref, blob_cache) for ref in refs
-            ]
+            provider_req[list_key] = [_load_cas_blob(blob_roots, ref, blob_cache) for ref in refs]
 
 
 def _rehydrate_attempt_conversation(root: Path, req: Any, blob_cache: dict[str, Any]) -> None:
+    _rehydrate_request_blobs(_resolve_blob_roots(root), req, blob_cache)
+
+
+def _rehydrate_request_blobs(
+    blob_roots: Sequence[Path], req: Any, blob_cache: dict[str, Any]
+) -> None:
     if not isinstance(req, dict):
         return
     if "tools_blob_ref" in req and "tools" not in req:
-        blob_root = _model_attempt_root(root / "blobs")
-        req["tools"] = _load_attempt_blob(blob_root, req.pop("tools_blob_ref"), blob_cache)
+        req["tools"] = _load_cas_blob(blob_roots, req.pop("tools_blob_ref"), blob_cache)
     conv_in = req.get("conversation_input")
     if not isinstance(conv_in, dict):
         return
     conv_obj = conv_in.get("conversation")
-    if not isinstance(conv_obj, dict) or "message_blob_refs" not in conv_obj:
+    if not isinstance(conv_obj, dict):
         return
-    refs = conv_obj.pop("message_blob_refs")
-    if not isinstance(refs, list):
-        raise ValueError("Invalid message_blob_refs in model attempt")
-    blob_root = _model_attempt_root(root / "blobs")
-    conv_obj["messages"] = [_load_attempt_blob(blob_root, ref, blob_cache) for ref in refs]
+    if "messages_manifest_blob_ref" in conv_obj and "messages" not in conv_obj:
+        manifest_ref = conv_obj.pop("messages_manifest_blob_ref")
+        refs = _load_cas_blob(blob_roots, manifest_ref, blob_cache)
+        if not isinstance(refs, list):
+            raise ValueError("Invalid messages_manifest_blob_ref in model attempt")
+        conv_obj["messages"] = [_load_cas_blob(blob_roots, ref, blob_cache) for ref in refs]
+    elif "message_blob_refs" in conv_obj and "messages" not in conv_obj:
+        refs = conv_obj.pop("message_blob_refs")
+        if not isinstance(refs, list):
+            raise ValueError("Invalid message_blob_refs in model attempt")
+        conv_obj["messages"] = [_load_cas_blob(blob_roots, ref, blob_cache) for ref in refs]
+
+
+def _rehydrate_capture_blobs(
+    blob_roots: Sequence[Path], capture: Any, blob_cache: dict[str, Any]
+) -> None:
+    if not isinstance(capture, dict):
+        return
+    _rehydrate_request_blobs(blob_roots, capture.get("request"), blob_cache)
+    _rehydrate_provider_request_blobs(blob_roots, capture.get("provider_request"), blob_cache)
+
+
+def _rehydrate_step_blobs(
+    blob_roots: Sequence[Path], step: Any, blob_cache: dict[str, Any]
+) -> None:
+    if not isinstance(step, dict):
+        return
+    tr = step.get("tool_result")
+    if not isinstance(tr, dict):
+        return
+    if "data_blob_ref" in tr and "data" not in tr:
+        ref = tr.pop("data_blob_ref")
+        tr.pop("data_bytes", None)
+        tr.pop("data_preview", None)
+        tr["data"] = _load_cas_blob(blob_roots, ref, blob_cache)
+
+
+def _rehydrate_trajectory_doc(
+    base_dir: Path, doc: dict[str, Any], blob_cache: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    cache = blob_cache if blob_cache is not None else {}
+    roots = _resolve_blob_roots(base_dir)
+    steps = doc.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            _rehydrate_step_blobs(roots, step, cache)
+    calls = doc.get("llm_calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if isinstance(call, dict):
+                _rehydrate_capture_blobs(roots, call.get("capture"), cache)
+    return doc
+
+
+def load_trace_events(directory: str | Path, *, rehydrate: bool = True) -> list[dict[str, Any]]:
+    """Load structured events from ``<directory>/trace.jsonl``.
+
+    Tolerates a single unterminated trailing line caused by an abrupt
+    crash mid-write while validating sequence monotonicity and SHA-256
+    blob digests on all complete records.
+    """
+    base = Path(directory)
+    trace_path = _artifact_path(base, "trace.jsonl")
+    if not trace_path.exists():
+        raise FileNotFoundError(f"No trace.jsonl in {base}")
+    raw_text = trace_path.read_text(encoding="utf-8")
+    raw_lines = raw_text.splitlines(keepends=True)
+    events: list[dict[str, Any]] = []
+    blob_roots = _resolve_blob_roots(base)
+    blob_cache: dict[str, Any] = {}
+    intents_by_attempt: dict[str, dict[str, Any]] = {}
+    dispatches_by_attempt: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for idx, line in enumerate(raw_lines):
+        is_last = idx == len(raw_lines) - 1
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if is_last and not line.endswith("\n"):
+                break
+            raise ValueError(f"Invalid trace.jsonl record at line {idx + 1}: {exc}") from exc
+        if (
+            not isinstance(event, dict)
+            or event.get("schema") != TRACE_EVENT_SCHEMA
+            or type(event.get("seq")) is not int
+            or event["seq"] != len(events)
+            or not isinstance(event.get("kind"), str)
+            or not isinstance(event.get("payload"), dict)
+        ):
+            raise ValueError(f"Invalid trace.jsonl envelope at line {idx + 1}")
+        payload = event["payload"]
+        kind = event["kind"]
+        if rehydrate:
+            if kind == "llm_intent":
+                _rehydrate_request_blobs(blob_roots, payload.get("request"), blob_cache)
+                att_id = payload.get("attempt_id")
+                if isinstance(att_id, str):
+                    intents_by_attempt[att_id] = payload
+            elif kind == "llm_dispatch":
+                _rehydrate_provider_request_blobs(
+                    blob_roots, payload.get("provider_request"), blob_cache
+                )
+                att_id = payload.get("attempt_id")
+                dkey = payload.get("dispatch_key")
+                if isinstance(att_id, str) and isinstance(dkey, str):
+                    dispatches_by_attempt[(att_id, dkey)] = payload
+            elif kind == "llm_outcome":
+                cap = payload.get("capture")
+                att_id = payload.get("attempt_id")
+                if isinstance(cap, dict):
+                    if (
+                        "request" not in cap
+                        and cap.get("request_ref") == "intent"
+                        and isinstance(att_id, str)
+                        and att_id in intents_by_attempt
+                    ):
+                        cap.pop("request_ref", None)
+                        cap["request"] = json_snapshot(intents_by_attempt[att_id].get("request"))
+                    else:
+                        _rehydrate_request_blobs(blob_roots, cap.get("request"), blob_cache)
+                    pref = cap.get("provider_request_ref")
+                    if (
+                        "provider_request" not in cap
+                        and isinstance(pref, str)
+                        and isinstance(att_id, str)
+                        and (att_id, pref) in dispatches_by_attempt
+                    ):
+                        cap.pop("provider_request_ref", None)
+                        cap["provider_request"] = json_snapshot(
+                            dispatches_by_attempt[(att_id, pref)].get("provider_request")
+                        )
+                    else:
+                        _rehydrate_provider_request_blobs(
+                            blob_roots, cap.get("provider_request"), blob_cache
+                        )
+            elif kind == "step":
+                _rehydrate_step_blobs(blob_roots, payload, blob_cache)
+        events.append(event)
+    return events
+
+
+def load_trajectory(directory: str | Path, *, rehydrate: bool = True) -> dict[str, Any]:
+    """Load ``trajectory.json`` with blob rehydration, or recover from ``trace.jsonl``.
+
+    When a run crashed before ``flush()`` wrote ``trajectory.json``, this
+    reconstructs the trajectory from ``trace.jsonl`` + ``blobs/`` with
+    ``termination_reason='incomplete'`` and ``metadata['recovered_from_trace_jsonl']=True``,
+    preserving all committed steps, LLM outcomes, compactions, epochs, and
+    unfinished LLM intents without fabricating missing provider outcomes.
+    """
+    base = Path(directory)
+    if not base.exists():
+        raise FileNotFoundError(f"Trace directory does not exist: {base}")
+    traj_path = _artifact_path(base, "trajectory.json")
+    if traj_path.is_file():
+        data = json.loads(traj_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid trajectory.json in {base}: expected object")
+        return _rehydrate_trajectory_doc(base, data) if rehydrate else data
+
+    trace_path = _artifact_path(base, "trace.jsonl")
+    if not trace_path.is_file():
+        raise FileNotFoundError(f"No trajectory.json or trace.jsonl in {base}")
+
+    events = load_trace_events(base, rehydrate=rehydrate)
+    run_id = events[0]["run_id"] if events else base.name
+    started_at = events[0]["timestamp"] if events else 0.0
+    ended_at = 0.0
+    task: dict[str, Any] = {}
+    termination_reason = "incomplete"
+    session_log_text = ""
+    metadata: dict[str, Any] = {"recovered_from_trace_jsonl": True}
+    spans: list[dict[str, Any]] = []
+    steps_by_num: dict[int, dict[str, Any]] = {}
+    llm_calls: list[dict[str, Any]] = []
+    epochs: list[dict[str, Any]] = []
+    compactions: list[dict[str, Any]] = []
+    intents_seen: dict[str, dict[str, Any]] = {}
+    outcomes_seen: set[str] = set()
+
+    for ev in events:
+        kind = ev["kind"]
+        p = ev["payload"]
+        if kind == "run_start":
+            run_id = p.get("run_id", run_id)
+            started_at = float(p.get("started_at", started_at))
+            if isinstance(p.get("task"), dict):
+                task = dict(p["task"])
+            if isinstance(p.get("metadata"), dict):
+                metadata.update(p["metadata"])
+            if isinstance(p.get("harness_snapshot"), dict):
+                metadata["harness_snapshot"] = dict(p["harness_snapshot"])
+        elif kind == "harness_epoch":
+            epochs.append(dict(p))
+        elif kind == "compaction":
+            compactions.append(dict(p))
+        elif kind == "llm_intent":
+            att_id = p.get("attempt_id")
+            if isinstance(att_id, str):
+                intents_seen[att_id] = p
+        elif kind == "llm_outcome":
+            att_id = p.get("attempt_id")
+            if isinstance(att_id, str):
+                outcomes_seen.add(att_id)
+            call_entry = p.get("call")
+            if isinstance(call_entry, dict):
+                merged = dict(call_entry)
+                if "capture" in p:
+                    merged["capture"] = p["capture"]
+                llm_calls.append(merged)
+        elif kind == "step":
+            snum = p.get("step_num")
+            if isinstance(snum, int):
+                steps_by_num[snum] = dict(p)
+        elif kind == "span":
+            spans.append(dict(p))
+        elif kind == "run_end":
+            ended_at = float(p.get("ended_at", ev["timestamp"]))
+            termination_reason = str(p.get("termination_reason", "unknown"))
+            session_log_text = str(p.get("session_log_text", ""))
+            if isinstance(p.get("metadata"), dict):
+                metadata.update(p["metadata"])
+            metadata["recovered_from_trace_jsonl"] = True
+
+    if len(epochs) > 1 and "harness_epochs" not in metadata:
+        metadata["harness_epochs"] = epochs
+    if compactions and "compactions" not in metadata:
+        metadata["compactions"] = compactions
+    unfinished = [
+        {
+            "attempt_id": att_id,
+            "request_id": info.get("request_id"),
+            "started_at": info.get("started_at"),
+            "step_num": info.get("step_num"),
+            "scope": info.get("scope"),
+        }
+        for att_id, info in intents_seen.items()
+        if att_id not in outcomes_seen
+    ]
+    if unfinished:
+        metadata["unfinished_attempts"] = unfinished
+
+    ordered_steps = [steps_by_num[k] for k in sorted(steps_by_num)]
+    llm_calls.sort(key=lambda c: int(c.get("index", 0)))
+    return {
+        "run_id": run_id,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "task": task,
+        "termination_reason": termination_reason,
+        "session_log_text": session_log_text,
+        "metadata": metadata,
+        "step_count": len(ordered_steps),
+        "llm_call_count": len(llm_calls),
+        "spans": spans,
+        "steps": ordered_steps,
+        "llm_calls": llm_calls,
+    }
 
 
 _ATTEMPT_ID_LOCK = Lock()
@@ -211,21 +913,57 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
     not attest that a provider received a request. Records are sorted by ID
     (monotonic in admission order for SDK-generated attempts).
     """
+    base = Path(directory)
     grouped: dict[str, dict[str, Any]] = {}
-    root = _model_attempt_root(Path(directory) / "model-attempts")
-    for path in sorted(root.glob("*.json")):
-        match = re.fullmatch(r"([0-9a-f]{32})\.(intent|outcome|dispatch-\d{4})\.json", path.name)
-        if match is None:
-            raise ValueError(f"Invalid model attempt filename: {path.name}")
-        attempt_id, kind = match.groups()
-        payload = json.loads(_artifact_path(root, path.name).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or (
-            payload.get("schema"),
-            payload.get("attempt_id"),
-            payload.get("kind"),
-        ) != ("looplet.model-attempt.v1", attempt_id, kind):
-            raise ValueError(f"Invalid model attempt record: {path.name}")
-        grouped.setdefault(attempt_id, {})[kind] = payload
+    root = _model_attempt_root(base / "model-attempts")
+    if root.is_dir():
+        for path in sorted(root.glob("*.json")):
+            match = re.fullmatch(
+                r"([0-9a-f]{32})\.(intent|outcome|dispatch-\d{4})\.json", path.name
+            )
+            if match is None:
+                raise ValueError(f"Invalid model attempt filename: {path.name}")
+            attempt_id, kind = match.groups()
+            payload = json.loads(_artifact_path(root, path.name).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or (
+                payload.get("schema"),
+                payload.get("attempt_id"),
+                payload.get("kind"),
+            ) != ("looplet.model-attempt.v1", attempt_id, kind):
+                raise ValueError(f"Invalid model attempt record: {path.name}")
+            grouped.setdefault(attempt_id, {})[kind] = payload
+    elif (base / "trace.jsonl").is_file():
+        events = load_trace_events(base, rehydrate=True)
+        for ev in events:
+            p = ev["payload"]
+            att_id = p.get("attempt_id")
+            if not isinstance(att_id, str):
+                continue
+            if ev["kind"] == "llm_intent":
+                grouped.setdefault(att_id, {})["intent"] = {
+                    "schema": "looplet.model-attempt.v1",
+                    "kind": "intent",
+                    **p,
+                }
+            elif ev["kind"] == "llm_dispatch":
+                dkey = str(p.get("dispatch_key") or "dispatch-0001")
+                grouped.setdefault(att_id, {})[dkey] = {
+                    "schema": "looplet.model-attempt.v1",
+                    "kind": dkey,
+                    "attempt_id": att_id,
+                    "provider_request": p.get("provider_request"),
+                    "scope": p.get("scope"),
+                }
+            elif ev["kind"] == "llm_outcome":
+                grouped.setdefault(att_id, {})["outcome"] = {
+                    "schema": "looplet.model-attempt.v1",
+                    "kind": "outcome",
+                    "attempt_id": att_id,
+                    "capture": p.get("capture"),
+                    "scope": p.get("scope"),
+                    "response_complete": p.get("response_complete"),
+                }
+
     blob_cache: dict[str, Any] = {}
     attempts = []
     for attempt_id, records in sorted(grouped.items()):
@@ -269,8 +1007,12 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "LARGE_RESULT_BLOB_BYTES",
     "LLMCall",
+    "TRACE_EVENT_SCHEMA",
     "load_model_attempts",
+    "load_trace_events",
+    "load_trajectory",
     "RecordingLLMBackend",
     "AsyncRecordingLLMBackend",
     "StepRecord",
@@ -512,6 +1254,9 @@ class _RecordingBase:
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
         attempt_directory: str | Path | None = None,
+        blob_store: _TraceBlobStore | None = None,
+        trace_stream: _TraceEventStream | None = None,
+        compact_blobs: bool = False,
     ) -> None:
         self._backend = backend
         self._attempt_directory = Path(attempt_directory) if attempt_directory is not None else None
@@ -522,7 +1267,24 @@ class _RecordingBase:
         # backend - so secrets never leave the process, not just the
         # trace.  Set to False to record-only.
         self._redact_upstream = redact_upstream
-        self.calls: MutableSequence[LLMCall] = DiskBackedList(vars, lambda value: LLMCall(**value))
+        self._compact_blobs = compact_blobs
+        if blob_store is not None:
+            self._blob_store: _TraceBlobStore | None = blob_store
+        elif self._attempt_directory is not None:
+            if self._attempt_directory.name == "model-attempts":
+                self._blob_store = _TraceBlobStore(
+                    self._attempt_directory.parent / "blobs",
+                    mirror_root=self._attempt_directory / "blobs",
+                )
+            else:
+                self._blob_store = _TraceBlobStore(self._attempt_directory / "blobs")
+        else:
+            self._blob_store = None
+        self._trace_stream = trace_stream
+        self.calls: MutableSequence[LLMCall] = DiskBackedList(
+            self._serialize_call_for_spool,
+            self._deserialize_call_from_spool,
+        )
         self._calls_lock = Lock()
         self._call_identity = _ModelCallIdentity()
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
@@ -535,15 +1297,58 @@ class _RecordingBase:
         self._conversation_input: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_recorded_conversation_input"
         )
-        self._blob_lock = Lock()
-        self._last_blob_msgs: list[tuple[Any, str]] = []
-        self._last_provider_msgs: list[tuple[Any, str]] = []
-        self._last_tools_blob: tuple[Any, str] | None = None
-        self._last_provider_tools_blob: tuple[Any, str] | None = None
-        self._written_blobs: set[tuple[Path, str]] = set()
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
+
+    def _serialize_call_for_spool(self, call: LLMCall) -> dict[str, Any]:
+        raw = dict(vars(call))
+        if self._blob_store is not None and not self._blob_store.blob_root.is_symlink():
+            if isinstance(raw.get("tools"), list) and raw["tools"]:
+                raw["_tools_blob_ref"] = self._blob_store.put_single(
+                    raw.pop("tools"), "spool_call_tools"
+                )
+            if isinstance(raw.get("capture"), dict):
+                raw["capture"] = self._blob_store.compact_capture(
+                    raw["capture"],
+                    slot_prefix="spool",
+                    min_conv_msgs=5 if self._compact_blobs else 1_000_000_000,
+                    min_provider_msgs=3,
+                    compact_list_manifest=True,
+                )
+        return raw
+
+    def _deserialize_call_from_spool(self, value: dict[str, Any]) -> LLMCall:
+        restored = dict(value)
+        if self._blob_store is not None and (
+            "_tools_blob_ref" in restored or isinstance(restored.get("capture"), dict)
+        ):
+            skip_cap = _SKIP_SPOOL_REHYDRATE.get()
+            roots = [self._blob_store.blob_root]
+            if self._blob_store.mirror_root is not None:
+                roots.append(self._blob_store.mirror_root)
+            cache: dict[str, Any] = {}
+            if "_tools_blob_ref" in restored:
+                tref = restored.pop("_tools_blob_ref")
+                memo_tools = self._blob_store._single_memos.get("spool_call_tools")
+                if skip_cap and memo_tools is not None and memo_tools[1] == tref:
+                    restored["tools"] = memo_tools[0]
+                else:
+                    restored["tools"] = _load_cas_blob(roots, tref, cache)
+            if not skip_cap and isinstance(restored.get("capture"), dict):
+                cap = dict(restored["capture"])
+                if isinstance(cap.get("request"), dict):
+                    cap["request"] = dict(cap["request"])
+                    if isinstance(cap["request"].get("conversation_input"), dict):
+                        ci = dict(cap["request"]["conversation_input"])
+                        if isinstance(ci.get("conversation"), dict):
+                            ci["conversation"] = dict(ci["conversation"])
+                        cap["request"]["conversation_input"] = ci
+                if isinstance(cap.get("provider_request"), dict):
+                    cap["provider_request"] = dict(cap["provider_request"])
+                _rehydrate_capture_blobs(roots, cap, cache)
+                restored["capture"] = cap
+        return LLMCall(**restored)
 
     def __getattr__(self, name: str) -> Any:
         return backend_attribute(self._backend, name)
@@ -563,6 +1368,9 @@ class _RecordingBase:
             redact=self._redact,
             redact_upstream=self._redact_upstream,
             attempt_directory=self._attempt_directory,
+            blob_store=self._blob_store,
+            trace_stream=self._trace_stream,
+            compact_blobs=self._compact_blobs,
         )
         recorder.calls = self.calls
         recorder._calls_lock = self._calls_lock
@@ -572,10 +1380,6 @@ class _RecordingBase:
         recorder._scoped_step_num = self._scoped_step_num
         recorder._model_call_context = self._model_call_context
         recorder._conversation_input = self._conversation_input
-        recorder._blob_lock = self._blob_lock
-        recorder._last_blob_msgs = self._last_blob_msgs
-        recorder._last_provider_msgs = self._last_provider_msgs
-        recorder._written_blobs = self._written_blobs
         return recorder
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -652,173 +1456,115 @@ class _RecordingBase:
     def _redact_native_response(self, value: Any) -> Any:
         return _redact_value(value, self._redact)
 
-    def _write_blob_unlocked(self, blob_root: Path, item: Any, *, sync: bool = False) -> str:
-        blob_text = json.dumps(
-            item,
-            ensure_ascii=True,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        digest = hashlib.sha256(blob_text.encode("ascii")).hexdigest()
-        if (blob_root, digest) not in self._written_blobs:
-            blob_path = _artifact_path(blob_root, f"{digest}.json")
-            if not blob_path.exists():
-                _atomic_write(blob_path, blob_text, sync=sync)
-            self._written_blobs.add((blob_root, digest))
-        return digest
+    def _ensure_blob_store(self, root: Path) -> _TraceBlobStore:
+        if self._blob_store is not None and self._blob_store.blob_root == root / "blobs":
+            return self._blob_store
+        return _TraceBlobStore(root / "blobs")
 
-    def _dedup_blob_list_unlocked(
-        self,
-        blob_root: Path,
-        items: list[Any],
-        memo: list[tuple[Any, str]],
-    ) -> list[str]:
-        refs: list[str] = []
-        new_memo: list[tuple[Any, str]] = []
-        for pos, item in enumerate(items):
-            if pos < len(memo) and memo[pos][0] == item:
-                digest = memo[pos][1]
-                if (blob_root, digest) not in self._written_blobs:
-                    blob_path = _artifact_path(blob_root, f"{digest}.json")
-                    if not blob_path.exists():
-                        blob_text = json.dumps(
-                            item,
-                            ensure_ascii=True,
-                            allow_nan=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                        _atomic_write(blob_path, blob_text, sync=False)
-                    self._written_blobs.add((blob_root, digest))
-            else:
-                digest = self._write_blob_unlocked(blob_root, item, sync=False)
-            refs.append(digest)
-            new_memo.append((item, digest))
-        memo[:] = new_memo
-        return refs
-
-    def _dedup_provider_request_unlocked(
-        self, blob_root: Path, preq: dict[str, Any]
-    ) -> dict[str, Any]:
-        out = dict(preq)
-        ptools = out.get("tools")
-        if isinstance(ptools, list) and ptools:
-            prev_pt = self._last_provider_tools_blob
-            if (
-                prev_pt is not None
-                and prev_pt[0] == ptools
-                and (blob_root, prev_pt[1]) in self._written_blobs
-            ):
-                tdigest = prev_pt[1]
-            else:
-                tdigest = self._write_blob_unlocked(blob_root, ptools, sync=False)
-                self._last_provider_tools_blob = (ptools, tdigest)
-            out.pop("tools", None)
-            out["tools_blob_ref"] = tdigest
-        for list_key, ref_key in (
-            ("messages", "message_blob_refs"),
-            ("input", "input_blob_refs"),
-        ):
-            seq = out.get(list_key)
-            if isinstance(seq, list) and seq:
-                refs = self._dedup_blob_list_unlocked(blob_root, seq, self._last_provider_msgs)
-                out.pop(list_key, None)
-                out[ref_key] = refs
-        return out
-
-    def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> None:
-        assert self._attempt_directory is not None
-        root = _model_attempt_root(self._attempt_directory)
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        policy = _artifact_path(root, ".gitignore")
-        record = _artifact_path(root, f"{attempt_id}.{kind}.json")
-        if not policy.exists():
-            _atomic_write(policy, "*\n", sync=False)
-        raw = json_snapshot(
-            {
-                "schema": "looplet.model-attempt.v1",
-                "kind": kind,
-                "attempt_id": attempt_id,
-                **value,
-            }
-        )
-        payload = raw if kind in {"intent", "outcome"} else _redact_model_record(raw, self._redact)
-        if kind == "intent" and isinstance(payload.get("request"), dict):
-            req_obj = payload["request"]
-            rtools = req_obj.get("tools")
-            conv_in = req_obj.get("conversation_input")
-            conv_obj = (
-                conv_in.get("conversation")
-                if isinstance(conv_in, dict) and isinstance(conv_in.get("conversation"), dict)
-                else None
-            )
-            msgs = conv_obj.get("messages") if isinstance(conv_obj, dict) else None
-            if (isinstance(rtools, list) and rtools) or (isinstance(msgs, list) and msgs):
-                blob_root = _model_attempt_root(root / "blobs")
-                blob_root.mkdir(mode=0o700, exist_ok=True)
-                with self._blob_lock:
-                    if isinstance(rtools, list) and rtools:
-                        prev_t = self._last_tools_blob
-                        if (
-                            prev_t is not None
-                            and prev_t[0] == rtools
-                            and (blob_root, prev_t[1]) in self._written_blobs
-                        ):
-                            tdigest = prev_t[1]
-                        else:
-                            tdigest = self._write_blob_unlocked(blob_root, rtools, sync=False)
-                            self._last_tools_blob = (rtools, tdigest)
-                        req_obj.pop("tools", None)
-                        req_obj["tools_blob_ref"] = tdigest
-                    if isinstance(conv_obj, dict) and isinstance(msgs, list) and msgs:
-                        refs = self._dedup_blob_list_unlocked(blob_root, msgs, self._last_blob_msgs)
-                        assert isinstance(conv_in, dict)
-                        conv_in["conversation"] = {
-                            k: v for k, v in conv_obj.items() if k != "messages"
-                        } | {"message_blob_refs": refs}
-        elif kind.startswith("dispatch-") and isinstance(payload.get("provider_request"), dict):
-            blob_root = _model_attempt_root(root / "blobs")
-            blob_root.mkdir(mode=0o700, exist_ok=True)
-            with self._blob_lock:
-                payload["provider_request"] = self._dedup_provider_request_unlocked(
-                    blob_root, payload["provider_request"]
-                )
-        elif kind == "outcome" and isinstance(payload.get("capture"), dict):
-            cap = payload["capture"]
-            new_cap = dict(cap)
-            if "request" in new_cap:
-                new_cap.pop("request", None)
-                new_cap["request_ref"] = "intent"
-            dispatch_ref = value.get("_provider_request_ref")
-            if isinstance(dispatch_ref, str) and "provider_request" in new_cap:
-                new_cap.pop("provider_request", None)
-                new_cap["provider_request_ref"] = dispatch_ref
-                payload.pop("_provider_request_ref", None)
-            elif isinstance(new_cap.get("provider_request"), dict):
-                blob_root = _model_attempt_root(root / "blobs")
-                blob_root.mkdir(mode=0o700, exist_ok=True)
-                with self._blob_lock:
-                    new_cap["provider_request"] = self._dedup_provider_request_unlocked(
-                        blob_root, new_cap["provider_request"]
+    def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> dict[str, Any]:
+        pre = {
+            "schema": "looplet.model-attempt.v1",
+            "kind": kind,
+            "attempt_id": attempt_id,
+            **value,
+        }
+        if kind not in {"intent", "outcome"} and self._redact is not None:
+            pre = _redact_model_record(json_snapshot(pre), self._redact)
+        bstore = self._blob_store
+        mirror = self._attempt_directory is not None
+        if bstore is not None:
+            if kind == "intent" and isinstance(pre.get("request"), dict):
+                with bstore._lock:
+                    pre["request"] = bstore.compact_request_unlocked(
+                        pre["request"],
+                        slot_prefix="attempt_intent",
+                        min_msg_len=1,
+                        mirror=mirror,
                     )
-            payload["capture"] = new_cap
-        payload.pop("_provider_request_ref", None)
-        _atomic_write(
-            record,
-            json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
-            sync=(kind == "intent"),
-        )
+            elif kind.startswith("dispatch-") and isinstance(pre.get("provider_request"), dict):
+                with bstore._lock:
+                    pre["provider_request"] = bstore.compact_provider_request_unlocked(
+                        pre["provider_request"],
+                        slot_prefix="attempt_dispatch",
+                        min_seq_len=1,
+                        mirror=mirror,
+                    )
+            elif kind == "outcome" and isinstance(pre.get("capture"), dict):
+                cap = pre["capture"]
+                new_cap = dict(cap)
+                if "request" in new_cap:
+                    new_cap.pop("request", None)
+                    new_cap["request_ref"] = "intent"
+                dispatch_ref = value.get("_provider_request_ref")
+                if isinstance(dispatch_ref, str) and "provider_request" in new_cap:
+                    new_cap.pop("provider_request", None)
+                    new_cap["provider_request_ref"] = dispatch_ref
+                    pre.pop("_provider_request_ref", None)
+                elif isinstance(new_cap.get("provider_request"), dict):
+                    with bstore._lock:
+                        new_cap["provider_request"] = bstore.compact_provider_request_unlocked(
+                            new_cap["provider_request"],
+                            slot_prefix="attempt_outcome",
+                            min_seq_len=1,
+                            mirror=mirror,
+                        )
+                pre["capture"] = new_cap
+        pre.pop("_provider_request_ref", None)
+        payload = json_snapshot(pre)
+        if self._attempt_directory is not None:
+            if bstore is not None:
+                with bstore._lock:
+                    root = bstore._ensure_dir_unlocked(self._attempt_directory)
+                    policy_key = root / ".gitignore"
+                    if policy_key not in bstore._ensured_dirs:
+                        policy = _artifact_path(root, ".gitignore")
+                        if not policy.exists():
+                            _atomic_write(policy, "*\n", sync=False)
+                        bstore._ensured_dirs.add(policy_key)
+            else:
+                root = _model_attempt_root(self._attempt_directory)
+                root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                policy = _artifact_path(root, ".gitignore")
+                if not policy.exists():
+                    _atomic_write(policy, "*\n", sync=False)
+            record = _artifact_path(root, f"{attempt_id}.{kind}.json")
+            _atomic_write(
+                record,
+                json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+                sync=(kind == "intent"),
+            )
+        return payload
 
     def _write_dispatch(self, attempt_id: str, number: int, request: Any) -> None:
-        self._write_attempt(
+        dispatch_key = f"dispatch-{number:04d}"
+        payload = self._write_attempt(
             attempt_id,
-            f"dispatch-{number:04d}",
+            dispatch_key,
             {
                 "provider_request": request,
                 "scope": "backend_pre_dispatch_callback_not_provider_delivery_attestation",
             },
         )
+        if self._trace_stream is not None:
+            trace_preq = payload.get("provider_request")
+            if self._blob_store is not None and isinstance(trace_preq, dict):
+                with self._blob_store._lock:
+                    trace_preq = self._blob_store.compact_provider_request_unlocked(
+                        trace_preq,
+                        slot_prefix="trace_dispatch",
+                        min_seq_len=1,
+                        mirror=False,
+                        compact_list_manifest=True,
+                    )
+            self._trace_stream.emit(
+                "llm_dispatch",
+                {
+                    "attempt_id": attempt_id,
+                    "dispatch_key": dispatch_key,
+                    "provider_request": trace_preq,
+                    "scope": payload.get("scope"),
+                },
+            )
 
     def _begin_attempt(
         self,
@@ -832,7 +1578,7 @@ class _RecordingBase:
         options: dict[str, Any],
         request_id: str | None = None,
     ) -> str | None:
-        if self._attempt_directory is None:
+        if self._attempt_directory is None and self._trace_stream is None:
             return None
         attempt_id = _new_attempt_id()
         if options:
@@ -851,7 +1597,9 @@ class _RecordingBase:
             if self._redact_upstream or self._redact is None
             else _redact_value(conv_snapshot, self._redact)
         )
-        self._write_attempt(
+        scoped_step = self._scoped_step_num.get()
+        effective_step_num = scoped_step if scoped_step is not None else self.current_step_num
+        payload = self._write_attempt(
             attempt_id,
             "intent",
             {
@@ -871,6 +1619,31 @@ class _RecordingBase:
                 },
             },
         )
+        if self._trace_stream is not None:
+            trace_req = payload.get("request")
+            if self._blob_store is not None and isinstance(trace_req, dict):
+                with self._blob_store._lock:
+                    trace_req = self._blob_store.compact_request_unlocked(
+                        trace_req,
+                        slot_prefix="trace_intent",
+                        min_msg_len=1,
+                        mirror=False,
+                        compact_list_manifest=True,
+                    )
+            self._trace_stream.emit(
+                "llm_intent",
+                {
+                    "attempt_id": attempt_id,
+                    "request_id": request_id,
+                    "started_at": payload.get("started_at"),
+                    "step_num": effective_step_num,
+                    "call_scope": self._call_scope.get(),
+                    "execution": payload.get("execution"),
+                    "scope": payload.get("scope"),
+                    "request": trace_req,
+                },
+                sync=False,
+            )
         return attempt_id
 
     @contextmanager
@@ -926,7 +1699,7 @@ class _RecordingBase:
     async def _capture_io(self, operation: Callable[[], Any]) -> Any:
         import asyncio
 
-        if self._attempt_directory is None:
+        if self._attempt_directory is None and self._trace_stream is None:
             return operation()
         pending = asyncio.get_running_loop().run_in_executor(
             None,
@@ -1035,6 +1808,9 @@ class _RecordingBase:
                 for id_field in ("request_id", "attempt_id"):
                     if id_field in raw_rs:
                         redacted_replay_source[id_field] = raw_rs[id_field]
+        detached_provider_req = (
+            provider_request if prepared_requests else json_snapshot(provider_request)
+        )
         call = LLMCall(
             index=len(self.calls),
             timestamp=started_at,
@@ -1055,56 +1831,69 @@ class _RecordingBase:
             if redacted_error is not None
             else None,
             scope=self._call_scope.get(),
-            capture=json_snapshot(
-                {
-                    "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
-                    **({"request_id": request_id} if request_id is not None else {}),
-                    **(
-                        {"replay_source": redacted_replay_source}
-                        if redacted_replay_source is not None
-                        else {}
-                    ),
-                    **({"execution": _redact_value(execution, self._redact)} if execution else {}),
-                    "request": {
-                        "method": method,
-                        "prompt": redacted_prompt,
-                        "system_prompt": redacted_system,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                        "tools": redacted_tools,
-                        "options": redacted_options,
-                        "conversation_input": redacted_conv,
-                    },
-                    "response": redacted_response,
-                    "provider_request": _redact_value(
-                        json_snapshot(provider_request), self._redact
-                    ),
-                    "provider_response": (
-                        _redact_value(json_snapshot(provider_response), self._redact)
-                        if error is None
-                        else None
-                    ),
-                    "stop_reason": (
-                        _redact_value(stop_reason, self._redact) if error is None else None
-                    ),
-                    "usage": (
-                        _redact_value(json_snapshot(usage), self._redact) if error is None else {}
-                    ),
-                    "error": redacted_error,
-                    **(
-                        {
-                            "terminal_error": {
-                                "schema": "looplet.terminal-error.v1",
-                                "termination_reason": _redact_value(
-                                    termination_reason, self._redact
-                                ),
-                            }
+            capture={
+                "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
+                **({"request_id": request_id} if request_id is not None else {}),
+                **(
+                    {"replay_source": redacted_replay_source}
+                    if redacted_replay_source is not None
+                    else {}
+                ),
+                **(
+                    {"execution": json_snapshot(_redact_value(execution, self._redact))}
+                    if execution
+                    else {}
+                ),
+                "request": {
+                    "method": method,
+                    "prompt": redacted_prompt,
+                    "system_prompt": redacted_system,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "tools": redacted_tools,
+                    "options": json_snapshot(redacted_options),
+                    "conversation_input": redacted_conv,
+                },
+                "response": json_snapshot(redacted_response),
+                "provider_request": _redact_value(detached_provider_req, self._redact),
+                "provider_response": (
+                    _redact_value(json_snapshot(provider_response), self._redact)
+                    if (
+                        error is None
+                        or (
+                            native_capture is not None
+                            and native_capture.provider_response is not None
+                        )
+                    )
+                    else None
+                ),
+                "stop_reason": (
+                    json_snapshot(_redact_value(stop_reason, self._redact))
+                    if (
+                        error is None
+                        or (native_capture is not None and native_capture.stop_reason is not None)
+                    )
+                    else None
+                ),
+                "usage": (
+                    _redact_value(json_snapshot(usage), self._redact)
+                    if (error is None or (native_capture is not None and bool(usage)))
+                    else {}
+                ),
+                "error": redacted_error,
+                **(
+                    {
+                        "terminal_error": {
+                            "schema": "looplet.terminal-error.v1",
+                            "termination_reason": json_snapshot(
+                                _redact_value(termination_reason, self._redact)
+                            ),
                         }
-                        if termination_reason is not None
-                        else {}
-                    ),
-                }
-            ),
+                    }
+                    if termination_reason is not None
+                    else {}
+                ),
+            },
         )
         if attempt_id is not None:
             assert call.capture is not None
@@ -1120,6 +1909,9 @@ class _RecordingBase:
         failure: BaseException | None,
         prepared_requests: list[Any] | None = None,
     ) -> None:
+        with self._calls_lock:
+            call.index = len(self.calls)
+            self.calls.append(call)
         if attempt_id is not None:
             try:
                 for number, request in enumerate(prepared_requests or (), 1):
@@ -1130,7 +1922,7 @@ class _RecordingBase:
                     if isinstance(call.capture, dict)
                     else call.capture
                 )
-                self._write_attempt(
+                outcome_payload = self._write_attempt(
                     attempt_id,
                     "outcome",
                     {
@@ -1139,6 +1931,32 @@ class _RecordingBase:
                         "response_complete": call.error is None,
                     },
                 )
+                if self._trace_stream is not None:
+                    call_summary = call.to_dict()
+                    call_summary.pop("capture", None)
+                    if self._redact is not None and call_summary["metadata"]:
+                        call_summary["metadata"] = _redact_value(
+                            call_summary["metadata"], self._redact
+                        )
+                    trace_cap = outcome_payload.get("capture")
+                    if self._blob_store is not None and isinstance(trace_cap, dict):
+                        trace_cap = self._blob_store.compact_capture(
+                            trace_cap,
+                            slot_prefix="trace_outcome",
+                            min_conv_msgs=1,
+                            min_provider_msgs=1,
+                            compact_list_manifest=True,
+                        )
+                    self._trace_stream.emit(
+                        "llm_outcome",
+                        {
+                            "attempt_id": attempt_id,
+                            "call": call_summary,
+                            "capture": trace_cap,
+                            "scope": outcome_payload.get("scope"),
+                            "response_complete": call.error is None,
+                        },
+                    )
             except Exception as capture_failure:
                 if failure is None:
                     raise
@@ -1146,9 +1964,24 @@ class _RecordingBase:
                     f"Attempt outcome persistence failed: {type(capture_failure).__name__}: "
                     f"{capture_failure}"
                 )
-        with self._calls_lock:
-            call.index = len(self.calls)
-            self.calls.append(call)
+
+    def _compact_entry_for_disk(
+        self, entry: dict[str, Any], bstore: _TraceBlobStore
+    ) -> dict[str, Any]:
+        cap = entry.get("capture")
+        if not isinstance(cap, dict) or not cap:
+            return entry
+        compacted = bstore.compact_capture(
+            cap,
+            slot_prefix="manifest",
+            min_conv_msgs=5 if self._compact_blobs else 1_000_000_000,
+            min_provider_msgs=3,
+        )
+        if compacted is cap:
+            return entry
+        out = dict(entry)
+        out["capture"] = compacted
+        return out
 
     # ── disk IO ─────────────────────────────────────────────────
 
@@ -1164,8 +1997,9 @@ class _RecordingBase:
             begin_artifact_write(root)
         _clear_call_artifacts(root)
         manifest = root / "manifest.jsonl"
+        bstore = self._ensure_blob_store(root)
         tools_cache: tuple[Any, str] | None = None
-        with manifest.open("w", encoding="utf-8") as mf:
+        with _without_spool_rehydrate(), manifest.open("w", encoding="utf-8") as mf:
             for c in self.calls:
                 idx = f"{c.index:02d}"
                 tools_text: str | None = None
@@ -1184,6 +2018,7 @@ class _RecordingBase:
                 entry = c.to_dict()
                 if self._redact is not None and entry["metadata"]:
                     entry["metadata"] = _redact_value(entry["metadata"], self._redact)
+                entry = self._compact_entry_for_disk(entry, bstore)
                 mf.write(json.dumps(entry, default=str) + "\n")
         if publish_descriptor:
             write_artifact_descriptor(root, kind="provenance", components=("model_calls",))
@@ -1195,6 +2030,8 @@ class _RecordingBase:
         self.current_step_num = None
         self._scoped_step_num.set(None)
         self._conversation_input.set(None)
+        if self._blob_store is not None:
+            self._blob_store.reset()
 
 
 def _format_prompt_block(call: LLMCall, *, tools_json: str | None = None) -> str:
@@ -1261,6 +2098,9 @@ class RecordingLLMBackend(_RecordingBase):
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
         attempt_directory: str | Path | None = None,
+        blob_store: _TraceBlobStore | None = None,
+        trace_stream: _TraceEventStream | None = None,
+        compact_blobs: bool = False,
     ) -> None:
         super().__init__(
             backend,
@@ -1268,6 +2108,9 @@ class RecordingLLMBackend(_RecordingBase):
             redact=redact,
             redact_upstream=redact_upstream,
             attempt_directory=attempt_directory,
+            blob_store=blob_store,
+            trace_stream=trace_stream,
+            compact_blobs=compact_blobs,
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
@@ -1392,6 +2235,9 @@ class RecordingLLMBackend(_RecordingBase):
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
+            partial_blocks = getattr(exc, "_looplet_partial_blocks", None)
+            if not response and isinstance(partial_blocks, list) and partial_blocks:
+                response = partial_blocks
             raise
         finally:
             self._record(
@@ -1507,6 +2353,9 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
         attempt_directory: str | Path | None = None,
+        blob_store: _TraceBlobStore | None = None,
+        trace_stream: _TraceEventStream | None = None,
+        compact_blobs: bool = False,
     ) -> None:
         super().__init__(
             backend,
@@ -1514,6 +2363,9 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             redact=redact,
             redact_upstream=redact_upstream,
             attempt_directory=attempt_directory,
+            blob_store=blob_store,
+            trace_stream=trace_stream,
+            compact_blobs=compact_blobs,
         )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
@@ -1656,6 +2508,9 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             return response
         except BaseException as exc:
             failure = exc
+            partial_blocks = getattr(exc, "_looplet_partial_blocks", None)
+            if not response and isinstance(partial_blocks, list) and partial_blocks:
+                response = partial_blocks
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, TerminalLLMError):
                 termination_reason = exc.termination_reason
@@ -1882,6 +2737,9 @@ class TrajectoryRecorder:
         output_dir: str | Path | None = None,
         harness_snapshot: dict[str, Any] | None = None,
         redact: Callable[[str], str] | None = None,
+        blob_store: _TraceBlobStore | None = None,
+        trace_stream: _TraceEventStream | None = None,
+        compact_blobs: bool = False,
     ) -> None:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
@@ -1909,6 +2767,49 @@ class TrajectoryRecorder:
         # data can read ``self.trajectory`` directly; only the
         # on-disk artefact is scrubbed.
         self._redact = redact
+        self._blob_store = blob_store
+        self._trace_stream = trace_stream
+        self._compact_blobs = compact_blobs
+        if self._trace_stream is not None:
+            self._trace_stream.set_run_id(self.trajectory.run_id)
+
+    def _emit_step_trace_event(
+        self, step_record: StepRecord, bstore: _TraceBlobStore | None
+    ) -> None:
+        if self._trace_stream is None:
+            return
+        step_payload = _redact_value(step_record.to_dict(), self._redact)
+        if bstore is not None and isinstance(step_payload.get("tool_result"), dict):
+            tr = dict(step_payload["tool_result"])
+            if "data" in tr:
+                large = bstore.put_large_data(tr["data"])
+                if large is not None:
+                    digest, nbytes, preview = large
+                    tr.pop("data", None)
+                    tr["data_blob_ref"] = digest
+                    tr["data_bytes"] = nbytes
+                    tr["data_preview"] = preview
+                    step_payload = {**step_payload, "tool_result": tr}
+        self._trace_stream.emit("step", step_payload)
+
+    def _compact_step_dict_for_disk(
+        self, step_dict: dict[str, Any], bstore: _TraceBlobStore
+    ) -> dict[str, Any]:
+        redacted = _redact_value(step_dict, self._redact)
+        if not self._compact_blobs or not isinstance(redacted.get("tool_result"), dict):
+            return redacted
+        tr = redacted["tool_result"]
+        if "data" not in tr:
+            return redacted
+        large = bstore.put_large_data(tr["data"])
+        if large is None:
+            return redacted
+        digest, nbytes, preview = large
+        new_tr = {k: v for k, v in tr.items() if k != "data"}
+        new_tr["data_blob_ref"] = digest
+        new_tr["data_bytes"] = nbytes
+        new_tr["data_preview"] = preview
+        return {**redacted, "tool_result": new_tr}
 
     # ── hook methods ────────────────────────────────────────────
 
@@ -1989,6 +2890,8 @@ class TrajectoryRecorder:
         self._last_epoch_key = epoch_key
         self._last_exec_objs = curr_exec_objs
         self._last_tool_sigs = curr_tool_sigs
+        if self._trace_stream is not None:
+            self._trace_stream.emit("harness_epoch", _redact_value(dict(entry), self._redact))
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
         if self._loop_span is None and self._tracer is not None:
@@ -1998,6 +2901,25 @@ class TrajectoryRecorder:
         task = getattr(state, "task", None)
         if task is not None and isinstance(task, dict):
             self.trajectory.task = dict(task)
+        if self._trace_stream is not None:
+            self._trace_stream.set_run_id(self.trajectory.run_id)
+            self._trace_stream.emit(
+                "run_start",
+                _redact_value(
+                    {
+                        "run_id": self.trajectory.run_id,
+                        "started_at": self.trajectory.started_at,
+                        "task": dict(self.trajectory.task),
+                        "metadata": dict(self.trajectory.metadata),
+                        "harness_snapshot": (
+                            dict(self._harness_snapshot)
+                            if self._harness_snapshot is not None
+                            else None
+                        ),
+                    },
+                    self._redact,
+                ),
+            )
 
     def pre_prompt(
         self,
@@ -2039,11 +2961,12 @@ class TrajectoryRecorder:
                 pretty = last.pretty()
         llm_indices: list[int] = []
         if self._recording_llm is not None:
-            llm_indices = [
-                call.index
-                for call in self._recording_llm.calls[self._pending_llm_start :]
-                if call.scope is None or call.step_num in (None, step_num)
-            ]
+            with _without_spool_rehydrate():
+                llm_indices = [
+                    call.index
+                    for call in self._recording_llm.calls[self._pending_llm_start :]
+                    if call.scope is None or call.step_num in (None, step_num)
+                ]
         tc_dict = (
             tool_call.to_dict()
             if hasattr(tool_call, "to_dict")
@@ -2062,18 +2985,18 @@ class TrajectoryRecorder:
                 "error": getattr(tool_result, "error", None),
             }
         )
-        self.trajectory.steps.append(
-            StepRecord(
-                step_num=step_num,
-                timestamp=self._step_start_time,
-                duration_ms=duration_ms,
-                pretty=pretty,
-                tool_call=json_snapshot(tc_dict),
-                tool_result=json_snapshot(tr_dict),
-                context_before=self._pending_context,
-                llm_call_indices=llm_indices,
-            )
+        record = StepRecord(
+            step_num=step_num,
+            timestamp=self._step_start_time,
+            duration_ms=duration_ms,
+            pretty=pretty,
+            tool_call=json_snapshot(tc_dict),
+            tool_result=json_snapshot(tr_dict),
+            context_before=self._pending_context,
+            llm_call_indices=llm_indices,
         )
+        self.trajectory.steps.append(record)
+        self._emit_step_trace_event(record, self._blob_store)
         self._pending_context = ""
         return None
 
@@ -2086,6 +3009,20 @@ class TrajectoryRecorder:
             if isinstance(extra, dict) and "subagent_id" in extra:
                 return
             self._record_harness_epoch(getattr(payload, "step_num", None))
+            return
+        if event == LifecycleEvent.POST_COMPACT:
+            if self._trace_stream is not None:
+                extra = getattr(payload, "extra", None)
+                self._trace_stream.emit(
+                    "compaction",
+                    _redact_value(
+                        {
+                            "step_num": getattr(payload, "step_num", None),
+                            "extra": dict(extra) if isinstance(extra, dict) else {},
+                        },
+                        self._redact,
+                    ),
+                )
             return
         if event == LifecycleEvent.SUBAGENT_STOP:
             extra = getattr(payload, "extra", None)
@@ -2156,6 +3093,7 @@ class TrajectoryRecorder:
         # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
         captured_nums = {record.step_num for record in self.trajectory.steps}
+        newly_captured: list[StepRecord] = []
         if state is not None and hasattr(state, "steps"):
             for st in state.steps:
                 num = getattr(st, "number", None)
@@ -2175,36 +3113,37 @@ class TrajectoryRecorder:
                 llm_indices = []
                 if self._recording_llm is not None:
                     call_id = getattr(tc, "call_id", None)
-                    for call in self._recording_llm.calls:
-                        native_match = (
-                            call_id
-                            and isinstance(call.response, list)
-                            and any(
-                                isinstance(block, dict) and block.get("id") == call_id
-                                for block in call.response
+                    with _without_spool_rehydrate():
+                        for call in self._recording_llm.calls:
+                            native_match = (
+                                call_id
+                                and isinstance(call.response, list)
+                                and any(
+                                    isinstance(block, dict) and block.get("id") == call_id
+                                    for block in call.response
+                                )
                             )
-                        )
-                        if call.step_num == num or native_match:
-                            llm_indices.append(call.index)
-                    if not llm_indices and st is state.steps[-1]:
-                        llm_indices = [
-                            call.index
-                            for call in self._recording_llm.calls[self._pending_llm_start :]
-                            if call.scope is None or call.step_num in (None, num)
-                        ]
-                self.trajectory.steps.append(
-                    StepRecord(
-                        step_num=num,
-                        timestamp=0.0,
-                        duration_ms=0.0,
-                        pretty=pretty,
-                        tool_call=json_snapshot(tc_dict),
-                        tool_result=json_snapshot(tr_dict),
-                        context_before="",
-                        llm_call_indices=llm_indices,
-                        metadata=json_snapshot(getattr(st, "metadata", {}) or {}),
-                    )
+                            if call.step_num == num or native_match:
+                                llm_indices.append(call.index)
+                        if not llm_indices and st is state.steps[-1]:
+                            llm_indices = [
+                                call.index
+                                for call in self._recording_llm.calls[self._pending_llm_start :]
+                                if call.scope is None or call.step_num in (None, num)
+                            ]
+                terminal_sr = StepRecord(
+                    step_num=num,
+                    timestamp=0.0,
+                    duration_ms=0.0,
+                    pretty=pretty,
+                    tool_call=json_snapshot(tc_dict),
+                    tool_result=json_snapshot(tr_dict),
+                    context_before="",
+                    llm_call_indices=llm_indices,
+                    metadata=json_snapshot(getattr(st, "metadata", {}) or {}),
                 )
+                self.trajectory.steps.append(terminal_sr)
+                newly_captured.append(terminal_sr)
         if any(
             previous.step_num > current.step_num
             for previous, current in pairwise(self.trajectory.steps)
@@ -2215,6 +3154,8 @@ class TrajectoryRecorder:
                 self.trajectory.steps[:] = sorted(
                     self.trajectory.steps, key=lambda step: step.step_num
                 )
+        for terminal_sr in newly_captured:
+            self._emit_step_trace_event(terminal_sr, self._blob_store)
         # The loop records the authoritative reason before on_loop_end,
         # including custom primary/secondary terminal sentinels. Keep the
         # old inference only for callers that invoke this hook manually.
@@ -2262,6 +3203,24 @@ class TrajectoryRecorder:
         if len(self._harness_epochs) > 1:
             self.trajectory.metadata["harness_epochs"] = json_snapshot(self._harness_epochs)
 
+        if self._trace_stream is not None:
+            for sp in self.trajectory.spans:
+                self._trace_stream.emit("span", _redact_value(sp.to_dict(), self._redact))
+            self._trace_stream.emit(
+                "run_end",
+                _redact_value(
+                    {
+                        "ended_at": self.trajectory.ended_at,
+                        "termination_reason": self.trajectory.termination_reason,
+                        "step_count": len(self.trajectory.steps),
+                        "llm_call_count": len(self.trajectory.llm_calls),
+                        "session_log_text": self.trajectory.session_log_text,
+                        "metadata": dict(self.trajectory.metadata),
+                    },
+                    self._redact,
+                ),
+            )
+
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:
             self.save(self._output_dir)
@@ -2293,6 +3252,13 @@ class TrajectoryRecorder:
 
     # ── disk IO ─────────────────────────────────────────────────
 
+    def _ensure_blob_store(self, root: Path) -> _TraceBlobStore:
+        if self._blob_store is not None and self._blob_store.blob_root == root / "blobs":
+            return self._blob_store
+        if self._recording_llm is not None:
+            return self._recording_llm._ensure_blob_store(root)
+        return _TraceBlobStore(root / "blobs")
+
     def save(self, directory: str | Path, *, publish_descriptor: bool = True) -> Path:
         """Write ``trajectory.json`` + per-step files + (optional) LLM calls.
 
@@ -2312,6 +3278,7 @@ class TrajectoryRecorder:
         if publish_descriptor:
             begin_artifact_write(root)
         _clear_call_artifacts(root)
+        bstore = self._ensure_blob_store(root)
         trajectory = self.trajectory
         fields = {
             "run_id": trajectory.run_id,
@@ -2328,7 +3295,15 @@ class TrajectoryRecorder:
         shared_redactor = (
             self._recording_llm is not None and self._recording_llm._redact is self._redact
         )
-        with (root / "trajectory.json").open("w", encoding="utf-8") as stream:
+        steps_dir = root / "steps"
+        steps_dir.mkdir(exist_ok=True)
+        for path in steps_dir.iterdir():
+            if path.is_file() and _STEP_ARTIFACT.fullmatch(path.name):
+                path.unlink()
+        with (
+            _without_spool_rehydrate(),
+            (root / "trajectory.json").open("w", encoding="utf-8") as stream,
+        ):
             stream.write("{")
             for name, value in fields.items():
                 stream.write(json.dumps(name) + ": " + _recorded_json(value, self._redact) + ",\n")
@@ -2342,29 +3317,34 @@ class TrajectoryRecorder:
                         if shared_redactor:
                             if self._redact is not None and entry["metadata"]:
                                 entry["metadata"] = _redact_value(entry["metadata"], self._redact)
-                            stream.write(json.dumps(entry, default=str))
+                            target_entry = entry
                         else:
-                            redacted_entry = (
+                            target_entry = (
                                 _redact_model_record(entry, self._redact)
                                 if self._redact is not None
                                 else entry
                             )
-                            stream.write(json.dumps(redacted_entry, default=str))
+                        cap = target_entry.get("capture")
+                        if isinstance(cap, dict) and cap:
+                            compacted_cap = bstore.compact_capture(
+                                cap,
+                                slot_prefix="traj",
+                                min_conv_msgs=5 if self._compact_blobs else 1_000_000_000,
+                                min_provider_msgs=3,
+                            )
+                            if compacted_cap is not cap:
+                                target_entry = {**target_entry, "capture": compacted_cap}
+                        stream.write(json.dumps(target_entry, default=str))
                     else:
-                        stream.write(_recorded_json(record.to_dict(), self._redact))
+                        compacted_step = self._compact_step_dict_for_disk(record.to_dict(), bstore)
+                        step_text = json.dumps(compacted_step, indent=2, default=str)
+                        stream.write(step_text)
+                        (steps_dir / f"step_{record.step_num:02d}.json").write_text(
+                            step_text,
+                            encoding="utf-8",
+                        )
                 stream.write("],\n" if name == "steps" else "]\n")
             stream.write("}\n")
-        steps_dir = root / "steps"
-        steps_dir.mkdir(exist_ok=True)
-        for path in steps_dir.iterdir():
-            if path.is_file() and _STEP_ARTIFACT.fullmatch(path.name):
-                path.unlink()
-        for s in self.trajectory.steps:
-            step_text = _recorded_json(s.to_dict(), self._redact)
-            (steps_dir / f"step_{s.step_num:02d}.json").write_text(
-                step_text,
-                encoding="utf-8",
-            )
         if self._recording_llm is not None:
             self._recording_llm.save(root, publish_descriptor=False)
         components = ["trajectory"]
@@ -2414,19 +3394,27 @@ class ProvenanceSink:
         redact_upstream: bool = True,
         capture_context: bool = True,
         metadata: dict[str, Any] | None = None,
+        compact_blobs: bool = False,
     ) -> None:
         self._automatic_dir = dir is None
         self._dir = Path(dir) if dir is not None else Path(".looplet/traces") / uuid4().hex
         self._overwrite = overwrite
         self._flushed = False
         self._owns_attempts = False
+        self._owns_trace_stream = False
         self._cleared_overwrite = False
         self._check_directory()
         self._max_chars = max_chars_per_call
         self._redact = redact
         self._redact_upstream = redact_upstream
         self._capture_context = capture_context
+        self._compact_blobs = compact_blobs
         self._metadata = dict(metadata or {})
+        self._blob_store = _TraceBlobStore(
+            self._dir / "blobs",
+            mirror_root=self._dir / "model-attempts" / "blobs",
+        )
+        self._trace_stream = _TraceEventStream(self._dir)
         self._recording_llm: _RecordingBase | None = None
         self._hook: TrajectoryRecorder | None = None
 
@@ -2435,6 +3423,7 @@ class ProvenanceSink:
             return
         if any(
             path.name in {"trajectory.json", "manifest.jsonl"}
+            or (path.name == "trace.jsonl" and not self._owns_trace_stream)
             or _CALL_ARTIFACT.fullmatch(path.name)
             or (
                 path.name == "model-attempts"
@@ -2447,6 +3436,17 @@ class ProvenanceSink:
                 f"Trace already exists in {self._dir}. Use a new directory, "
                 "omit dir for a unique path, or set overwrite=True to replace it."
             )
+
+    def _prepare_overwrite_if_needed(self) -> None:
+        if self._overwrite and not self._cleared_overwrite:
+            _clear_model_attempts(self._dir / "model-attempts")
+            _clear_trace_blobs_and_stream(self._dir)
+            self._blob_store.reset(
+                self._dir / "blobs",
+                mirror_root=self._dir / "model-attempts" / "blobs",
+            )
+            self._trace_stream.reset(self._dir)
+            self._cleared_overwrite = True
 
     def wrap_llm(self, backend: Any, *, async_: bool | None = None) -> Any:
         """Wrap ``backend`` in a recording backend and stash a reference.
@@ -2464,16 +3464,18 @@ class ProvenanceSink:
                 for method in ("generate", "generate_with_tools")
             )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
-        if self._overwrite and not self._cleared_overwrite:
-            _clear_model_attempts(self._dir / "model-attempts")
-            self._cleared_overwrite = True
+        self._prepare_overwrite_if_needed()
         self._owns_attempts = True
+        self._owns_trace_stream = True
         self._recording_llm = cls(
             backend,
             max_chars_per_call=self._max_chars,
             redact=self._redact,
             redact_upstream=self._redact_upstream,
             attempt_directory=self._dir / "model-attempts",
+            blob_store=self._blob_store,
+            trace_stream=self._trace_stream,
+            compact_blobs=self._compact_blobs,
         )
         if self._hook is not None:
             self._hook._recording_llm = self._recording_llm
@@ -2482,10 +3484,15 @@ class ProvenanceSink:
     def trajectory_hook(self) -> TrajectoryRecorder:
         """Create (or return the cached) :class:`TrajectoryRecorder`."""
         if self._hook is None:
+            self._prepare_overwrite_if_needed()
+            self._owns_trace_stream = True
             self._hook = TrajectoryRecorder(
                 recording_llm=self._recording_llm,
                 capture_context=self._capture_context,
                 redact=self._redact,
+                blob_store=self._blob_store,
+                trace_stream=self._trace_stream,
+                compact_blobs=self._compact_blobs,
             )
             self._hook.trajectory.metadata.update(self._metadata)
         return self._hook
@@ -2493,9 +3500,7 @@ class ProvenanceSink:
     def flush(self) -> Path:
         """Write everything to disk and return the directory path."""
         self._check_directory()
-        if self._overwrite and not self._cleared_overwrite:
-            _clear_model_attempts(self._dir / "model-attempts")
-            self._cleared_overwrite = True
+        self._prepare_overwrite_if_needed()
         if self._hook is not None:
             output = self._hook.save(self._dir)
         elif self._recording_llm is not None:
@@ -2518,12 +3523,25 @@ class ProvenanceSink:
         self._hook = None
         self._flushed = False
         self._owns_attempts = False
+        self._owns_trace_stream = False
         self._cleared_overwrite = False
         if self._automatic_dir:
             self._dir = Path(".looplet/traces") / uuid4().hex
+            self._blob_store.reset(
+                self._dir / "blobs",
+                mirror_root=self._dir / "model-attempts" / "blobs",
+            )
+            self._trace_stream.reset(self._dir)
             if self._recording_llm is not None:
                 self._recording_llm._attempt_directory = self._dir / "model-attempts"
                 self._owns_attempts = True
+                self._owns_trace_stream = True
+        else:
+            self._blob_store.reset(
+                self._dir / "blobs",
+                mirror_root=self._dir / "model-attempts" / "blobs",
+            )
+            self._trace_stream.reset(self._dir)
 
 
 # ── Replay ──────────────────────────────────────────────────────────
@@ -2685,6 +3703,8 @@ def _load_trace_evidence(
     manifest = _artifact_path(trace_dir, "manifest.jsonl")
     calls: list[dict[str, Any]] = []
     request_ids: set[str] = set()
+    blob_roots = _resolve_blob_roots(trace_dir)
+    blob_cache: dict[str, Any] = {}
     if manifest.exists():
         if entries is None:
             entries = _validate_model_call_files(trace_dir, manifest, require_projections=False)
@@ -2752,7 +3772,9 @@ def _load_trace_evidence(
                             f"duplicate request identity in {manifest} line {line_number}"
                         )
                     request_ids.add(request_id)
-                calls.append({**capture, "index": idx, "method": method})
+                rehydrated_capture = json_snapshot(capture)
+                _rehydrate_capture_blobs(blob_roots, rehydrated_capture, blob_cache)
+                calls.append({**rehydrated_capture, "index": idx, "method": method})
                 continue
             response_txt = _read_call_body(trace_dir, idx)
             if response_txt is None:
@@ -3102,6 +4124,7 @@ def _load_replay_evidence(
             trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
             if not isinstance(trajectory, dict):
                 raise ValueError("trajectory.json must contain an object")
+            _rehydrate_trajectory_doc(trace_path, trajectory)
     return trace_path, calls, trajectory
 
 

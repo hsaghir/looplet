@@ -219,7 +219,7 @@ run the self-tests:
 looplet eval run ./agent.cartridge --json --assessment-version 2
 ```
 
-The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
+The Python equivalent is `run_cartridge_evals()` (and `await run_cartridge_evals_async()` for native async backends and tools). This runner owns evaluation
 and replaces embedded `EvalHook` observers with the self-test bundle's hook.
 Policy hooks still run. The reference coder ships no implicit eval hook.
 

@@ -936,6 +936,31 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
             for row in rows:
                 yield row[0], row[1], self._decode(json.loads(row[2]))
 
+    def slice_values(self, offset: int, limit: int) -> list[Record]:
+        """Return ``[offset : offset + limit]`` values in insertion order without full scan."""
+        if limit <= 0:
+            return []
+        with self._lock:
+            self.flush()
+            if self._mem is not None:
+                ordered = sorted(self._mem.values(), key=lambda pair: pair[0])
+                selected = [payload for _, payload in ordered[offset : offset + limit]]
+            else:
+                with self._db() as conn:
+                    if self._cid is not None:
+                        rows = conn.execute(
+                            "SELECT payload FROM dict_records "
+                            "WHERE cid = ? ORDER BY ord LIMIT ? OFFSET ?",
+                            (self._cid, limit, offset),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT payload FROM records ORDER BY rowid LIMIT ? OFFSET ?",
+                            (limit, offset),
+                        ).fetchall()
+                selected = [row[0] for row in rows]
+            return [self._decode(json.loads(raw)) for raw in selected]
+
     def __getitem__(self, key: str) -> Record:
         with self._lock:
             if self._cache is None or self._cache[0] != key:

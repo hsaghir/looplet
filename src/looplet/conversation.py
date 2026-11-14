@@ -109,39 +109,59 @@ class Message:
         return [b for b in self.blocks if b.kind == "text"]
 
 
+_SCALAR_STAMP_TYPES = {str, int, float, bool, type(None)}
+
+
 def _value_stamp(value: Any, depth: int = 0) -> Any:
-    if isinstance(value, (str, int, float, bool, type(None))):
+    vtype = type(value)
+    if vtype in _SCALAR_STAMP_TYPES:
         return value
     if depth >= 4:
         return (
             id(value),
-            len(value) if isinstance(value, (dict, list, tuple, set)) else type(value),
+            len(value) if isinstance(value, (dict, list, tuple, set)) else vtype,
         )
-    if isinstance(value, dict):
+    next_depth = depth + 1
+    if vtype is dict or isinstance(value, dict):
         if len(value) > 64:
             return (id(value), len(value))
-        return tuple((k, _value_stamp(v, depth + 1)) for k, v in value.items())
-    if isinstance(value, (list, tuple)):
+        if not value:
+            return ()
+        return tuple(
+            [
+                (
+                    k,
+                    v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth),
+                )
+                for k, v in value.items()
+            ]
+        )
+    if vtype is list or vtype is tuple or isinstance(value, (list, tuple)):
         if len(value) > 64:
             return (id(value), len(value))
-        return tuple(_value_stamp(v, depth + 1) for v in value)
+        if not value:
+            return ()
+        return tuple(
+            [v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth) for v in value]
+        )
     return id(value)
 
 
 def _message_stamp(msg: Message) -> tuple[Any, ...]:
+    content = msg.content
     content_sig: Any = (
-        msg.content
-        if isinstance(msg.content, str)
-        else tuple((b.kind, _value_stamp(b.data)) for b in msg.content)
+        content
+        if isinstance(content, str)
+        else tuple([(b.kind, _value_stamp(b.data)) for b in content])
     )
     tc = msg.tool_call
     tc_sig = (
         (
             tc.tool,
-            _value_stamp(tc.args),
+            _value_stamp(tc.args) if tc.args else (),
             tc.reasoning,
             tc.call_id,
-            _value_stamp(tc.metadata),
+            _value_stamp(tc.metadata) if tc.metadata else (),
         )
         if tc is not None
         else None
@@ -150,24 +170,25 @@ def _message_stamp(msg: Message) -> tuple[Any, ...]:
     tr_sig = (
         (
             tr.tool,
-            _value_stamp(tr.data),
+            tr.data if type(tr.data) in _SCALAR_STAMP_TYPES else _value_stamp(tr.data),
             tr.error,
             tr.error_detail.kind.value if tr.error_detail else None,
             tr.error_detail.retriable if tr.error_detail else None,
             tr.result_key,
-            tuple(tr.warnings),
-            _value_stamp(tr.metadata),
+            tuple(tr.warnings) if tr.warnings else (),
+            _value_stamp(tr.metadata) if tr.metadata else (),
             tr.call_id,
         )
         if tr is not None
         else None
     )
+    meta = msg.metadata
     return (
         msg.role,
         content_sig,
         tc_sig,
         tr_sig,
-        _value_stamp(msg.metadata),
+        _value_stamp(meta) if meta else (),
         msg.timestamp,
     )
 

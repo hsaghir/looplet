@@ -1364,8 +1364,25 @@ def run_turn_machine(
             break
 
         # Refresh effective_llm in case PRE_LLM_CALL or router selection updated state
+        prev_effective_llm = effective_llm
         effective_llm = _get_llm()
-        if turns is not None and typed_turns:
+        had_mutable_pre_llm_hook = any(
+            hasattr(h, "on_event")
+            and type(h).__name__
+            not in {
+                "TrajectoryRecorder",
+                "SessionTreeRecorder",
+                "MetricsHook",
+                "TracingHook",
+                "StreamingHook",
+            }
+            for h in hooks
+        )
+        if (
+            turns is not None
+            and typed_turns
+            and (effective_llm is not prev_effective_llm or had_mutable_pre_llm_hook)
+        ):
             effective_llm.prepare_conversation(
                 active_conv,
                 prepared.conversation_prompt,

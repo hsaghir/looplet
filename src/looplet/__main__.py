@@ -166,12 +166,25 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             calls.append(call)
 
     if not traj and not calls:
-        _print_terminal(
-            f"error: {trace_dir} contains no trajectory.json or "
-            "manifest.jsonl - not a trace directory",
-            file=sys.stderr,
-        )
-        return 1
+        trace_jsonl_path = _artifact_path(trace_dir, "trace.jsonl")
+        if trace_jsonl_path.is_file():
+            try:
+                from looplet.provenance import load_trajectory
+
+                traj = load_trajectory(trace_dir, rehydrate=True)
+                calls = list(traj.get("llm_calls") or [])
+            except Exception as exc:
+                _print_terminal(
+                    f"error: could not parse {trace_jsonl_path}: {exc}", file=sys.stderr
+                )
+                return 1
+        else:
+            _print_terminal(
+                f"error: {trace_dir} contains no trajectory.json or "
+                "manifest.jsonl - not a trace directory",
+                file=sys.stderr,
+            )
+            return 1
 
     shape_error = _trace_shape_error(traj, calls)
     if shape_error is not None:

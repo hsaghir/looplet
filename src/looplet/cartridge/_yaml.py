@@ -17,10 +17,17 @@ the package's public API surface.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from looplet.cartridge._layout import CartridgeSerializationError
+
+_YAML_CACHE: OrderedDict[tuple[str, str], Any] = OrderedDict()
+_YAML_CACHE_LOCK = Lock()
+_YAML_CACHE_MAX = 256
 
 # ── helpers: minimal YAML (key: value, lists, nested dicts) ────
 
@@ -96,6 +103,12 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
     typo in ``hooks/05_QualityGate/config.yaml`` reports its location
     instead of leaving the user to grep every workspace YAML file.
     """
+    cache_key = (text, str(source_path) if source_path is not None else "")
+    if len(text) <= 65_536:
+        with _YAML_CACHE_LOCK:
+            if cache_key in _YAML_CACHE:
+                _YAML_CACHE.move_to_end(cache_key)
+                return deepcopy(_YAML_CACHE[cache_key])
     src = f" (in {source_path})" if source_path else ""
     lines = [line.rstrip() for line in text.splitlines()]
     pos = 0
@@ -452,4 +465,9 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         raise CartridgeSerializationError(
             f"unconsumed workspace YAML line {pos + 1}{src}: {lines[pos]!r}"
         )
+    if len(text) <= 65_536:
+        with _YAML_CACHE_LOCK:
+            _YAML_CACHE[cache_key] = deepcopy(value)
+            while len(_YAML_CACHE) > _YAML_CACHE_MAX:
+                _YAML_CACHE.popitem(last=False)
     return value

@@ -148,10 +148,15 @@ class FileToolResultStore:
         if not limit:
             raise ValueError("limit must be positive")
         with self._lock:
-            boundary = (
-                len(self._catalog) if end_offset is None else min(len(self._catalog), end_offset)
-            )
-            entries = list(islice(self._catalog.values(), offset, min(offset + limit, boundary)))
+            total = len(self._catalog)
+            boundary = total if end_offset is None else min(total, end_offset)
+            take = max(0, min(offset + limit, boundary) - offset)
+            if take <= 0:
+                entries: list[Any] = []
+            elif hasattr(self._catalog, "slice_values"):
+                entries = self._catalog.slice_values(offset, take)
+            else:
+                entries = list(islice(self._catalog.values(), offset, offset + take))
             end = offset + len(entries)
             return {
                 "results": [dict(entry) for entry in entries],

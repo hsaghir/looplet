@@ -1156,6 +1156,13 @@ class OpenAIStreamingBackend(OpenAIBackend):
             blocks, stop_reason, last_chunk = _consume_openai_tool_stream(
                 stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
             )
+        except BaseException as exc:
+            partial_chunk = getattr(exc, "_looplet_partial_chunk", None)
+            if partial_chunk is not None:
+                _capture_response(self, partial_chunk)
+                self.last_stop_reason = "stream_error"
+                _record_response_capture(self.last_response, "stream_error", self.last_usage)
+            raise
         finally:
             close = getattr(stream_resp, "close", None)
             if close is not None:
@@ -1307,6 +1314,44 @@ class _OpenAIToolStreamAssembler:
         captured_chunk = self.usage_chunk if self.usage_chunk is not None else self.last_chunk
         return blocks, self.stop_reason, captured_chunk
 
+    def partial_snapshot(self) -> tuple[list[dict[str, Any]], Any]:
+        blocks: list[dict[str, Any]] = []
+        full_text = "".join(self._text_parts)
+        if full_text:
+            blocks.append({"type": "text", "text": full_text})
+        blocks.extend(self._ordered_tool_blocks)
+        for idx in sorted(self._tool_entries):
+            if idx in self._emitted_indices:
+                continue
+            entry = self._tool_entries[idx]
+            blocks.append(
+                {
+                    "type": "incomplete_tool_use",
+                    "id": entry["id"],
+                    "name": entry["name"],
+                    "partial_arguments": "".join(entry["arg_parts"]),
+                }
+            )
+        captured_chunk = self.usage_chunk if self.usage_chunk is not None else self.last_chunk
+        return blocks, captured_chunk
+
+
+def _attach_stream_partial_state(
+    exc: BaseException,
+    blocks: list[dict[str, Any]],
+    chunk: Any = None,
+) -> None:
+    if blocks:
+        try:
+            setattr(exc, "_looplet_partial_blocks", blocks)  # noqa: B010
+        except Exception:  # noqa: BLE001
+            pass
+    if chunk is not None:
+        try:
+            setattr(exc, "_looplet_partial_chunk", chunk)  # noqa: B010
+        except Exception:  # noqa: BLE001
+            pass
+
 
 def _consume_openai_tool_stream(
     stream_resp: Any,
@@ -1315,8 +1360,13 @@ def _consume_openai_tool_stream(
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, Any]:
     assembler = _OpenAIToolStreamAssembler(on_chunk=on_chunk, on_tool_call=on_tool_call)
-    for chunk in stream_resp:
-        assembler.feed(chunk)
+    try:
+        for chunk in stream_resp:
+            assembler.feed(chunk)
+    except BaseException as exc:
+        partial_blocks, partial_chunk = assembler.partial_snapshot()
+        _attach_stream_partial_state(exc, partial_blocks, partial_chunk)
+        raise
     return assembler.finish()
 
 
@@ -1327,8 +1377,13 @@ async def _consume_openai_tool_stream_async(
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, Any]:
     assembler = _OpenAIToolStreamAssembler(on_chunk=on_chunk, on_tool_call=on_tool_call)
-    async for chunk in stream_resp:
-        assembler.feed(chunk)
+    try:
+        async for chunk in stream_resp:
+            assembler.feed(chunk)
+    except BaseException as exc:
+        partial_blocks, partial_chunk = assembler.partial_snapshot()
+        _attach_stream_partial_state(exc, partial_blocks, partial_chunk)
+        raise
     return assembler.finish()
 
 
@@ -1516,34 +1571,70 @@ class AnthropicStreamingBackend(AnthropicBackend):
         )
 
         _begin_request(self, kwargs)
-        with self._request_client().messages.stream(**kwargs) as stream:
-            chunk_idx = 0
-            emitted_tool_idx = 0
-            for event in stream:
-                ev_type = getattr(event, "type", None)
-                if ev_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if getattr(delta, "type", None) == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text and on_chunk is not None:
-                            on_chunk(text, chunk_idx)
-                            chunk_idx += 1
-                elif ev_type == "content_block_stop" and on_tool_call is not None:
-                    cb = getattr(event, "content_block", None)
-                    if getattr(cb, "type", None) == "tool_use":
-                        on_tool_call(
-                            {
+        text_parts: list[str] = []
+        completed_tools: list[dict[str, Any]] = []
+        active_tool: dict[str, Any] | None = None
+        try:
+            with self._request_client().messages.stream(**kwargs) as stream:
+                chunk_idx = 0
+                emitted_tool_idx = 0
+                for event in stream:
+                    ev_type = getattr(event, "type", None)
+                    if ev_type == "content_block_start":
+                        cb = getattr(event, "content_block", None)
+                        if getattr(cb, "type", None) == "tool_use":
+                            active_tool = {
+                                "id": getattr(cb, "id", "") or "",
+                                "name": getattr(cb, "name", "") or "",
+                                "arg_parts": [],
+                            }
+                    elif ev_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "text_delta":
+                            text = getattr(delta, "text", "")
+                            if text:
+                                text_parts.append(text)
+                                if on_chunk is not None:
+                                    on_chunk(text, chunk_idx)
+                                    chunk_idx += 1
+                        elif dtype == "input_json_delta" and active_tool is not None:
+                            pjson = getattr(delta, "partial_json", "")
+                            if isinstance(pjson, str) and pjson:
+                                active_tool["arg_parts"].append(pjson)
+                    elif ev_type == "content_block_stop":
+                        cb = getattr(event, "content_block", None)
+                        if getattr(cb, "type", None) == "tool_use":
+                            tool_block = {
                                 "type": "tool_use",
                                 "id": getattr(cb, "id", "") or "",
                                 "name": getattr(cb, "name", "") or "",
                                 "input": dict(getattr(cb, "input", {}) or {}),
-                                "index": emitted_tool_idx,
                             }
-                        )
-                        emitted_tool_idx += 1
-            final_msg = stream.get_final_message()
-            _capture_response(self, final_msg)
-            return _anthropic_response_to_blocks(final_msg)
+                            completed_tools.append(tool_block)
+                            active_tool = None
+                            if on_tool_call is not None:
+                                on_tool_call({**tool_block, "index": emitted_tool_idx})
+                                emitted_tool_idx += 1
+                final_msg = stream.get_final_message()
+                _capture_response(self, final_msg)
+                return _anthropic_response_to_blocks(final_msg)
+        except BaseException as exc:
+            pblocks: list[dict[str, Any]] = []
+            if text_parts:
+                pblocks.append({"type": "text", "text": "".join(text_parts)})
+            pblocks.extend(completed_tools)
+            if active_tool is not None:
+                pblocks.append(
+                    {
+                        "type": "incomplete_tool_use",
+                        "id": active_tool["id"],
+                        "name": active_tool["name"],
+                        "partial_arguments": "".join(active_tool["arg_parts"]),
+                    }
+                )
+            _attach_stream_partial_state(exc, pblocks)
+            raise
 
     def generate_with_tools(
         self,
@@ -1860,6 +1951,13 @@ class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
             blocks, stop_reason, last_chunk = await _consume_openai_tool_stream_async(
                 stream_resp, on_chunk=on_chunk, on_tool_call=on_tool_call
             )
+        except BaseException as exc:
+            partial_chunk = getattr(exc, "_looplet_partial_chunk", None)
+            if partial_chunk is not None:
+                _capture_response(self, partial_chunk)
+                self.last_stop_reason = "stream_error"
+                _record_response_capture(self.last_response, "stream_error", self.last_usage)
+            raise
         finally:
             close = getattr(stream_resp, "aclose", None) or getattr(stream_resp, "close", None)
             if close is not None:
@@ -1944,18 +2042,14 @@ def _responses_user_content(content: Any) -> Any:
     return str(content)
 
 
-def _responses_conversation_items(
-    snapshot: dict[str, Any] | None, prompt: str
-) -> list[dict[str, Any]]:
+def _translate_responses_slice(
+    messages: list[dict[str, Any]],
+    items: list[dict[str, Any]],
+    pending: set[str],
+) -> None:
     from looplet.result_projection import model_result_payload
 
-    if snapshot is None:
-        return [{"type": "message", "role": "user", "content": prompt}]
-    items: list[dict[str, Any]] = [
-        {"type": "message", "role": "user", "content": snapshot["prompt"]}
-    ]
-    pending: set[str] = set()
-    for message in snapshot["conversation"].get("messages", []):
+    for message in messages:
         content = message.get("content", "")
         metadata = message.get("metadata", {})
         role = message["role"]
@@ -2056,6 +2150,17 @@ def _responses_conversation_items(
         raise TerminalLLMError(
             "Provider tool calls lack results", termination_reason="unsupported_context"
         )
+
+
+def _responses_conversation_items(
+    snapshot: dict[str, Any] | None, prompt: str
+) -> list[dict[str, Any]]:
+    if snapshot is None:
+        return [{"type": "message", "role": "user", "content": prompt}]
+    items: list[dict[str, Any]] = [
+        {"type": "message", "role": "user", "content": snapshot["prompt"]}
+    ]
+    _translate_responses_slice(snapshot["conversation"].get("messages", []), items, set())
     turn_update = snapshot.get("turn_update")
     if isinstance(turn_update, str) and turn_update:
         items.append({"type": "message", "role": "user", "content": turn_update})
@@ -2201,6 +2306,10 @@ class OpenAIResponsesBackend(_ConversationBackend):
         self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
+        self._response_cursors: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        self._cached_resp_prompt: str | None = None
+        self._cached_resp_msgs: list[dict[str, Any]] = []
+        self._cached_resp_items: list[dict[str, Any]] = []
         self.last_usage: dict[str, int] = {}
 
     @property
@@ -2208,22 +2317,64 @@ class OpenAIResponsesBackend(_ConversationBackend):
         with self._cursor_lock:
             return self._previous_response_id
 
+    def _clear_responses_cursor_locked(self) -> None:
+        self._previous_response_id = None
+        self._synced_item_count = 0
+        self._response_cursors.clear()
+        self._cached_resp_prompt = None
+        self._cached_resp_msgs = []
+        self._cached_resp_items = []
+
     def reset_conversation(self) -> None:
         with self._cursor_lock:
-            self._previous_response_id = None
-            self._synced_item_count = 0
+            self._clear_responses_cursor_locked()
         self._conversation_input = None
 
-    def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
-        detached = json_snapshot(snapshot)
+    def _translate_responses_incremental(
+        self, snapshot: dict[str, Any] | None, prompt: str
+    ) -> list[dict[str, Any]]:
+        if snapshot is None:
+            return [{"type": "message", "role": "user", "content": prompt}]
+        snap_prompt = snapshot["prompt"]
+        msgs = snapshot["conversation"].get("messages", [])
+        with self._cursor_lock:
+            cached_len = len(self._cached_resp_msgs)
+            can_reuse = (
+                self._cached_resp_prompt == snap_prompt
+                and 0 < cached_len <= len(msgs)
+                and all(
+                    msgs[i] is self._cached_resp_msgs[i] or msgs[i] == self._cached_resp_msgs[i]
+                    for i in range(cached_len)
+                )
+            )
+            if can_reuse:
+                base_items = list(self._cached_resp_items)
+                if len(msgs) > cached_len:
+                    _translate_responses_slice(msgs[cached_len:], base_items, set())
+                    self._cached_resp_msgs = list(msgs)
+                    self._cached_resp_items = list(base_items)
+            else:
+                base_items = [{"type": "message", "role": "user", "content": snap_prompt}]
+                _translate_responses_slice(msgs, base_items, set())
+                self._cached_resp_prompt = snap_prompt
+                self._cached_resp_msgs = list(msgs)
+                self._cached_resp_items = list(base_items)
+        turn_update = snapshot.get("turn_update")
+        if isinstance(turn_update, str) and turn_update:
+            base_items.append({"type": "message", "role": "user", "content": turn_update})
+        return base_items
+
+    def _set_detached_conversation_input(self, detached: dict[str, Any] | None) -> None:
         if detached is not None:
-            _responses_conversation_items(detached, detached["prompt"])
+            self._translate_responses_incremental(detached, detached["prompt"])
         self._conversation_input = detached
+
+    def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
+        self._set_detached_conversation_input(json_snapshot(snapshot))
 
     def apply_context_compaction(self, snapshot: dict[str, Any]) -> bool:
         with self._cursor_lock:
-            self._previous_response_id = None
-            self._synced_item_count = 0
+            self._clear_responses_cursor_locked()
         self.set_conversation_input(snapshot)
         return True
 
@@ -2237,18 +2388,36 @@ class OpenAIResponsesBackend(_ConversationBackend):
         temperature: float | None,
         images: list[str] | None = None,
         stateless: bool = False,
-    ) -> tuple[dict[str, Any], int]:
+    ) -> tuple[dict[str, Any], tuple[str, list[dict[str, Any]]]]:
         snapshot = getattr(self, "_conversation_input", None)
-        full_items = _responses_conversation_items(snapshot, prompt)
+        full_items = self._translate_responses_incremental(snapshot, prompt)
         if images:
             content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
             for img in images:
                 content_parts.append({"type": "input_image", "image_url": img})
             full_items[-1] = {"type": "message", "role": "user", "content": content_parts}
 
+        has_transient_turn_update = bool(
+            isinstance(snapshot, dict)
+            and isinstance(snapshot.get("turn_update"), str)
+            and snapshot["turn_update"]
+        )
+        persisted_prefix = full_items[:-1] if has_transient_turn_update else list(full_items)
+        cursor_key = (
+            snapshot["prompt"]
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("prompt"), str)
+            else prompt
+        )
         with self._cursor_lock:
-            prev_id = self._previous_response_id
-            synced_count = self._synced_item_count
+            cursor_entry = self._response_cursors.get(cursor_key)
+            if cursor_entry is not None:
+                prev_id: str | None = cursor_entry[0]
+                synced_items = cursor_entry[1]
+                synced_count = len(synced_items)
+            else:
+                prev_id = None
+                synced_items = []
+                synced_count = 0
         use_prev = (
             self._use_previous_response_id
             and self._store
@@ -2256,6 +2425,8 @@ class OpenAIResponsesBackend(_ConversationBackend):
             and prev_id is not None
             and snapshot is not None
             and len(full_items) > synced_count > 0
+            and len(persisted_prefix) >= synced_count
+            and persisted_prefix[:synced_count] == synced_items
         )
         if use_prev:
             delta_items = [
@@ -2286,7 +2457,50 @@ class OpenAIResponsesBackend(_ConversationBackend):
             kwargs["tool_choice"] = self._tool_choice
         if use_prev and prev_id is not None:
             kwargs["previous_response_id"] = prev_id
-        return kwargs, len(full_items)
+        return kwargs, (cursor_key, persisted_prefix)
+
+    def _commit_responses_cursor(
+        self,
+        cursor_state: tuple[str, list[dict[str, Any]]],
+        resp_id: Any,
+        *,
+        text: str | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if not (isinstance(resp_id, str) and resp_id and self._use_previous_response_id):
+            return
+        cursor_key, persisted_prefix = cursor_state
+        synced = list(persisted_prefix)
+        if text:
+            synced.append({"type": "message", "role": "assistant", "content": text})
+        elif blocks:
+            for block in blocks:
+                btype = block.get("type")
+                if btype == "text" and block.get("text"):
+                    synced.append(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": str(block.get("text", "")),
+                        }
+                    )
+                elif btype == "tool_use":
+                    synced.append(
+                        {
+                            "type": "function_call",
+                            "call_id": block.get("id", ""),
+                            "name": block.get("name", ""),
+                            "arguments": json.dumps(block.get("input", {})),
+                        }
+                    )
+        with self._cursor_lock:
+            self._previous_response_id = resp_id
+            self._synced_item_count = len(synced)
+            self._response_cursors.pop(cursor_key, None)
+            self._response_cursors[cursor_key] = (resp_id, synced)
+            while len(self._response_cursors) > 16:
+                oldest_key = next(iter(self._response_cursors))
+                self._response_cursors.pop(oldest_key, None)
 
     def _prepare_and_begin(self, kwargs: dict[str, Any]) -> None:
         _begin_request(self, kwargs)
@@ -2298,10 +2512,14 @@ class OpenAIResponsesBackend(_ConversationBackend):
         """Clear expired state and replay only outside single-request admission."""
         if "previous_response_id" not in kwargs or not _is_lost_previous_response_error(error):
             return False
+        failed_id = kwargs.get("previous_response_id")
         with self._cursor_lock:
-            if self._previous_response_id == kwargs.get("previous_response_id"):
+            if self._previous_response_id == failed_id:
                 self._previous_response_id = None
                 self._synced_item_count = 0
+            stale_keys = [k for k, (rid, _) in self._response_cursors.items() if rid == failed_id]
+            for k in stale_keys:
+                self._response_cursors.pop(k, None)
         return not single_model_request_active()
 
     def generate(
@@ -2313,7 +2531,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
         temperature: float | None = None,
         images: list[str] | None = None,
     ) -> str:
-        kwargs, total_items = self._build_responses_kwargs(
+        kwargs, cursor_state = self._build_responses_kwargs(
             prompt,
             tools=None,
             max_tokens=max_tokens,
@@ -2326,7 +2544,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
             response = self._request_client().responses.create(**kwargs)
         except Exception as exc:
             if self._recover_lost_previous_response(kwargs, exc):
-                kwargs, total_items = self._build_responses_kwargs(
+                kwargs, cursor_state = self._build_responses_kwargs(
                     prompt,
                     tools=None,
                     max_tokens=max_tokens,
@@ -2341,11 +2559,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
                 raise
         _capture_response(self, response)
         text = _responses_output_text(response)
-        resp_id = getattr(response, "id", None)
-        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            with self._cursor_lock:
-                self._previous_response_id = resp_id
-                self._synced_item_count = total_items + int(bool(text))
+        self._commit_responses_cursor(cursor_state, getattr(response, "id", None), text=text)
         return text
 
     def generate_with_tools(
@@ -2358,7 +2572,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
         temperature: float | None = None,
         images: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        kwargs, total_items = self._build_responses_kwargs(
+        kwargs, cursor_state = self._build_responses_kwargs(
             prompt,
             tools=tools,
             max_tokens=max_tokens,
@@ -2371,7 +2585,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
             response = self._request_client().responses.create(**kwargs)
         except Exception as exc:
             if self._recover_lost_previous_response(kwargs, exc):
-                kwargs, total_items = self._build_responses_kwargs(
+                kwargs, cursor_state = self._build_responses_kwargs(
                     prompt,
                     tools=tools,
                     max_tokens=max_tokens,
@@ -2386,13 +2600,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
                 raise
         _capture_response(self, response)
         blocks = _responses_output_to_blocks(response)
-        resp_id = getattr(response, "id", None)
-        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            with self._cursor_lock:
-                self._previous_response_id = resp_id
-                self._synced_item_count = total_items + sum(
-                    block["type"] in {"text", "tool_use"} for block in blocks
-                )
+        self._commit_responses_cursor(cursor_state, getattr(response, "id", None), blocks=blocks)
         return blocks
 
 
@@ -2431,6 +2639,10 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
+        self._response_cursors: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        self._cached_resp_prompt: str | None = None
+        self._cached_resp_msgs: list[dict[str, Any]] = []
+        self._cached_resp_items: list[dict[str, Any]] = []
         self.last_usage: dict[str, int] = {}
 
     async def generate(  # type: ignore[override]
@@ -2442,7 +2654,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         temperature: float | None = None,
         images: list[str] | None = None,
     ) -> str:
-        kwargs, total_items = self._build_responses_kwargs(
+        kwargs, cursor_state = self._build_responses_kwargs(
             prompt,
             tools=None,
             max_tokens=max_tokens,
@@ -2455,7 +2667,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
             response = await self._request_client().responses.create(**kwargs)
         except Exception as exc:
             if self._recover_lost_previous_response(kwargs, exc):
-                kwargs, total_items = self._build_responses_kwargs(
+                kwargs, cursor_state = self._build_responses_kwargs(
                     prompt,
                     tools=None,
                     max_tokens=max_tokens,
@@ -2470,11 +2682,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
                 raise
         _capture_response(self, response)
         text = _responses_output_text(response)
-        resp_id = getattr(response, "id", None)
-        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            with self._cursor_lock:
-                self._previous_response_id = resp_id
-                self._synced_item_count = total_items + int(bool(text))
+        self._commit_responses_cursor(cursor_state, getattr(response, "id", None), text=text)
         return text
 
     async def generate_with_tools(  # type: ignore[override]
@@ -2487,7 +2695,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         temperature: float | None = None,
         images: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        kwargs, total_items = self._build_responses_kwargs(
+        kwargs, cursor_state = self._build_responses_kwargs(
             prompt,
             tools=tools,
             max_tokens=max_tokens,
@@ -2500,7 +2708,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
             response = await self._request_client().responses.create(**kwargs)
         except Exception as exc:
             if self._recover_lost_previous_response(kwargs, exc):
-                kwargs, total_items = self._build_responses_kwargs(
+                kwargs, cursor_state = self._build_responses_kwargs(
                     prompt,
                     tools=tools,
                     max_tokens=max_tokens,
@@ -2515,13 +2723,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
                 raise
         _capture_response(self, response)
         blocks = _responses_output_to_blocks(response)
-        resp_id = getattr(response, "id", None)
-        if isinstance(resp_id, str) and resp_id and self._use_previous_response_id:
-            with self._cursor_lock:
-                self._previous_response_id = resp_id
-                self._synced_item_count = total_items + sum(
-                    block["type"] in {"text", "tool_use"} for block in blocks
-                )
+        self._commit_responses_cursor(cursor_state, getattr(response, "id", None), blocks=blocks)
         return blocks
 
 
@@ -2655,38 +2857,74 @@ class AsyncAnthropicBackend(_ConversationBackend):
         )
 
         _begin_request(self, kwargs)
-        async with self._request_client().messages.stream(**kwargs) as stream:
-            chunk_idx = 0
-            emitted_tool_idx = 0
-            async for event in stream:
-                ev_type = getattr(event, "type", None)
-                if ev_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if getattr(delta, "type", None) == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text and on_chunk is not None:
-                            on_chunk(text, chunk_idx)
-                            chunk_idx += 1
-                elif ev_type == "content_block_stop" and on_tool_call is not None:
-                    cb = getattr(event, "content_block", None)
-                    if getattr(cb, "type", None) == "tool_use":
-                        on_tool_call(
-                            {
+        text_parts: list[str] = []
+        completed_tools: list[dict[str, Any]] = []
+        active_tool: dict[str, Any] | None = None
+        try:
+            async with self._request_client().messages.stream(**kwargs) as stream:
+                chunk_idx = 0
+                emitted_tool_idx = 0
+                async for event in stream:
+                    ev_type = getattr(event, "type", None)
+                    if ev_type == "content_block_start":
+                        cb = getattr(event, "content_block", None)
+                        if getattr(cb, "type", None) == "tool_use":
+                            active_tool = {
+                                "id": getattr(cb, "id", "") or "",
+                                "name": getattr(cb, "name", "") or "",
+                                "arg_parts": [],
+                            }
+                    elif ev_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "text_delta":
+                            text = getattr(delta, "text", "")
+                            if text:
+                                text_parts.append(text)
+                                if on_chunk is not None:
+                                    on_chunk(text, chunk_idx)
+                                    chunk_idx += 1
+                        elif dtype == "input_json_delta" and active_tool is not None:
+                            pjson = getattr(delta, "partial_json", "")
+                            if isinstance(pjson, str) and pjson:
+                                active_tool["arg_parts"].append(pjson)
+                    elif ev_type == "content_block_stop":
+                        cb = getattr(event, "content_block", None)
+                        if getattr(cb, "type", None) == "tool_use":
+                            tool_block = {
                                 "type": "tool_use",
                                 "id": getattr(cb, "id", "") or "",
                                 "name": getattr(cb, "name", "") or "",
                                 "input": dict(getattr(cb, "input", {}) or {}),
-                                "index": emitted_tool_idx,
                             }
-                        )
-                        emitted_tool_idx += 1
-            import inspect as _inspect
+                            completed_tools.append(tool_block)
+                            active_tool = None
+                            if on_tool_call is not None:
+                                on_tool_call({**tool_block, "index": emitted_tool_idx})
+                                emitted_tool_idx += 1
+                import inspect as _inspect
 
-            final_msg = stream.get_final_message()
-            if _inspect.isawaitable(final_msg):
-                final_msg = await final_msg
-            _capture_response(self, final_msg)
-            return _anthropic_response_to_blocks(final_msg)
+                final_msg = stream.get_final_message()
+                if _inspect.isawaitable(final_msg):
+                    final_msg = await final_msg
+                _capture_response(self, final_msg)
+                return _anthropic_response_to_blocks(final_msg)
+        except BaseException as exc:
+            pblocks: list[dict[str, Any]] = []
+            if text_parts:
+                pblocks.append({"type": "text", "text": "".join(text_parts)})
+            pblocks.extend(completed_tools)
+            if active_tool is not None:
+                pblocks.append(
+                    {
+                        "type": "incomplete_tool_use",
+                        "id": active_tool["id"],
+                        "name": active_tool["name"],
+                        "partial_arguments": "".join(active_tool["arg_parts"]),
+                    }
+                )
+            _attach_stream_partial_state(exc, pblocks)
+            raise
 
     async def stream(
         self,

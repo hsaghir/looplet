@@ -30,7 +30,9 @@ traces/run-42/
 | Path                   | Contents                                                                           | Primary reader                                       |
 | ---------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | `artifact.json`        | Format version, artifact kind, producing Looplet version, and declared components. | All supported directory readers                      |
-| `trajectory.json`      | Run metadata, task view, steps, stop reason, timing, and captured context.         | `EvalContext.from_trajectory_dir()` or JSON tooling  |
+| `trace.jsonl`          | Live append-only `looplet.trace-event.v1` stream for attempts, steps, and spans.   | `load_trace_events()`, `load_trajectory()`, CLI      |
+| `blobs/<sha256>.json`  | Shared content-addressed store for deduplicated requests, schemas, and large data. | `load_trace_events()`, `load_trajectory()`, evals    |
+| `trajectory.json`      | Run metadata, task view, steps, stop reason, timing, and captured context.         | `load_trajectory()`, `EvalContext.from_trajectory_dir()` |
 | `steps/step_NN.json`   | One review-friendly copy of each step record.                                      | Humans, diffs, JSON tooling                          |
 | `manifest.jsonl`       | One structured summary per model call.                                             | `looplet show`, replay loader, line-oriented tooling |
 | `call_NN_prompt.txt`   | Exact recorded system prompt, user prompt, tool schemas, and call settings.        | Humans and replay diagnostics                        |

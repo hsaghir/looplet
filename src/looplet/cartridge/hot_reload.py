@@ -498,11 +498,14 @@ class ReloadHook:
         tool_transform: Callable[[Any], Any] | None = None,
         notify_on_reload: bool = True,
         notify_on_error: bool = True,
+        check_every_n_steps: int = 1,
     ) -> None:
         if isinstance(protected_tools, (str, bytes)):
             raise TypeError("protected_tools must be a collection of tool names")
         if tool_transform is not None and not callable(tool_transform):
             raise TypeError("tool_transform must be callable or None")
+        if type(check_every_n_steps) is not int or check_every_n_steps < 1:
+            raise ValueError("check_every_n_steps must be an integer >= 1")
         self.watcher = watcher
         self.protect_initial_tools = protect_initial_tools
         self._explicit_protected_tools: frozenset[str] = frozenset(protected_tools)
@@ -512,6 +515,7 @@ class ReloadHook:
         self.tool_transform = tool_transform
         self.notify_on_reload = notify_on_reload
         self.notify_on_error = notify_on_error
+        self.check_every_n_steps = check_every_n_steps
         self._loop_ctx: Any = None
         self._initial_run_preset: Any = None
         self._host_memory_sources: list[Any] = []
@@ -536,6 +540,8 @@ class ReloadHook:
             "notify_on_reload": self.notify_on_reload,
             "notify_on_error": self.notify_on_error,
         }
+        if self.check_every_n_steps != 1:
+            cfg["check_every_n_steps"] = self.check_every_n_steps
         if self.tool_transform is not None:
             cfg["tool_transform"] = self.tool_transform
         return cfg
@@ -787,6 +793,8 @@ class ReloadHook:
     ) -> HookDecision | None:
         del session_log, context
         if self._loop_ctx is None:
+            return None
+        if self.check_every_n_steps > 1 and (step_num - 1) % self.check_every_n_steps != 0:
             return None
         current_fp = self.watcher.fingerprint()
         if current_fp == self._active_fingerprint:

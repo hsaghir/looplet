@@ -158,34 +158,41 @@ def classify_tier(
     # the LLM actually sees (tool catalog, briefing, etc. are still
     # excluded, but message history dominates in long sessions).
     if conversation is not None and hasattr(conversation, "messages"):
-        total_chars = 0
-        for m in conversation.messages:
-            c = getattr(m, "content", "")
-            if isinstance(c, str):
-                total_chars += len(c)
-            elif isinstance(c, list):
-                # ContentBlock list - sum text of each block.
-                for blk in c:
-                    total_chars += len(getattr(blk, "text", "") or "")
+        fast_est = getattr(conversation, "serialized_char_estimate", None)
+        fast_chars = fast_est() if callable(fast_est) else None
+        if isinstance(fast_chars, int):
+            total_chars = fast_chars
+        else:
+            total_chars = 0
+            for m in conversation.messages:
+                c = getattr(m, "content", "")
+                if isinstance(c, str):
+                    total_chars += len(c)
+                elif isinstance(c, list):
+                    # ContentBlock list - sum text of each block.
+                    for blk in c:
+                        total_chars += len(getattr(blk, "text", "") or "")
+                        total_chars += len(
+                            json.dumps(getattr(blk, "data", {}), default=str, ensure_ascii=False)
+                        )
+                tool_call = getattr(m, "tool_call", None)
+                if tool_call is not None:
                     total_chars += len(
-                        json.dumps(getattr(blk, "data", {}), default=str, ensure_ascii=False)
+                        json.dumps(getattr(tool_call, "args", {}), default=str, ensure_ascii=False)
                     )
-            tool_call = getattr(m, "tool_call", None)
-            if tool_call is not None:
-                total_chars += len(
-                    json.dumps(getattr(tool_call, "args", {}), default=str, ensure_ascii=False)
+                tool_result = getattr(m, "tool_result", None)
+                if tool_result is not None:
+                    total_chars += len(
+                        json.dumps(
+                            getattr(tool_result, "data", None), default=str, ensure_ascii=False
+                        )
+                    )
+                    total_chars += len(str(getattr(tool_result, "error", "") or ""))
+            serialize = getattr(conversation, "serialize", None)
+            if callable(serialize):
+                total_chars = max(
+                    total_chars, len(json.dumps(serialize(), default=str, ensure_ascii=False))
                 )
-            tool_result = getattr(m, "tool_result", None)
-            if tool_result is not None:
-                total_chars += len(
-                    json.dumps(getattr(tool_result, "data", None), default=str, ensure_ascii=False)
-                )
-                total_chars += len(str(getattr(tool_result, "error", "") or ""))
-        serialize = getattr(conversation, "serialize", None)
-        if callable(serialize):
-            total_chars = max(
-                total_chars, len(json.dumps(serialize(), default=str, ensure_ascii=False))
-            )
         est = max(1, total_chars // 4)
     else:
         rendered = session_log.render() if session_log is not None else ""

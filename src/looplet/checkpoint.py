@@ -20,7 +20,9 @@ import logging
 import ntpath
 import os
 import tempfile
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import MutableSequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -513,7 +515,184 @@ class FileCheckpointStore:
                 os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
+        if checkpoint.run_id is not None:
+            self._update_run_index(checkpoint, path)
         logger.debug("checkpoint saved: %s", path)
+
+    _RUN_INDEX_LOCK = threading.Lock()
+    _RUN_INDEX: OrderedDict[tuple[Path, str], dict[str, Any]] = OrderedDict()
+    _RUN_INDEX_MAX = 512
+
+    def _index_key(self, run_id: str) -> tuple[Path, str]:
+        return (self._dir.resolve(), run_id)
+
+    def _update_run_index(self, checkpoint: Checkpoint, saved_path: Path) -> None:
+        run_id = checkpoint.run_id
+        if run_id is None:
+            return
+        try:
+            st = saved_path.stat()
+            dir_mtime_ns = self._dir.stat().st_mtime_ns
+        except OSError:
+            return
+        key = self._index_key(run_id)
+        order = list(_checkpoint_order(checkpoint))
+        with self._RUN_INDEX_LOCK:
+            prev = self._RUN_INDEX.get(key)
+            if (
+                isinstance(prev, dict)
+                and prev.get("run_id") == run_id
+                and isinstance(prev.get("files"), dict)
+            ):
+                files = dict(prev["files"])
+            else:
+                # Seed only when no prior unindexed files exist for this run in _dir
+                prefix = f"{run_id}__"
+                try:
+                    existing_other = any(
+                        e.name != saved_path.name
+                        and e.name.endswith(".json")
+                        and (e.name.startswith(prefix) or "__" not in e.name[:-5])
+                        for e in os.scandir(self._dir)
+                    )
+                except OSError:
+                    return
+                if existing_other:
+                    return
+                files = {}
+            files[saved_path.name] = {
+                "mtime_ns": st.st_mtime_ns,
+                "size": st.st_size,
+                "order": order,
+                "is_terminal": bool(checkpoint.is_terminal),
+            }
+            latest_file: str | None = None
+            latest_order: tuple[Any, ...] | None = None
+            best_nonterminal_file: str | None = None
+            best_nonterminal_order: tuple[Any, ...] | None = None
+            terminal_file: str | None = None
+            terminal_order: tuple[Any, ...] | None = None
+            for fname, meta in files.items():
+                ord_t = tuple(meta["order"])
+                if latest_order is None or ord_t > latest_order:
+                    latest_order = ord_t
+                    latest_file = fname
+                if meta.get("is_terminal"):
+                    if terminal_order is None or ord_t > terminal_order:
+                        terminal_order = ord_t
+                        terminal_file = fname
+                else:
+                    if best_nonterminal_order is None or ord_t > best_nonterminal_order:
+                        best_nonterminal_order = ord_t
+                        best_nonterminal_file = fname
+            self._RUN_INDEX.pop(key, None)
+            self._RUN_INDEX[key] = {
+                "run_id": run_id,
+                "dir_mtime_ns": dir_mtime_ns,
+                "files": files,
+                "latest_file": latest_file,
+                "best_nonterminal_file": best_nonterminal_file,
+                "terminal_file": terminal_file,
+            }
+            while len(self._RUN_INDEX) > self._RUN_INDEX_MAX:
+                self._RUN_INDEX.popitem(last=False)
+
+    def _try_load_indexed(self, run_id: str, *, for_resume: bool) -> tuple[bool, Checkpoint | None]:
+        key = self._index_key(run_id)
+        with self._RUN_INDEX_LOCK:
+            idx = self._RUN_INDEX.get(key)
+            if idx is None:
+                return False, None
+            self._RUN_INDEX.move_to_end(key)
+            idx_files = dict(idx["files"])
+            dir_mtime_expected = idx.get("dir_mtime_ns")
+            term_name = idx.get("terminal_file")
+            best_name = idx.get("best_nonterminal_file")
+            latest_name = idx.get("latest_file")
+        try:
+            cur_dir_mtime = self._dir.stat().st_mtime_ns
+            if cur_dir_mtime != dir_mtime_expected:
+                prefix = f"{run_id}__"
+                seen_run_files: set[str] = set()
+                with os.scandir(self._dir) as it:
+                    for entry in it:
+                        name = entry.name
+                        if not name.endswith(".json"):
+                            continue
+                        stem = name[:-5]
+                        if "__" in stem and not stem.startswith(prefix):
+                            continue
+                        seen_run_files.add(name)
+                if seen_run_files != set(idx_files.keys()):
+                    return False, None
+                with self._RUN_INDEX_LOCK:
+                    cur_idx = self._RUN_INDEX.get(key)
+                    if cur_idx is not None:
+                        cur_idx["dir_mtime_ns"] = cur_dir_mtime
+            for fname, meta in idx_files.items():
+                fst = (self._dir / fname).stat()
+                if fst.st_mtime_ns != meta.get("mtime_ns") or fst.st_size != meta.get("size"):
+                    return False, None
+        except OSError:
+            return False, None
+
+        verified: set[str] = set()
+        if for_resume:
+            if isinstance(term_name, str):
+                term_path = self._dir / term_name
+                try:
+                    self._verify_records(term_path, verified)
+                    term_cp = self._read(term_path)
+                except (OSError, ValueError, TypeError) as error:
+                    raise ValueError(
+                        f"Cannot safely resume from checkpoint {term_path}. "
+                        "Preserve the file and reconcile recovery state before retrying."
+                    ) from error
+                from looplet.assistant_turns import TURN_STATE_KEY
+
+                return True, (term_cp if TURN_STATE_KEY in term_cp.metadata else None)
+            if not isinstance(best_name, str):
+                return True, None
+            best_path = self._dir / best_name
+            try:
+                self._verify_records(best_path, verified)
+                return True, self._read(best_path)
+            except (OSError, ValueError, TypeError) as error:
+                raise ValueError(
+                    f"Cannot safely resume from checkpoint {best_path}. "
+                    "Preserve the file and reconcile recovery state before retrying."
+                ) from error
+
+        if not isinstance(latest_name, str):
+            return True, None
+        latest_path = self._dir / latest_name
+        try:
+            self._verify_records(latest_path, verified)
+            return True, self._read(latest_path)
+        except Exception:  # noqa: BLE001
+            return False, None
+
+    def _candidate_json_paths(self, run_id: str | None) -> list[Path]:
+        if not self._dir.is_dir():
+            return []
+        if run_id is None:
+            return sorted(self._dir.glob("*.json"))
+        prefix = f"{run_id}__"
+        matched: list[Path] = []
+        try:
+            with os.scandir(self._dir) as it:
+                for entry in it:
+                    name = entry.name
+                    if not name.endswith(".json"):
+                        continue
+                    stem = name[:-5]
+                    if "__" in stem and not stem.startswith(prefix):
+                        continue
+                    matched.append(self._dir / name)
+        except OSError:
+            return sorted(self._dir.glob("*.json"))
+        matched.sort()
+        return matched
 
     def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Read checkpoint from ``{directory}/{key}.json``; None if missing."""
@@ -549,10 +728,14 @@ class FileCheckpointStore:
         :meth:`load_latest_for_resume`.
         """
         self._validate_run_id(run_id)
+        if run_id is not None:
+            hit, indexed_cp = self._try_load_indexed(run_id, for_resume=False)
+            if hit:
+                return indexed_cp
         best: Checkpoint | None = None
         best_path: Path | None = None
         verified: set[str] = set()
-        for path in sorted(self._dir.glob("*.json")):
+        for path in self._candidate_json_paths(run_id):
             try:
                 cp = self._read(path, summary_only=True)
                 if run_id is not None and cp.run_id != run_id:
@@ -576,12 +759,16 @@ class FileCheckpointStore:
         With an identity, other run namespaces remain isolated.
         """
         self._validate_run_id(run_id)
+        if run_id is not None:
+            hit, indexed_cp = self._try_load_indexed(run_id, for_resume=True)
+            if hit:
+                return indexed_cp
         best: Checkpoint | None = None
         terminal: Checkpoint | None = None
         best_path: Path | None = None
         terminal_path: Path | None = None
         verified: set[str] = set()
-        for path in sorted(self._dir.glob("*.json")):
+        for path in self._candidate_json_paths(run_id):
             try:
                 cp = self._read(path, summary_only=True)
                 if (run_id is None and cp.run_id is not None) or (

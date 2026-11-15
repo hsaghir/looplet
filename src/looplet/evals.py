@@ -128,6 +128,7 @@ __all__ = [
     "seed_case_workspace",
     "promote_to_offline",
     "run_cartridge_evals",
+    "run_cartridge_evals_async",
 ]
 
 logger = logging.getLogger(__name__)
@@ -527,6 +528,9 @@ class EvalContext:
             raise ValueError(
                 f"Invalid trajectory.json in {root}: expected object, got {type(data).__name__}"
             )
+        from looplet.provenance import _rehydrate_trajectory_doc
+
+        _rehydrate_trajectory_doc(root, data)
         steps = data.get("steps", [])
         if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
             raise ValueError(f"Invalid trajectory.json in {root}: steps must be a list of objects")
@@ -1738,23 +1742,391 @@ def run_cartridge_evals(
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
     overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
-    return _run_case_evals(
-        overview,
-        load_definitions=lambda case_runtime: _rebind_eval_bundle(overview, case_runtime),
-        build_preset=lambda case_runtime: cartridge_to_preset(cdir, runtime=case_runtime),
-        llm=llm,
-        output_dir=output_dir,
-        runtime=base_runtime,
-        max_steps=max_steps,
-        judge_llm=judge_llm,
-        workspace_key=workspace_key,
-        cases=cases,
-        case_marks=case_marks,
-        capture=capture,
-        redact=redact,
-        redact_upstream=redact_upstream,
-        max_concurrency=max_concurrency,
+    template_preset = _try_build_forkable_eval_preset(cdir, base_runtime)
+    try:
+        return _run_case_evals(
+            overview,
+            load_definitions=lambda case_runtime: _rebind_eval_bundle(overview, case_runtime),
+            build_preset=(
+                (lambda _case_runtime: template_preset.fork())
+                if template_preset is not None
+                else (lambda case_runtime: cartridge_to_preset(cdir, runtime=case_runtime))
+            ),
+            llm=llm,
+            output_dir=output_dir,
+            runtime=base_runtime,
+            max_steps=max_steps,
+            judge_llm=judge_llm,
+            workspace_key=workspace_key,
+            cases=cases,
+            case_marks=case_marks,
+            capture=capture,
+            redact=redact,
+            redact_upstream=redact_upstream,
+            max_concurrency=max_concurrency,
+        )
+    finally:
+        if template_preset is not None:
+            template_preset.close()
+
+
+def _try_build_forkable_eval_preset(cdir: Path, base_runtime: dict[str, Any]) -> Any | None:
+    """Build a reusable parent preset when cartridge state has no per-case runtime wiring."""
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
+    from looplet.cartridge._load import _resolve_extends  # noqa: PLC0415
+    from looplet.cartridge._yaml import _load_yaml  # noqa: PLC0415
+
+    try:
+        resolved = _resolve_extends(cdir)
+    except Exception:  # noqa: BLE001
+        return None
+    res_dir = resolved / "resources"
+    if res_dir.is_dir() and any(
+        p.is_file() and p.suffix == ".py" and not p.name.startswith("_") for p in res_dir.iterdir()
+    ):
+        return None
+    hooks_dir = resolved / "hooks"
+    if hooks_dir.is_dir() and any(p.name != "__pycache__" for p in hooks_dir.iterdir()):
+        return None
+    mem_dir = resolved / "memory"
+    if mem_dir.is_dir() and any(p.suffix == ".py" for p in mem_dir.iterdir()):
+        return None
+    skills_dir = resolved / "skills"
+    if skills_dir.is_dir() and any(p.name != "__pycache__" for p in skills_dir.iterdir()):
+        return None
+    cfg_yaml = resolved / "config.yaml"
+    if cfg_yaml.is_file():
+        try:
+            cfg_data = _load_yaml(cfg_yaml.read_text(encoding="utf-8"), source_path=cfg_yaml) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(cfg_data, dict) and any(
+            key in cfg_data for key in ("mcp_servers", "state_services", "llm_gateway")
+        ):
+            return None
+    for ypath in resolved.rglob("*"):
+        if ypath.is_file() and ypath.suffix.lower() in {".yaml", ".yml"}:
+            if "evals" in ypath.relative_to(resolved).parts:
+                continue
+            try:
+                if "${runtime." in ypath.read_text(encoding="utf-8"):
+                    return None
+            except OSError:
+                return None
+    try:
+        template = cartridge_to_preset(cdir, runtime=base_runtime)
+    except Exception:  # noqa: BLE001
+        return None
+    from looplet.lep import LEPHookAdapter  # noqa: PLC0415
+
+    if (
+        template.mcp_adapters
+        or any(isinstance(h, LEPHookAdapter) for h in template.hooks)
+        or template.state_service_handles
+        or template.model_gateway is not None
+        or template.llm_gateway_enabled
+        or getattr(template, "owned_resources", None)
+    ):
+        template.close()
+        return None
+    try:
+        probe = template.fork()
+        probe.close()
+    except Exception:  # noqa: BLE001
+        template.close()
+        return None
+    return template
+
+
+async def run_cartridge_evals_async(
+    cartridge_dir: str | Path,
+    *,
+    llm: Any,
+    output_dir: str | Path | None = None,
+    runtime: dict[str, Any] | None = None,
+    max_steps: int | None = None,
+    judge_llm: "LLMBackend | None" = None,
+    workspace_key: str = "project_root",
+    cases: list[str] | None = None,
+    case_marks: list[str] | None = None,
+    capture: bool = True,
+    redact: Callable[[str], str] | None = None,
+    redact_upstream: bool = True,
+    max_concurrency: int = 1,
+) -> list["EvalRunRecord"]:
+    """Native async counterpart to :func:`run_cartridge_evals`.
+
+    Executes each case via :meth:`~looplet.presets.AgentPreset.run_async`
+    with bounded async concurrency and reuses :meth:`AgentPreset.fork`
+    when the cartridge has no per-case runtime resource builders.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
+    from looplet.checkpoint import _run_persistence  # noqa: PLC0415
+
+    if type(max_concurrency) is not int or max_concurrency < 1:
+        raise ValueError("max_concurrency must be an integer >= 1")
+    is_llm_factory = isinstance(llm, type) or (
+        callable(llm) and not callable(getattr(llm, "generate", None))
     )
+    if (
+        max_concurrency > 1
+        and not is_llm_factory
+        and (
+            getattr(llm, "conversation_mode", "text") == "stateful"
+            or getattr(llm, "_use_previous_response_id", False) is True
+        )
+    ):
+        raise ValueError(
+            "max_concurrency > 1 cannot share a stateful backend instance; "
+            "disable previous_response_id or pass a per-case backend factory callable"
+        )
+
+    cdir = Path(cartridge_dir)
+    base_runtime = dict(runtime or {})
+    overview = await _run_persistence(
+        lambda: load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
+    )
+    selected = _select_eval_cases(overview.cases, cases, case_marks=case_marks)
+    if not overview.graders:
+        raise ValueError("No graders selected")
+    for case in selected:
+        if "expected" in case.task:
+            raise ValueError(
+                f"Eval case {case.id!r} puts reserved grader data in task['expected']; "
+                "use the top-level case expected field"
+            )
+
+    run_dirs: dict[str, Path] = {}
+    if output_dir is not None:
+        output_root = Path(output_dir)
+        for case in selected:
+            run_dir = _contained_child(
+                output_root,
+                _validate_case_id(case.id),
+                label="eval run directory",
+            )
+            if run_dir.exists() or run_dir.is_symlink():
+                raise FileExistsError(
+                    f"Eval output already exists: {run_dir}. "
+                    "Choose a new output_dir (CLI: --out) to preserve saved runs."
+                )
+            run_dirs[case.id] = run_dir
+
+    template_preset = await _run_persistence(_try_build_forkable_eval_preset, cdir, base_runtime)
+
+    async def _execute_one_case_async(case: EvalCase) -> EvalRunRecord:
+        def _prep_case() -> tuple[Path | None, Path, CartridgeEvals, Any]:
+            if output_dir is not None:
+                rdir: Path | None = run_dirs[case.id]
+                rdir.mkdir(parents=True, mode=0o700)
+                begin_artifact_write(rdir)
+                sb = rdir / "workspace"
+            else:
+                rdir = None
+                sb = Path(tempfile.mkdtemp(prefix=f"evalcase_{case.id}_"))
+            try:
+                seed_case_workspace(case, sb)
+                case_rt = dict(base_runtime)
+                case_rt[workspace_key] = str(sb)
+                bnd = _rebind_eval_bundle(overview, case_rt)
+                pst = (
+                    template_preset.fork()
+                    if template_preset is not None
+                    else cartridge_to_preset(cdir, runtime=case_rt)
+                )
+                return rdir, sb, bnd, pst
+            except BaseException:
+                if rdir is None:
+                    shutil.rmtree(sb, ignore_errors=True)
+                raise
+
+        run_dir, sandbox, bundle, preset = await _run_persistence(_prep_case)
+        if max_steps is not None:
+            preset.config.max_steps = max_steps
+            if hasattr(preset.state, "max_steps"):
+                preset.state.max_steps = max_steps
+        if run_dir is None and "persistence" not in preset.config.disabled_defaults:
+            preset.config.disabled_defaults = [*preset.config.disabled_defaults, "persistence"]
+
+        hook = EvalHook(
+            evaluators=bundle.graders,
+            collectors=bundle.collectors,
+            judge_llm=judge_llm,
+            expected=case.expected,
+        )
+        preset.hooks = [existing for existing in preset.hooks if not isinstance(existing, EvalHook)]
+        preset.hooks.append(hook)
+
+        task = {k: v for k, v in (case.task or {}).items() if k != "files"}
+        case_llm = llm() if is_llm_factory else llm
+        recorder = None
+        run_llm = case_llm
+        if capture and run_dir is not None:
+            from looplet.provenance import ProvenanceSink  # noqa: PLC0415
+
+            sink = ProvenanceSink(dir=run_dir, redact=redact, redact_upstream=redact_upstream)
+            run_llm = sink.wrap_llm(case_llm)
+            recorder = sink.trajectory_hook()
+        elif redact is not None:
+            from looplet.provenance import (  # noqa: PLC0415
+                AsyncRecordingLLMBackend,
+                RecordingLLMBackend,
+            )
+
+            use_async_rec = any(
+                inspect.iscoroutinefunction(getattr(case_llm, m, None))
+                for m in ("generate", "generate_with_tools")
+            )
+            rec_cls = AsyncRecordingLLMBackend if use_async_rec else RecordingLLMBackend
+            run_llm = rec_cls(case_llm, redact=redact, redact_upstream=redact_upstream)
+
+        failed = False
+        interrupted_context = None
+        try:
+            async for _ in preset.run_async(
+                run_llm, task=task, extra_hooks=[recorder] if recorder is not None else []
+            ):
+                pass
+        except BaseException as exc:
+            failed = True
+            interrupted_context = hook.context or EvalContext(
+                steps=list(preset.state.steps), task=task, stop_reason="error"
+            )
+            interrupted_context.metadata["eval_run_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            raise
+        finally:
+            try:
+                final_context = interrupted_context or hook.context
+                if final_context is not None:
+                    state_metadata = getattr(preset.state, "metadata", {})
+                    if isinstance(state_metadata, dict):
+                        for key in (
+                            "run_status",
+                            "run_phase",
+                            "termination_reason",
+                            "llm_calls",
+                            "usage_total",
+                            "replay",
+                            "looplet_run_stats",
+                        ):
+                            if key in state_metadata:
+                                final_context.metadata[key] = state_metadata[key]
+                    envelope = getattr(preset.state, "run_envelope", None)
+                    if envelope is not None:
+                        final_context.metadata["run_envelope"] = envelope.to_dict()
+                    stats = getattr(preset.state, "_looplet_run_stats", None)
+                    if isinstance(stats, dict):
+                        final_context.metadata["looplet_run_stats"] = dict(stats)
+                    if failed:
+                        final_context.metadata.update(run_status="failed", run_phase="terminal")
+                if run_dir is not None:
+                    await _run_persistence(
+                        lambda: save_eval_run(
+                            run_dir,
+                            recorder=recorder,
+                            context=interrupted_context,
+                            eval_hook=hook,
+                            case=case,
+                            redact=redact,
+                        )
+                    )
+            finally:
+                preset.close()
+                if is_llm_factory:
+                    aclose = getattr(case_llm, "aclose", None)
+                    close_llm = getattr(case_llm, "close", None)
+                    if callable(aclose):
+                        res_close = aclose()
+                        if inspect.isawaitable(res_close):
+                            await res_close
+                    elif callable(close_llm):
+                        res_close = close_llm()
+                        if inspect.isawaitable(res_close):
+                            await res_close
+                if failed and run_dir is None:
+                    shutil.rmtree(sandbox, ignore_errors=True)
+
+        directory = run_dir if run_dir is not None else sandbox
+        ctx = hook.context if hook.context is not None else EvalContext(steps=[])
+        return EvalRunRecord(
+            case=case,
+            context=ctx,
+            results=list(hook.results),
+            directory=directory,
+            cleanup_directory=None if run_dir is not None else sandbox,
+        )
+
+    try:
+        if max_concurrency == 1 or len(selected) <= 1:
+            records: list[EvalRunRecord] = []
+            try:
+                for case in selected:
+                    records.append(await _execute_one_case_async(case))
+            except BaseException:
+                if output_dir is None:
+                    for previous in records:
+                        previous.cleanup()
+                raise
+            return records
+
+        workers = min(max_concurrency, len(selected))
+        ordered: list[EvalRunRecord | None] = [None] * len(selected)
+        pending_cases = iter(enumerate(selected))
+        in_flight: dict[asyncio.Task[EvalRunRecord], int] = {}
+        first_error: BaseException | None = None
+        try:
+            for _, (idx, case) in zip(range(workers), pending_cases, strict=False):
+                in_flight[asyncio.create_task(_execute_one_case_async(case))] = idx
+            while in_flight:
+                done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                for tsk in done_tasks:
+                    idx = in_flight.pop(tsk)
+                    try:
+                        ordered[idx] = tsk.result()
+                    except BaseException as exc:
+                        if first_error is None:
+                            first_error = exc
+                    else:
+                        if first_error is None:
+                            next_item = next(pending_cases, None)
+                            if next_item is not None:
+                                next_idx, next_case = next_item
+                                in_flight[
+                                    asyncio.create_task(_execute_one_case_async(next_case))
+                                ] = next_idx
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            if in_flight:
+                for pending_task in in_flight:
+                    pending_task.cancel()
+                remaining = list(in_flight)
+                while remaining:
+                    try:
+                        settled = await asyncio.gather(*remaining, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        remaining = [t for t in remaining if not t.done()]
+                        continue
+                    for item in settled:
+                        if isinstance(item, EvalRunRecord) and output_dir is None:
+                            item.cleanup()
+                    break
+        if first_error is not None:
+            if output_dir is None:
+                for item in ordered:
+                    if item is not None:
+                        item.cleanup()
+            raise first_error
+        return [item for item in ordered if item is not None]
+    finally:
+        if template_preset is not None:
+            template_preset.close()
 
 
 def _run_case_evals(

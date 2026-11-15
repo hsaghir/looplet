@@ -362,6 +362,31 @@ class FileRunStore:
                 with events_path.open("r+", encoding="utf-8") as handle:
                     os.fsync(handle.fileno())
             events = self._events_unlocked(run_id)
+            result_dict = result.to_dict(full=True)
+            steps = result_dict.get("steps")
+            if isinstance(steps, list) and steps:
+                from looplet.provenance import _TraceBlobStore
+
+                bstore = _TraceBlobStore(root / "blobs", trace_root=root)
+                compacted_steps: list[Any] = []
+                changed = False
+                for step in steps:
+                    if isinstance(step, dict) and isinstance(step.get("tool_result"), dict):
+                        tr = step["tool_result"]
+                        if "data" in tr:
+                            large = bstore.put_large_data(tr["data"])
+                            if large is not None:
+                                digest, nbytes, preview = large
+                                new_tr = {k: v for k, v in tr.items() if k != "data"}
+                                new_tr["data_blob_ref"] = digest
+                                new_tr["data_bytes"] = nbytes
+                                new_tr["data_preview"] = preview
+                                compacted_steps.append({**step, "tool_result": new_tr})
+                                changed = True
+                                continue
+                    compacted_steps.append(step)
+                if changed:
+                    result_dict = {**result_dict, "steps": compacted_steps}
             updated = RunRecord(
                 run_id=record.run_id,
                 envelope=record.envelope,
@@ -369,13 +394,13 @@ class FileRunStore:
                 metadata=dict(record.metadata),
                 created_at=record.created_at,
                 updated_at=time.time(),
-                result=result.to_dict(full=True),
+                result=result_dict,
                 checkpoint_keys=record.checkpoint_keys,
                 artifact_refs=tuple(artifacts),
                 events=events,
             )
             self._write_record(run_id, self._file(run_id, "run.json"), updated)
-            return updated
+            return self._rehydrate_record_blobs_unlocked(run_id, updated)
 
     def load(self, run_id: str) -> RunRecord | None:
         with self._locked_run(run_id) as root:
@@ -430,6 +455,33 @@ class FileRunStore:
                 return cached[2].status
         return self._require_unlocked(run_id).status
 
+    def _rehydrate_record_blobs_unlocked(self, run_id: str, record: RunRecord) -> RunRecord:
+        res = record.result
+        if not isinstance(res, dict):
+            return record
+        steps = res.get("steps")
+        if not isinstance(steps, list) or not any(
+            isinstance(s, dict)
+            and isinstance(s.get("tool_result"), dict)
+            and "data_blob_ref" in s["tool_result"]
+            for s in steps
+        ):
+            return record
+        from looplet.provenance import _rehydrate_step_blobs
+
+        root = self._root(run_id)
+        blob_roots = [root / "blobs"]
+        cache: dict[str, Any] = {}
+        hydrated_steps: list[Any] = []
+        for s in steps:
+            if isinstance(s, dict) and isinstance(s.get("tool_result"), dict):
+                s_copy = {**s, "tool_result": dict(s["tool_result"])}
+                _rehydrate_step_blobs(blob_roots, s_copy, cache)
+                hydrated_steps.append(s_copy)
+            else:
+                hydrated_steps.append(s)
+        return replace(record, result={**res, "steps": hydrated_steps})
+
     def _load_unlocked(self, run_id: str, *, include_events: bool = True) -> RunRecord | None:
         path = self._file(run_id, "run.json")
         if not path.is_file():
@@ -454,6 +506,7 @@ class FileRunStore:
                 self._header_cache[run_id] = (st.st_mtime_ns, st.st_size, copy.deepcopy(header))
                 while len(self._header_cache) > 64:
                     self._header_cache.popitem(last=False)
+        header = self._rehydrate_record_blobs_unlocked(run_id, header)
         if not include_events:
             return header
         ev = self._events_unlocked(run_id)

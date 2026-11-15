@@ -46,6 +46,9 @@ Legacy errors remain text records; their classification is not inferred.
 | `AsyncRecordingLLMBackend`     | Same, async                                               | `AsyncLLMBackend`                |
 | `TrajectoryRecorder`           | Every loop step, with context-before and linked LLM calls | `LoopHook`                       |
 | `ProvenanceSink`               | Both of the above in a 3-line drop-in                     | Not a protocol                   |
+| `load_trace_events(dir, ...)`  | Read and rehydrate the live `trace.jsonl` event stream    | Reader function                  |
+| `load_trajectory(dir, ...)`    | Read `trajectory.json` or recover from `trace.jsonl`      | Reader function                  |
+| `load_model_attempts(dir)`     | Read and rehydrate saved `model-attempts/` records        | Reader function                  |
 | `replay_loop(dir, ...)`        | Rerun the loop against cached LLM output                  | generator                        |
 | `async_replay_loop(dir, ...)`  | Replay with awaited async tools and hooks                 | async generator                  |
 | `python -m looplet show <dir>` | One-page readable summary                                 | CLI                              |

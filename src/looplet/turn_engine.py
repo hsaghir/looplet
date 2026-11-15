@@ -1364,8 +1364,37 @@ def run_turn_machine(
             break
 
         # Refresh effective_llm in case PRE_LLM_CALL or router selection updated state
+        prev_effective_llm = effective_llm
         effective_llm = _get_llm()
-        if turns is not None and typed_turns:
+        from looplet.checkpoint import CheckpointHook
+        from looplet.provenance import TrajectoryRecorder
+        from looplet.runtime import _RuntimeEventHook
+        from looplet.session_tree import SessionTreeRecorder
+        from looplet.streaming import StreamingHook
+        from looplet.telemetry import MetricsHook, TracingHook
+
+        passive_pre_llm_types = {
+            TrajectoryRecorder,
+            SessionTreeRecorder,
+            MetricsHook,
+            TracingHook,
+            StreamingHook,
+            _RuntimeEventHook,
+            CheckpointHook,
+        }
+        had_mutable_pre_llm_hook = False
+        for h in hooks:
+            raw_h = (
+                h.hook if hasattr(h, "hook") and type(h).__name__ == "_AsyncPersistenceHook" else h
+            )
+            if hasattr(raw_h, "on_event") and type(raw_h) not in passive_pre_llm_types:
+                had_mutable_pre_llm_hook = True
+                break
+        if (
+            turns is not None
+            and typed_turns
+            and (effective_llm is not prev_effective_llm or had_mutable_pre_llm_hook)
+        ):
             effective_llm.prepare_conversation(
                 active_conv,
                 prepared.conversation_prompt,

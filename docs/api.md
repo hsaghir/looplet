@@ -714,6 +714,8 @@ See the [async-host pattern](evals.md#async-hosts) for a complete example and va
 | `EvalReport.save(path, evidence=...)`             | Save a separate assessment to a new private JSON file, with optional relative evidence links. Unreleased. |
 | `eval_mark(...)`                                  | Attach selection marks such as `required`, `smoke`, or `slow`.                                            |
 | `run_cartridge_evals(...)`                        | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers.               |
+| `run_cartridge_evals_async(...)`                  | Native async sibling of `run_cartridge_evals()` for concurrent async backends and tools.                  |
+| `load_trace_events(...)` / `load_trajectory(...)` | Read and rehydrate consolidated `trace.jsonl` streams, `blobs/`, and crashed or completed trajectories.   |
 | `save_eval_run(...)` / `load_eval_run(...)`       | Persist and restore one self-contained eval record.                                                       |
 
 Use `looplet eval init --python` for a runnable pytest starter and `looplet eval check` for trusted definition validation.

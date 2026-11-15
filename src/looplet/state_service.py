@@ -89,6 +89,10 @@ _EXPORTED_ENV_BASE: dict[str, tuple[bool, str | None]] = {}
 class StateServiceError(RuntimeError):
     """Raised when the state-service transport breaks or a call fails."""
 
+    def __init__(self, message: str, *, effect_unknown: bool = False) -> None:
+        super().__init__(message)
+        self.effect_unknown = effect_unknown
+
 
 def _send_line(sock: socket.socket, obj: dict[str, Any]) -> None:
     sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
@@ -299,11 +303,14 @@ class StateServiceClient:
         self._path = socket_path
         self._lock = threading.Lock()
         self._run_envelope = run_envelope
+        self._connect_timeout = connect_timeout
         self._rpc_timeout = rpc_timeout
         self._max_message_bytes = max_message_bytes
         self._next_id = 0
-        self._sock = self._connect(socket_path, connect_timeout)
-        self._reader = _LineReader(self._sock, max_message_bytes=max_message_bytes)
+        self._closed = False
+        self._retired = False
+        self._sock: socket.socket = self._connect(socket_path, connect_timeout)
+        self._reader: _LineReader = _LineReader(self._sock, max_message_bytes=max_message_bytes)
         self.methods: list[str] = []
         try:
             init = self._rpc("state/initialize", {})
@@ -328,6 +335,30 @@ class StateServiceClient:
                 time.sleep(0.02)
         raise StateServiceError(f"could not connect to state service at {path!r}: {last_exc}")
 
+    def _retire_socket_locked(self) -> None:
+        self._retired = True
+        try:
+            self._sock.close()
+        except OSError:  # pragma: no cover - best effort
+            pass
+
+    def _ensure_connected_locked(
+        self, timeout_budget: float | None
+    ) -> tuple[socket.socket, _LineReader]:
+        if self._closed:
+            raise StateServiceError("state service client is closed")
+        if self._retired or self._sock.fileno() == -1:
+            conn_timeout = (
+                min(self._connect_timeout, timeout_budget)
+                if timeout_budget is not None
+                else self._connect_timeout
+            )
+            sock = self._connect(self._path, max(0.05, conn_timeout))
+            self._sock = sock
+            self._reader = _LineReader(sock, max_message_bytes=self._max_message_bytes)
+            self._retired = False
+        return self._sock, self._reader
+
     @property
     def socket_path(self) -> str:
         return self._path
@@ -343,37 +374,55 @@ class StateServiceClient:
             effective_timeout = (
                 min(base_timeout, remaining) if remaining is not None else base_timeout
             )
+            sock, reader = self._ensure_connected_locked(effective_timeout)
             self._next_id += 1
             rid = self._next_id
-            old_timeout = self._sock.gettimeout()
+            old_timeout = sock.gettimeout()
             if effective_timeout is not None:
-                self._sock.settimeout(effective_timeout)
+                sock.settimeout(effective_timeout)
+            sent = False
             try:
-                _send_line(self._sock, {"id": rid, "method": method, "params": params})
-                line = self._reader.readline()
+                _send_line(sock, {"id": rid, "method": method, "params": params})
+                sent = True
+                line = reader.readline()
             except socket.timeout as exc:
+                self._retire_socket_locked()
                 if remaining is not None and effective_timeout == remaining:
-                    raise StateServiceError("state service call exceeded run deadline") from exc
-                raise StateServiceError("state service call timed out") from exc
+                    raise StateServiceError(
+                        "state service call exceeded run deadline", effect_unknown=sent
+                    ) from exc
+                raise StateServiceError(
+                    "state service call timed out", effect_unknown=sent
+                ) from exc
             except OSError as exc:
-                raise StateServiceError(f"state transport failed: {exc}") from exc
+                self._retire_socket_locked()
+                raise StateServiceError(
+                    f"state transport failed: {exc}", effect_unknown=sent
+                ) from exc
             finally:
-                if effective_timeout is not None:
+                if effective_timeout is not None and self._sock is sock:
                     try:
-                        self._sock.settimeout(old_timeout)
+                        sock.settimeout(old_timeout)
                     except OSError:
                         pass
             if line is None:
-                raise StateServiceError("state service closed the connection")
+                self._retire_socket_locked()
+                raise StateServiceError("state service closed the connection", effect_unknown=True)
             try:
                 parsed = json.loads(line)
             except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-                raise StateServiceError(f"state service emitted non-JSON: {line!r}") from exc
-            if not isinstance(parsed, dict):  # pragma: no cover - defensive
-                raise StateServiceError("malformed state-service response")
-            if parsed.get("id") != rid:
+                self._retire_socket_locked()
                 raise StateServiceError(
-                    f"state service response id mismatch: expected {rid}, got {parsed.get('id')}"
+                    f"state service emitted non-JSON: {line!r}", effect_unknown=True
+                ) from exc
+            if not isinstance(parsed, dict):  # pragma: no cover - defensive
+                self._retire_socket_locked()
+                raise StateServiceError("malformed state-service response", effect_unknown=True)
+            if parsed.get("id") != rid:
+                self._retire_socket_locked()
+                raise StateServiceError(
+                    f"state service response id mismatch: expected {rid}, got {parsed.get('id')}",
+                    effect_unknown=True,
                 )
             if parsed.get("error"):
                 raise StateServiceError(str(parsed["error"].get("message", "error")))
@@ -403,10 +452,9 @@ class StateServiceClient:
         return _method
 
     def close(self) -> None:
-        try:
-            self._sock.close()
-        except OSError:  # pragma: no cover - best effort
-            pass
+        with self._lock:
+            self._closed = True
+            self._retire_socket_locked()
 
 
 # ── launcher / handle ─────────────────────────────────────────

@@ -565,8 +565,12 @@ class _AdmissionBackend:
                 **({"turn_update": turn_update} if turn_update else {}),
             }
         if self.conversation_input:
-            est_fn = getattr(conversation, "serialized_char_estimate", None)
-            raw_est = est_fn() if callable(est_fn) else None
+            cached_total = getattr(conversation, "_serialized_total_chars", None)
+            if isinstance(cached_total, int):
+                raw_est: Any = cached_total
+            else:
+                est_fn = getattr(conversation, "serialized_char_estimate", None)
+                raw_est = est_fn() if callable(est_fn) else None
             if isinstance(raw_est, int):
                 local_chars = (
                     raw_est

@@ -193,6 +193,18 @@ def _classify_exception(e: BaseException) -> ToolError:
             context={"effect_unknown": True},
             recovery_hint={"action": "reconcile_tool_effect", "effect_unknown": True},
         )
+    if getattr(e, "effect_unknown", False) is True:
+        is_timeout = "timed out" in str(e).lower() or "deadline" in str(e).lower()
+        return ToolError(
+            kind=ErrorKind.TIMEOUT if is_timeout else ErrorKind.EXECUTION,
+            message=(
+                f"{msg} Remote or in-flight tool effects are unknown. "
+                "Reconcile effects before retrying."
+            ),
+            retriable=False,
+            context={"effect_unknown": True},
+            recovery_hint={"action": "reconcile_tool_effect", "effect_unknown": True},
+        )
     if isinstance(e, (ValueError, TypeError, KeyError)):
         return ToolError(kind=ErrorKind.VALIDATION, message=msg, retriable=False)
     if isinstance(e, PermissionError):
@@ -1577,6 +1589,11 @@ class BaseToolRegistry:
                 duration_ms=(time.time() - t0) * 1000,
                 call_id=call.call_id,
                 warnings=warns,
+                metadata=(
+                    {"execution_status": "effect_unknown"}
+                    if _te.context.get("effect_unknown") is True
+                    else {}
+                ),
             )
 
         elapsed = (time.time() - t0) * 1000
@@ -1656,6 +1673,11 @@ class BaseToolRegistry:
                 duration_ms=(time.time() - prepared.started_at) * 1000,
                 call_id=call.call_id,
                 warnings=warnings,
+                metadata=(
+                    {"execution_status": "effect_unknown"}
+                    if error.context.get("effect_unknown") is True
+                    else {}
+                ),
             )
 
         if self._external_result_store() is None:

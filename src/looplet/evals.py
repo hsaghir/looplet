@@ -1774,6 +1774,7 @@ def _try_build_forkable_eval_preset(cdir: Path, base_runtime: dict[str, Any]) ->
     """Build a reusable parent preset when cartridge state has no per-case runtime wiring."""
     from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
     from looplet.cartridge._load import _resolve_extends  # noqa: PLC0415
+    from looplet.cartridge._yaml import _load_yaml  # noqa: PLC0415
 
     try:
         resolved = _resolve_extends(cdir)
@@ -1790,6 +1791,19 @@ def _try_build_forkable_eval_preset(cdir: Path, base_runtime: dict[str, Any]) ->
     mem_dir = resolved / "memory"
     if mem_dir.is_dir() and any(p.suffix == ".py" for p in mem_dir.iterdir()):
         return None
+    skills_dir = resolved / "skills"
+    if skills_dir.is_dir() and any(p.name != "__pycache__" for p in skills_dir.iterdir()):
+        return None
+    cfg_yaml = resolved / "config.yaml"
+    if cfg_yaml.is_file():
+        try:
+            cfg_data = _load_yaml(cfg_yaml.read_text(encoding="utf-8"), source_path=cfg_yaml) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(cfg_data, dict) and any(
+            key in cfg_data for key in ("mcp_servers", "state_services", "llm_gateway")
+        ):
+            return None
     for ypath in resolved.rglob("*"):
         if ypath.is_file() and ypath.suffix.lower() in {".yaml", ".yml"}:
             if "evals" in ypath.relative_to(resolved).parts:
@@ -1810,8 +1824,15 @@ def _try_build_forkable_eval_preset(cdir: Path, base_runtime: dict[str, Any]) ->
         or any(isinstance(h, LEPHookAdapter) for h in template.hooks)
         or template.state_service_handles
         or template.model_gateway is not None
+        or template.llm_gateway_enabled
         or getattr(template, "owned_resources", None)
     ):
+        template.close()
+        return None
+    try:
+        probe = template.fork()
+        probe.close()
+    except Exception:  # noqa: BLE001
         template.close()
         return None
     return template
@@ -2058,25 +2079,44 @@ async def run_cartridge_evals_async(
         pending_cases = iter(enumerate(selected))
         in_flight: dict[asyncio.Task[EvalRunRecord], int] = {}
         first_error: BaseException | None = None
-        for _, (idx, case) in zip(range(workers), pending_cases, strict=False):
-            in_flight[asyncio.create_task(_execute_one_case_async(case))] = idx
-        while in_flight:
-            done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-            for tsk in done_tasks:
-                idx = in_flight.pop(tsk)
-                try:
-                    ordered[idx] = tsk.result()
-                except BaseException as exc:
-                    if first_error is None:
-                        first_error = exc
-                else:
-                    if first_error is None:
-                        next_item = next(pending_cases, None)
-                        if next_item is not None:
-                            next_idx, next_case = next_item
-                            in_flight[asyncio.create_task(_execute_one_case_async(next_case))] = (
-                                next_idx
-                            )
+        try:
+            for _, (idx, case) in zip(range(workers), pending_cases, strict=False):
+                in_flight[asyncio.create_task(_execute_one_case_async(case))] = idx
+            while in_flight:
+                done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                for tsk in done_tasks:
+                    idx = in_flight.pop(tsk)
+                    try:
+                        ordered[idx] = tsk.result()
+                    except BaseException as exc:
+                        if first_error is None:
+                            first_error = exc
+                    else:
+                        if first_error is None:
+                            next_item = next(pending_cases, None)
+                            if next_item is not None:
+                                next_idx, next_case = next_item
+                                in_flight[
+                                    asyncio.create_task(_execute_one_case_async(next_case))
+                                ] = next_idx
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            if in_flight:
+                for pending_task in in_flight:
+                    pending_task.cancel()
+                remaining = list(in_flight)
+                while remaining:
+                    try:
+                        settled = await asyncio.gather(*remaining, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        remaining = [t for t in remaining if not t.done()]
+                        continue
+                    for item in settled:
+                        if isinstance(item, EvalRunRecord) and output_dir is None:
+                            item.cleanup()
+                    break
         if first_error is not None:
             if output_dir is None:
                 for item in ordered:

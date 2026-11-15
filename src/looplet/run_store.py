@@ -367,7 +367,7 @@ class FileRunStore:
             if isinstance(steps, list) and steps:
                 from looplet.provenance import _TraceBlobStore
 
-                bstore = _TraceBlobStore(root / "blobs")
+                bstore = _TraceBlobStore(root / "blobs", trace_root=root)
                 compacted_steps: list[Any] = []
                 changed = False
                 for step in steps:

@@ -39,25 +39,45 @@ class _BoundedStreamSink:
         self.max_chars = max(0, max_chars)
         self.spill_dir = spill_dir
         self.stream_name = stream_name
+        self._lock = threading.Lock()
         self._head_parts: list[str] = []
         self._head_chars = 0
-        self.total_chars = 0
+        self._total_chars = 0
         self._spill_handle: Any = None
         self._spill_tmp_path: Path | None = None
         self._hasher: Any = None
-        self.persisted_path: Path | None = None
+        self._persisted_path: Path | None = None
+
+    @property
+    def total_chars(self) -> int:
+        with self._lock:
+            return self._total_chars
+
+    @property
+    def persisted_path(self) -> Path | None:
+        with self._lock:
+            return self._persisted_path
 
     def _feed_text(self, text: str) -> None:
         if not text:
             return
-        prev_total = self.total_chars
-        self.total_chars += len(text)
-        if self._head_chars < self.max_chars:
-            need = self.max_chars - self._head_chars
-            take = text[:need]
-            self._head_parts.append(take)
-            self._head_chars += len(take)
-        if self.spill_dir is not None and self.total_chars > self.max_chars:
+        with self._lock:
+            prev_total = self._total_chars
+            self._total_chars += len(text)
+            cur_total = self._total_chars
+            if self._head_chars < self.max_chars:
+                need = self.max_chars - self._head_chars
+                take = text[:need]
+                self._head_parts.append(take)
+                self._head_chars += len(take)
+            prefix_snapshot = (
+                "".join(self._head_parts)
+                if self.spill_dir is not None
+                and cur_total > self.max_chars
+                and self._spill_handle is None
+                else ""
+            )
+        if self.spill_dir is not None and cur_total > self.max_chars:
             if self._spill_handle is None:
                 self.spill_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
                 fd, tmp_name = tempfile.mkstemp(
@@ -68,10 +88,9 @@ class _BoundedStreamSink:
                 self._spill_tmp_path = Path(tmp_name)
                 self._spill_handle = os.fdopen(fd, "w", encoding="utf-8")
                 self._hasher = hashlib.sha256()
-                prefix_so_far = "".join(self._head_parts)
                 # Write prior prefix plus any overflow beyond what was already in head_parts
                 prior_head_len = min(prev_total, self.max_chars)
-                initial_str = prefix_so_far[:prior_head_len] + text
+                initial_str = prefix_snapshot[:prior_head_len] + text
                 self._spill_handle.write(initial_str)
                 self._hasher.update(initial_str.encode("utf-8"))
             else:
@@ -116,7 +135,8 @@ class _BoundedStreamSink:
                 digest = self._hasher.hexdigest()[:12]
                 final_path = self.spill_dir / f"subprocess-{self.stream_name}-{digest}.txt"
                 os.replace(self._spill_tmp_path, final_path)
-                self.persisted_path = final_path
+                with self._lock:
+                    self._persisted_path = final_path
                 self._spill_tmp_path = None
         except OSError:
             if self._spill_tmp_path is not None:
@@ -125,11 +145,14 @@ class _BoundedStreamSink:
             self._spill_handle = None
 
     def head_text(self) -> str:
-        return "".join(self._head_parts)
+        with self._lock:
+            parts = list(self._head_parts)
+        return "".join(parts)
 
     @property
     def truncated(self) -> bool:
-        return self.total_chars > self.max_chars
+        with self._lock:
+            return self._total_chars > self.max_chars
 
 
 def terminate_process_tree(proc: subprocess.Popen[Any], *, wait_timeout: float = 0.5) -> None:

@@ -1147,3 +1147,341 @@ async def test_responses_cursor_survives_turn_update_and_interleaved_subagent_ga
         assert b2 == [{"type": "text", "text": "parent_done"}]
     assert len(calls) == 3
     assert calls[2]["previous_response_id"] == "resp_parent_1"
+
+
+def test_deep_and_wide_conversation_mutation_cyclic_stamp_and_spoofed_hook_name() -> None:
+    """Deep (>5 levels) and wide (>64 items) in-place edits refresh serialized Conversation; spoofed hook class names do not skip refresh."""
+    from looplet.conversation import _value_stamp
+
+    cyclic: dict[str, Any] = {"label": "loop"}
+    cyclic["self"] = cyclic
+    stamp = _value_stamp(cyclic)
+    assert isinstance(stamp, tuple)
+
+    conv = Conversation()
+    deep = {"l1": {"l2": {"l3": {"l4": {"l5": {"l6": "before"}}}}}}
+    wide = [{"idx": i, "val": "initial"} for i in range(80)]
+    conv.append(
+        Message(
+            role=MessageRole.USER,
+            content="check",
+            metadata={"deep": deep, "wide": wide},
+        )
+    )
+    first_ser = conv.serialize()
+    assert first_ser["messages"][0]["metadata"]["deep"]["l1"]["l2"]["l3"]["l4"]["l5"]["l6"] == (
+        "before"
+    )
+
+    # Mutate in-place at depth 6 and index 75 without changing dict/list lengths or ids!
+    deep["l1"]["l2"]["l3"]["l4"]["l5"]["l6"] = "after_deep"
+    wide[75]["val"] = "after_wide"
+    second_ser = conv.serialize()
+    assert second_ser["messages"][0]["metadata"]["deep"]["l1"]["l2"]["l3"]["l4"]["l5"]["l6"] == (
+        "after_deep"
+    )
+    assert second_ser["messages"][0]["metadata"]["wide"][75]["val"] == "after_wide"
+
+    # serialized_char_estimate refreshes cache without calling snapshot_list()
+    with patch.object(conv._serialized_messages, "snapshot_list") as spy_snap:
+        est = conv.serialized_char_estimate()
+    assert est > 0
+    assert spy_snap.call_count == 0
+
+    # Custom hook with class name 'StreamingHook' must NOT be treated as passive!
+    observed_snapshots: list[dict[str, Any]] = []
+
+    class _InspectingBackend:
+        conversation_mode = "messages"
+        _conversation_input: dict[str, Any] | None = None
+
+        def set_conversation_input(self, snap: dict[str, Any] | None) -> None:
+            self._conversation_input = snap
+
+        def generate(self, prompt: str, **kw: Any) -> str:
+            return "ok"
+
+        def generate_with_tools(
+            self, prompt: str, *, tools: Any, **kw: Any
+        ) -> list[dict[str, Any]]:
+            assert self._conversation_input is not None
+            observed_snapshots.append(json.loads(json.dumps(self._conversation_input)))
+            return [{"type": "tool_use", "id": "d1", "name": "done", "input": {"summary": "done"}}]
+
+    SpoofedHook = type(
+        "StreamingHook",
+        (),
+        {
+            "on_event": lambda self, payload: (
+                payload.state.conversation.append(
+                    Message(role=MessageRole.USER, content="INJECTED_BY_SPOOFED_HOOK")
+                )
+                if payload.event == LifecycleEvent.PRE_LLM_CALL
+                and payload.state.conversation is not None
+                else None
+            )
+        },
+    )
+    res = run_result(
+        _InspectingBackend(),
+        task="test spoofed hook",
+        tools=tools_from([], include_done=True),
+        hooks=[SpoofedHook()],
+        config=LoopConfig(
+            use_native_tools=True,
+            max_steps=3,
+            disabled_defaults=["persistence"],
+        ),
+    )
+    assert res.completed
+    assert any(
+        m.get("content") == "INJECTED_BY_SPOOFED_HOOK"
+        for m in observed_snapshots[0]["conversation"]["messages"]
+    )
+
+
+def test_overwrite_crash_recovery_conflict_guard_and_cli_show_trace_jsonl(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """overwrite=True clears stale trajectory.json before live trace.jsonl; non-overwrite sink rejects trace.jsonl; CLI show renders crashed trace.jsonl."""
+    trace_dir = tmp_path / "shared_trace"
+
+    # Run 1 completes and writes trajectory.json
+    sink1 = ProvenanceSink(dir=trace_dir)
+    llm1 = sink1.wrap_llm(
+        MockLLMBackend(responses=['{"tool": "done", "args": {"summary": "run1_complete"}}'])
+    )
+    res1 = run_result(
+        llm1,
+        task="run 1",
+        tools=tools_from([], include_done=True),
+        hooks=[sink1.trajectory_hook()],
+        config=LoopConfig(use_native_tools=False, max_steps=3, disabled_defaults=["persistence"]),
+    )
+    assert res1.completed
+    sink1.flush()
+    assert (trace_dir / "trajectory.json").is_file()
+
+    # Run 2 with overwrite=True emits trace.jsonl and crashes before flush()!
+    sink2 = ProvenanceSink(dir=trace_dir, overwrite=True)
+    hook2 = sink2.trajectory_hook()
+    llm2 = sink2.wrap_llm(MockLLMBackend(responses=['{"tool": "echo", "args": {"x": "run2"}}']))
+    hook2.pre_loop(SimpleNamespace(task={"goal": "run 2 crashed"}), None, None)
+    llm2.generate("run 2 prompt")
+    assert not (trace_dir / "trajectory.json").exists()
+    recovered = load_trajectory(trace_dir)
+    assert recovered["metadata"].get("recovered_from_trace_jsonl") is True
+    assert recovered["task"] == {"goal": "run 2 crashed"}
+    assert recovered["termination_reason"] == "incomplete"
+
+    # CLI show works on trace.jsonl-only directory (and when model-attempts/ is absent)
+    crashed_only = tmp_path / "trace_jsonl_only"
+    crashed_only.mkdir()
+    (crashed_only / "trace.jsonl").write_bytes((trace_dir / "trace.jsonl").read_bytes())
+    if (trace_dir / "blobs").is_dir():
+        import shutil as _shutil
+
+        _shutil.copytree(trace_dir / "blobs", crashed_only / "blobs")
+    attempts_from_stream = load_model_attempts(crashed_only)
+    assert len(attempts_from_stream) == 1
+    assert cli_main(["show", str(crashed_only), "--json"]) == 0
+    cli_json = json.loads(capsys.readouterr().out)
+    assert cli_json["trajectory"]["task"] == {"goal": "run 2 crashed"}
+
+    # Competing non-overwrite sink constructed BEFORE another sink writes trace.jsonl must fail closed!
+    race_dir = tmp_path / "race_trace"
+    s_first = ProvenanceSink(dir=race_dir)
+    s_second = ProvenanceSink(dir=race_dir)
+    h_second = s_second.trajectory_hook()
+    h_first = s_first.trajectory_hook()
+    h_first.pre_loop(SimpleNamespace(task={"goal": "winner"}), None, None)
+    assert (race_dir / "trace.jsonl").is_file()
+    with pytest.raises(FileExistsError, match="Trace already exists"):
+        h_second.pre_loop(SimpleNamespace(task={"goal": "intruder"}), None, None)
+
+
+def test_responses_same_prompt_interleaving_and_multimodal_turn_update() -> None:
+    """Same-prompt parent and child conversations keep independent cursors; images + turn_update preserve both."""
+    calls: list[dict[str, Any]] = []
+
+    def _resp(rid: str, *, call_id: str | None = None, text: str | None = None) -> Any:
+        out: list[Any] = []
+        if call_id:
+            out.append(
+                SimpleNamespace(
+                    type="function_call", call_id=call_id, name="work", arguments='{"v": 1}'
+                )
+            )
+        if text:
+            out.append(
+                SimpleNamespace(
+                    type="message", content=[SimpleNamespace(type="output_text", text=text)]
+                )
+            )
+        return SimpleNamespace(id=rid, status="completed", output=out, usage=None)
+
+    def _create(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        n = len(calls)
+        if n == 1:
+            return _resp("resp_P1", call_id="call_parent_1")
+        if n == 2:
+            return _resp("resp_C1", call_id="call_child_1")
+        if n == 3:
+            return _resp("resp_C2", text="child_done")
+        return _resp("resp_P2", text="parent_done")
+
+    backend = OpenAIResponsesBackend(
+        SimpleNamespace(responses=SimpleNamespace(create=_create)), model="gpt-6-luna"
+    )
+    tools = [{"name": "work", "description": "w", "input_schema": {"type": "object"}}]
+    same_prompt = "Identical task prompt"
+
+    # Parent turn 1 (with images + transient turn_update!)
+    backend.set_conversation_input(
+        {"prompt": same_prompt, "conversation": {"messages": []}, "turn_update": "Step 1/5."}
+    )
+    backend.generate_with_tools(same_prompt, tools=tools, images=["data:image/png;base64,AAAA"])
+    assert isinstance(calls[0]["input"][0]["content"], list)
+    assert calls[0]["input"][1] == {"type": "message", "role": "user", "content": "Step 1/5."}
+
+    # Child turn 1 & turn 2 with the EXACT SAME prompt!
+    backend.set_conversation_input(
+        {"prompt": same_prompt, "conversation": {"messages": []}, "turn_update": "Step 1/3."}
+    )
+    backend.generate_with_tools(same_prompt, tools=tools)
+    assert "previous_response_id" not in calls[1]
+
+    backend.set_conversation_input(
+        {
+            "prompt": same_prompt,
+            "conversation": {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "kind": "tool_use",
+                                "data": {"id": "call_child_1", "name": "work", "input": {"v": 1}},
+                            }
+                        ],
+                        "metadata": {"origin": "model"},
+                    },
+                    {
+                        "role": "user",
+                        "content": "",
+                        "metadata": {"tool_call_id": "call_child_1"},
+                        "tool_result": {
+                            "tool": "work",
+                            "call_id": "call_child_1",
+                            "data": {"ok": True},
+                            "error": None,
+                            "error_kind": None,
+                            "error_retriable": None,
+                            "result_key": None,
+                            "warnings": [],
+                            "metadata": {},
+                        },
+                    },
+                ]
+            },
+            "turn_update": "Step 2/3.",
+        }
+    )
+    backend.generate_with_tools(same_prompt, tools=tools)
+    assert calls[2].get("previous_response_id") == "resp_C1"
+
+    # Parent turn 2 resumes and STILL chains resp_P1 despite child's same-prompt turns!
+    backend.set_conversation_input(
+        {
+            "prompt": same_prompt,
+            "conversation": {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "kind": "tool_use",
+                                "data": {"id": "call_parent_1", "name": "work", "input": {"v": 1}},
+                            }
+                        ],
+                        "metadata": {"origin": "model"},
+                    },
+                    {
+                        "role": "user",
+                        "content": "",
+                        "metadata": {"tool_call_id": "call_parent_1"},
+                        "tool_result": {
+                            "tool": "work",
+                            "call_id": "call_parent_1",
+                            "data": {"ok": "parent"},
+                            "error": None,
+                            "error_kind": None,
+                            "error_retriable": None,
+                            "result_key": None,
+                            "warnings": [],
+                            "metadata": {},
+                        },
+                    },
+                ]
+            },
+            "turn_update": "Step 2/5.",
+        }
+    )
+    backend.generate_with_tools(same_prompt, tools=tools, images=["data:image/png;base64,AAAA"])
+    assert calls[3].get("previous_response_id") == "resp_P1"
+
+
+async def test_async_cartridge_evals_cancellation_drains_tasks_and_gateway_cartridge_skips_fork(
+    tmp_path: Path,
+) -> None:
+    """Cancelling run_cartridge_evals_async cancels and drains in-flight tasks; llm_gateway: true skips fork cleanly."""
+    from looplet import EvalCase, save_cartridge_cases
+
+    cart_dir = scaffold_cartridge(tmp_path / "cancel_eval.cartridge", name="cancel_eval", tools=[])
+    # Declare llm_gateway: true explicitly so _try_build_forkable_eval_preset returns None cleanly!
+    cfg_path = cart_dir / "config.yaml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8") + "\nllm_gateway: true\n", encoding="utf-8"
+    )
+    evals_dir = cart_dir / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "eval_ok.py").write_text("def eval_ok(ctx):\n    return True\n", encoding="utf-8")
+    save_cartridge_cases(
+        cart_dir,
+        [EvalCase(id=f"c{i}", task={"goal": f"task {i}"}) for i in range(3)],
+    )
+
+    started = asyncio.Event()
+    cancelled_workers = 0
+
+    def slow_factory() -> Any:
+        class _SlowAsyncLLM:
+            async def generate(self, prompt: str, **kw: Any) -> str:
+                return "ok"
+
+            async def generate_with_tools(
+                self, prompt: str, *, tools: Any, **kw: Any
+            ) -> list[dict[str, Any]]:
+                nonlocal cancelled_workers
+                started.set()
+                try:
+                    await asyncio.sleep(10.0)
+                except asyncio.CancelledError:
+                    cancelled_workers += 1
+                    raise
+                return [
+                    {"type": "tool_use", "id": "d1", "name": "done", "input": {"summary": "ok"}}
+                ]
+
+        return _SlowAsyncLLM()
+
+    eval_task = asyncio.create_task(
+        run_cartridge_evals_async(cart_dir, llm=slow_factory, max_concurrency=3)
+    )
+    await started.wait()
+    await asyncio.sleep(0.02)
+    eval_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await eval_task
+    assert cancelled_workers >= 1

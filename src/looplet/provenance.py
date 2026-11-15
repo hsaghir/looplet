@@ -128,10 +128,25 @@ def _clear_trace_blobs_and_stream(trace_dir: Path) -> None:
         raise ValueError(f"Invalid trace directory: {trace_dir}")
     if not trace_dir.is_dir():
         return
-    trace_file = trace_dir / "trace.jsonl"
-    if trace_file.is_symlink():
-        raise ValueError(f"Invalid trace stream path: {trace_file}")
-    trace_file.unlink(missing_ok=True)
+    for artifact_name in ("trace.jsonl", "trajectory.json", "manifest.jsonl", "artifact.json"):
+        target = trace_dir / artifact_name
+        if target.is_symlink():
+            raise ValueError(f"Invalid trace artifact path: {target}")
+        target.unlink(missing_ok=True)
+    for path in trace_dir.iterdir():
+        if not path.is_symlink() and path.is_file() and _CALL_ARTIFACT.fullmatch(path.name):
+            path.unlink()
+    steps_dir = trace_dir / "steps"
+    if steps_dir.is_symlink():
+        raise ValueError(f"Invalid trace steps directory: {steps_dir}")
+    if steps_dir.is_dir():
+        for step_file in steps_dir.iterdir():
+            if (
+                not step_file.is_symlink()
+                and step_file.is_file()
+                and _STEP_ARTIFACT.fullmatch(step_file.name)
+            ):
+                step_file.unlink()
     blobs = trace_dir / "blobs"
     if blobs.is_symlink():
         raise ValueError(f"Invalid trace blob directory: {blobs}")
@@ -141,10 +156,42 @@ def _clear_trace_blobs_and_stream(trace_dir: Path) -> None:
                 blob.unlink()
 
 
-def _model_attempt_root(directory: Path) -> Path:
+def _model_attempt_root(directory: Path, *, anchor: Path | None = None) -> Path:
     if directory.is_symlink():
         raise ValueError(f"Invalid model attempt directory: {directory}")
+    if directory.name == "blobs" and directory.parent.name == "model-attempts":
+        if directory.parent.is_symlink():
+            raise ValueError(f"Invalid model attempt directory: {directory.parent}")
+        if directory.parent.parent.is_symlink():
+            raise ValueError(f"Invalid model attempt directory: {directory.parent.parent}")
+    elif directory.name in {"blobs", "model-attempts"} and directory.parent.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {directory.parent}")
+    if anchor is not None:
+        if anchor.is_symlink():
+            raise ValueError(f"Invalid model attempt directory: {anchor}")
+        try:
+            rel = directory.relative_to(anchor)
+        except ValueError:
+            pass
+        else:
+            cur = anchor
+            for part in rel.parts:
+                cur = cur / part
+                if cur.is_symlink():
+                    raise ValueError(f"Invalid model attempt directory: {cur}")
     return directory
+
+
+def _ensure_private_dir(directory: Path, *, anchor: Path | None = None) -> Path:
+    root = _model_attempt_root(directory, anchor=anchor)
+    existed = root.exists()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not existed and os.name == "posix":
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    return root
 
 
 def _canonical_blob_json(item: Any) -> str:
@@ -158,16 +205,20 @@ def _canonical_blob_json(item: Any) -> str:
 
 
 def _resolve_blob_roots(base_dir: Path) -> list[Path]:
+    if base_dir.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {base_dir}")
+    attempts_subdir = base_dir / "model-attempts"
+    if attempts_subdir.is_symlink():
+        raise ValueError(f"Invalid model attempt directory: {attempts_subdir}")
     candidates: list[Path] = []
     for candidate in (
         base_dir / "blobs",
-        base_dir / "model-attempts" / "blobs",
+        attempts_subdir / "blobs",
         base_dir.parent / "blobs" if base_dir.name == "model-attempts" else None,
     ):
         if candidate is None:
             continue
-        if candidate.is_symlink():
-            raise ValueError(f"Invalid model attempt directory: {candidate}")
+        _model_attempt_root(candidate)
         if candidate not in candidates:
             candidates.append(candidate)
     return candidates
@@ -179,8 +230,7 @@ def _load_cas_blob(blob_roots: Sequence[Path], ref: Any, blob_cache: dict[str, A
     if ref not in blob_cache:
         blob_file: Path | None = None
         for root in blob_roots:
-            if root.is_symlink():
-                raise ValueError(f"Invalid model attempt directory: {root}")
+            _model_attempt_root(root)
             if root.is_dir():
                 candidate = _artifact_path(root, f"{ref}.json")
                 if candidate.exists():
@@ -200,7 +250,7 @@ def _load_attempt_blob(blob_root: Path, ref: Any, blob_cache: dict[str, Any]) ->
     roots = [_model_attempt_root(blob_root)]
     if blob_root.name == "blobs" and blob_root.parent.name == "model-attempts":
         trace_blobs = blob_root.parent.parent / "blobs"
-        if not trace_blobs.is_symlink():
+        if not trace_blobs.is_symlink() and not blob_root.parent.parent.is_symlink():
             roots.append(trace_blobs)
     return _load_cas_blob(roots, ref, blob_cache)
 
@@ -220,9 +270,16 @@ def _without_spool_rehydrate() -> Iterator[None]:
 class _TraceBlobStore:
     """Thread-safe content-addressed JSON blob store under ``<trace_dir>/blobs``."""
 
-    def __init__(self, blob_root: Path, *, mirror_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        blob_root: Path,
+        *,
+        mirror_root: Path | None = None,
+        trace_root: Path | None = None,
+    ) -> None:
         self.blob_root = blob_root
         self.mirror_root = mirror_root
+        self.trace_root = trace_root or blob_root.parent
         self._lock = Lock()
         self._ensured_dirs: set[Path] = set()
         self._written: set[tuple[Path, str]] = set()
@@ -231,9 +288,9 @@ class _TraceBlobStore:
 
     def _ensure_dir_unlocked(self, directory: Path) -> Path:
         if directory in self._ensured_dirs:
+            _model_attempt_root(directory, anchor=self.trace_root)
             return directory
-        root = _model_attempt_root(directory)
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root = _ensure_private_dir(directory, anchor=self.trace_root)
         self._ensured_dirs.add(root)
         return root
 
@@ -496,11 +553,18 @@ class _TraceBlobStore:
                 )
         return out
 
-    def reset(self, blob_root: Path | None = None, *, mirror_root: Path | None = None) -> None:
+    def reset(
+        self,
+        blob_root: Path | None = None,
+        *,
+        mirror_root: Path | None = None,
+        trace_root: Path | None = None,
+    ) -> None:
         with self._lock:
             if blob_root is not None:
                 self.blob_root = blob_root
                 self.mirror_root = mirror_root
+                self.trace_root = trace_root or blob_root.parent
             self._ensured_dirs.clear()
             self._written.clear()
             self._list_memos.clear()
@@ -510,16 +574,35 @@ class _TraceBlobStore:
 class _TraceEventStream:
     """Live append-only JSONL stream at ``<trace_dir>/trace.jsonl``."""
 
-    def __init__(self, trace_dir: Path, *, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        trace_dir: Path,
+        *,
+        run_id: str | None = None,
+        on_first_emit: Callable[[], None] | None = None,
+    ) -> None:
         self.trace_dir = trace_dir
         self.run_id = run_id or uuid4().hex[:12]
+        self._on_first_emit = on_first_emit
         self._lock = Lock()
         self._seq = 0
         self._handle: Any = None
+        self._prepared = False
+        self._broken = False
 
     def set_run_id(self, run_id: str) -> None:
         with self._lock:
             self.run_id = run_id
+
+    def prepare_first_emit(self) -> None:
+        with self._lock:
+            self._prepare_first_emit_unlocked()
+
+    def _prepare_first_emit_unlocked(self) -> None:
+        if not self._prepared and self._seq == 0 and self._handle is None:
+            if self._on_first_emit is not None:
+                self._on_first_emit()
+            self._prepared = True
 
     def _close_unlocked(self) -> None:
         if self._handle is not None:
@@ -531,13 +614,11 @@ class _TraceEventStream:
 
     def emit(self, kind: str, payload: dict[str, Any], *, sync: bool = False) -> int:
         with self._lock:
-            if self._handle is None:
-                root = _model_attempt_root(self.trace_dir)
-                root.mkdir(parents=True, exist_ok=True)
-                trace_path = _artifact_path(root, "trace.jsonl")
-                self._handle = trace_path.open("a", encoding="utf-8")
+            if self._broken:
+                raise OSError(
+                    f"Trace stream is unavailable after prior write failure: {self.trace_dir}"
+                )
             seq = self._seq
-            self._seq += 1
             record = {
                 "schema": TRACE_EVENT_SCHEMA,
                 "seq": seq,
@@ -546,20 +627,51 @@ class _TraceEventStream:
                 "kind": kind,
                 "payload": payload,
             }
-            line = (
-                json.dumps(
-                    record,
-                    ensure_ascii=True,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                    default=str,
+            try:
+                line = (
+                    json.dumps(
+                        record,
+                        ensure_ascii=True,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
-            self._handle.write(line)
-            self._handle.flush()
-            if sync:
-                os.fsync(self._handle.fileno())
+            except ValueError:
+                record["payload"] = json_snapshot(payload)
+                line = (
+                    json.dumps(
+                        record,
+                        ensure_ascii=True,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    + "\n"
+                )
+            if self._handle is None:
+                self._prepare_first_emit_unlocked()
+                root = _ensure_private_dir(self.trace_dir)
+                trace_path = _artifact_path(root, "trace.jsonl")
+                if seq == 0 and trace_path.exists() and trace_path.stat().st_size > 0:
+                    raise FileExistsError(
+                        f"Trace already exists in {self.trace_dir}. Use a new directory, "
+                        "omit dir for a unique path, or set overwrite=True to replace it."
+                    )
+                open_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(trace_path, open_flags, 0o600)
+                self._handle = os.fdopen(fd, "a", encoding="utf-8")
+            try:
+                self._handle.write(line)
+                self._handle.flush()
+                if sync:
+                    os.fsync(self._handle.fileno())
+            except OSError:
+                self._broken = True
+                self._close_unlocked()
+                raise
+            self._seq = seq + 1
             if kind == "run_end":
                 self._close_unlocked()
             return seq
@@ -571,6 +683,8 @@ class _TraceEventStream:
                 self.trace_dir = trace_dir
             self.run_id = run_id or uuid4().hex[:12]
             self._seq = 0
+            self._prepared = False
+            self._broken = False
 
 
 def _rehydrate_attempt_provider_request(
@@ -932,7 +1046,7 @@ def load_model_attempts(directory: str | Path) -> list[dict[str, Any]]:
             ) != ("looplet.model-attempt.v1", attempt_id, kind):
                 raise ValueError(f"Invalid model attempt record: {path.name}")
             grouped.setdefault(attempt_id, {})[kind] = payload
-    elif (base / "trace.jsonl").is_file():
+    elif base.is_dir() and _artifact_path(base, "trace.jsonl").exists():
         events = load_trace_events(base, rehydrate=True)
         for ev in events:
             p = ev["payload"]
@@ -1462,6 +1576,8 @@ class _RecordingBase:
         return _TraceBlobStore(root / "blobs")
 
     def _write_attempt(self, attempt_id: str, kind: str, value: dict[str, Any]) -> dict[str, Any]:
+        if self._trace_stream is not None:
+            self._trace_stream.prepare_first_emit()
         pre = {
             "schema": "looplet.model-attempt.v1",
             "kind": kind,
@@ -3413,10 +3529,20 @@ class ProvenanceSink:
         self._blob_store = _TraceBlobStore(
             self._dir / "blobs",
             mirror_root=self._dir / "model-attempts" / "blobs",
+            trace_root=self._dir,
         )
-        self._trace_stream = _TraceEventStream(self._dir)
+        self._trace_stream = _TraceEventStream(
+            self._dir,
+            on_first_emit=self._on_first_stream_emit,
+        )
         self._recording_llm: _RecordingBase | None = None
         self._hook: TrajectoryRecorder | None = None
+
+    def _on_first_stream_emit(self) -> None:
+        self._check_directory()
+        self._prepare_overwrite_if_needed()
+        self._owns_trace_stream = True
+        self._owns_attempts = True
 
     def _check_directory(self) -> None:
         if self._overwrite or self._flushed or not self._dir.is_dir():
@@ -3444,8 +3570,8 @@ class ProvenanceSink:
             self._blob_store.reset(
                 self._dir / "blobs",
                 mirror_root=self._dir / "model-attempts" / "blobs",
+                trace_root=self._dir,
             )
-            self._trace_stream.reset(self._dir)
             self._cleared_overwrite = True
 
     def wrap_llm(self, backend: Any, *, async_: bool | None = None) -> Any:
@@ -3465,8 +3591,9 @@ class ProvenanceSink:
             )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
         self._prepare_overwrite_if_needed()
-        self._owns_attempts = True
-        self._owns_trace_stream = True
+        if self._overwrite:
+            self._owns_attempts = True
+            self._owns_trace_stream = True
         self._recording_llm = cls(
             backend,
             max_chars_per_call=self._max_chars,
@@ -3485,7 +3612,8 @@ class ProvenanceSink:
         """Create (or return the cached) :class:`TrajectoryRecorder`."""
         if self._hook is None:
             self._prepare_overwrite_if_needed()
-            self._owns_trace_stream = True
+            if self._overwrite:
+                self._owns_trace_stream = True
             self._hook = TrajectoryRecorder(
                 recording_llm=self._recording_llm,
                 capture_context=self._capture_context,
@@ -3530,16 +3658,16 @@ class ProvenanceSink:
             self._blob_store.reset(
                 self._dir / "blobs",
                 mirror_root=self._dir / "model-attempts" / "blobs",
+                trace_root=self._dir,
             )
             self._trace_stream.reset(self._dir)
             if self._recording_llm is not None:
                 self._recording_llm._attempt_directory = self._dir / "model-attempts"
-                self._owns_attempts = True
-                self._owns_trace_stream = True
         else:
             self._blob_store.reset(
                 self._dir / "blobs",
                 mirror_root=self._dir / "model-attempts" / "blobs",
+                trace_root=self._dir,
             )
             self._trace_stream.reset(self._dir)
 

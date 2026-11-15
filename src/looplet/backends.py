@@ -1158,8 +1158,10 @@ class OpenAIStreamingBackend(OpenAIBackend):
             )
         except BaseException as exc:
             partial_chunk = getattr(exc, "_looplet_partial_chunk", None)
+            partial_blocks = getattr(exc, "_looplet_partial_blocks", None)
             if partial_chunk is not None:
                 _capture_response(self, partial_chunk)
+            if partial_chunk is not None or partial_blocks:
                 self.last_stop_reason = "stream_error"
                 _record_response_capture(self.last_response, "stream_error", self.last_usage)
             raise
@@ -1633,6 +1635,9 @@ class AnthropicStreamingBackend(AnthropicBackend):
                         "partial_arguments": "".join(active_tool["arg_parts"]),
                     }
                 )
+            if pblocks:
+                self.last_stop_reason = "stream_error"
+                _record_response_capture(self.last_response, "stream_error", self.last_usage)
             _attach_stream_partial_state(exc, pblocks)
             raise
 
@@ -1953,8 +1958,10 @@ class AsyncOpenAIStreamingBackend(AsyncOpenAIBackend):
             )
         except BaseException as exc:
             partial_chunk = getattr(exc, "_looplet_partial_chunk", None)
+            partial_blocks = getattr(exc, "_looplet_partial_blocks", None)
             if partial_chunk is not None:
                 _capture_response(self, partial_chunk)
+            if partial_chunk is not None or partial_blocks:
                 self.last_stop_reason = "stream_error"
                 _record_response_capture(self.last_response, "stream_error", self.last_usage)
             raise
@@ -2306,7 +2313,7 @@ class OpenAIResponsesBackend(_ConversationBackend):
         self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
-        self._response_cursors: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        self._response_cursors: dict[str, list[dict[str, Any]]] = {}
         self._cached_resp_prompt: str | None = None
         self._cached_resp_msgs: list[dict[str, Any]] = []
         self._cached_resp_items: list[dict[str, Any]] = []
@@ -2388,46 +2395,48 @@ class OpenAIResponsesBackend(_ConversationBackend):
         temperature: float | None,
         images: list[str] | None = None,
         stateless: bool = False,
-    ) -> tuple[dict[str, Any], tuple[str, list[dict[str, Any]]]]:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         snapshot = getattr(self, "_conversation_input", None)
         full_items = self._translate_responses_incremental(snapshot, prompt)
-        if images:
-            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
-            for img in images:
-                content_parts.append({"type": "input_image", "image_url": img})
-            full_items[-1] = {"type": "message", "role": "user", "content": content_parts}
-
         has_transient_turn_update = bool(
             isinstance(snapshot, dict)
             and isinstance(snapshot.get("turn_update"), str)
             and snapshot["turn_update"]
         )
-        persisted_prefix = full_items[:-1] if has_transient_turn_update else list(full_items)
-        cursor_key = (
-            snapshot["prompt"]
-            if isinstance(snapshot, dict) and isinstance(snapshot.get("prompt"), str)
-            else prompt
-        )
-        with self._cursor_lock:
-            cursor_entry = self._response_cursors.get(cursor_key)
-            if cursor_entry is not None:
-                prev_id: str | None = cursor_entry[0]
-                synced_items = cursor_entry[1]
-                synced_count = len(synced_items)
-            else:
-                prev_id = None
-                synced_items = []
-                synced_count = 0
-        use_prev = (
+        persisted_len = len(full_items) - int(has_transient_turn_update)
+        if images and persisted_len > 0:
+            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+            for img in images:
+                content_parts.append({"type": "input_image", "image_url": img})
+            last_persisted = full_items[persisted_len - 1]
+            target_idx = (
+                persisted_len - 1
+                if last_persisted.get("type") == "message" and last_persisted.get("role") == "user"
+                else 0
+            )
+            full_items[target_idx] = {"type": "message", "role": "user", "content": content_parts}
+
+        persisted_prefix = full_items[:persisted_len]
+        prev_id: str | None = None
+        synced_count = 0
+        if (
             self._use_previous_response_id
             and self._store
             and not stateless
-            and prev_id is not None
             and snapshot is not None
-            and len(full_items) > synced_count > 0
-            and len(persisted_prefix) >= synced_count
-            and persisted_prefix[:synced_count] == synced_items
-        )
+        ):
+            with self._cursor_lock:
+                for cand_id, cand_synced in reversed(self._response_cursors.items()):
+                    cand_len = len(cand_synced)
+                    if (
+                        cand_len > synced_count
+                        and len(full_items) > cand_len > 0
+                        and len(persisted_prefix) >= cand_len
+                        and persisted_prefix[:cand_len] == cand_synced
+                    ):
+                        prev_id = cand_id
+                        synced_count = cand_len
+        use_prev = prev_id is not None and synced_count > 0
         if use_prev:
             delta_items = [
                 item
@@ -2457,11 +2466,11 @@ class OpenAIResponsesBackend(_ConversationBackend):
             kwargs["tool_choice"] = self._tool_choice
         if use_prev and prev_id is not None:
             kwargs["previous_response_id"] = prev_id
-        return kwargs, (cursor_key, persisted_prefix)
+        return kwargs, persisted_prefix
 
     def _commit_responses_cursor(
         self,
-        cursor_state: tuple[str, list[dict[str, Any]]],
+        persisted_prefix: list[dict[str, Any]],
         resp_id: Any,
         *,
         text: str | None = None,
@@ -2469,7 +2478,6 @@ class OpenAIResponsesBackend(_ConversationBackend):
     ) -> None:
         if not (isinstance(resp_id, str) and resp_id and self._use_previous_response_id):
             return
-        cursor_key, persisted_prefix = cursor_state
         synced = list(persisted_prefix)
         if text:
             synced.append({"type": "message", "role": "assistant", "content": text})
@@ -2496,11 +2504,18 @@ class OpenAIResponsesBackend(_ConversationBackend):
         with self._cursor_lock:
             self._previous_response_id = resp_id
             self._synced_item_count = len(synced)
-            self._response_cursors.pop(cursor_key, None)
-            self._response_cursors[cursor_key] = (resp_id, synced)
+            superseded = [
+                rid
+                for rid, prev_synced in self._response_cursors.items()
+                if prev_synced == persisted_prefix
+            ]
+            for rid in superseded:
+                self._response_cursors.pop(rid, None)
+            self._response_cursors.pop(resp_id, None)
+            self._response_cursors[resp_id] = synced
             while len(self._response_cursors) > 16:
-                oldest_key = next(iter(self._response_cursors))
-                self._response_cursors.pop(oldest_key, None)
+                oldest_id = next(iter(self._response_cursors))
+                self._response_cursors.pop(oldest_id, None)
 
     def _prepare_and_begin(self, kwargs: dict[str, Any]) -> None:
         _begin_request(self, kwargs)
@@ -2517,9 +2532,8 @@ class OpenAIResponsesBackend(_ConversationBackend):
             if self._previous_response_id == failed_id:
                 self._previous_response_id = None
                 self._synced_item_count = 0
-            stale_keys = [k for k, (rid, _) in self._response_cursors.items() if rid == failed_id]
-            for k in stale_keys:
-                self._response_cursors.pop(k, None)
+            if isinstance(failed_id, str):
+                self._response_cursors.pop(failed_id, None)
         return not single_model_request_active()
 
     def generate(
@@ -2639,7 +2653,7 @@ class AsyncOpenAIResponsesBackend(OpenAIResponsesBackend):
         self._cursor_lock = threading.RLock()
         self._previous_response_id: str | None = None
         self._synced_item_count: int = 0
-        self._response_cursors: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        self._response_cursors: dict[str, list[dict[str, Any]]] = {}
         self._cached_resp_prompt: str | None = None
         self._cached_resp_msgs: list[dict[str, Any]] = []
         self._cached_resp_items: list[dict[str, Any]] = []
@@ -2923,6 +2937,9 @@ class AsyncAnthropicBackend(_ConversationBackend):
                         "partial_arguments": "".join(active_tool["arg_parts"]),
                     }
                 )
+            if pblocks:
+                self.last_stop_reason = "stream_error"
+                _record_response_capture(self.last_response, "stream_error", self.last_usage)
             _attach_stream_partial_state(exc, pblocks)
             raise
 

@@ -112,39 +112,45 @@ class Message:
 _SCALAR_STAMP_TYPES = {str, int, float, bool, type(None)}
 
 
-def _value_stamp(value: Any, depth: int = 0) -> Any:
+def _value_stamp(
+    value: Any,
+    depth: int = 0,
+    seen: set[int] | None = None,
+) -> Any:
     vtype = type(value)
     if vtype in _SCALAR_STAMP_TYPES:
         return value
-    if depth >= 4:
-        return (
-            id(value),
-            len(value) if isinstance(value, (dict, list, tuple, set)) else vtype,
-        )
+    obj_id = id(value)
+    if depth >= 8:
+        if seen is None:
+            seen = {obj_id}
+        elif obj_id in seen:
+            return ("cycle", obj_id)
+        else:
+            seen = seen | {obj_id}
     next_depth = depth + 1
     if vtype is dict or isinstance(value, dict):
-        if len(value) > 64:
-            return (id(value), len(value))
         if not value:
             return ()
         return tuple(
             [
                 (
                     k,
-                    v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth),
+                    v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth, seen),
                 )
                 for k, v in value.items()
             ]
         )
     if vtype is list or vtype is tuple or isinstance(value, (list, tuple)):
-        if len(value) > 64:
-            return (id(value), len(value))
         if not value:
             return ()
         return tuple(
-            [v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth) for v in value]
+            [
+                v if type(v) in _SCALAR_STAMP_TYPES else _value_stamp(v, next_depth, seen)
+                for v in value
+            ]
         )
-    return id(value)
+    return obj_id
 
 
 def _message_stamp(msg: Message) -> tuple[Any, ...]:
@@ -615,8 +621,7 @@ class Conversation:
         except (TypeError, ValueError) as exc:
             raise ValueError("conversation contains non-JSON-safe data") from exc
 
-    def serialize(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dict for persistence."""
+    def _refresh_serialized_cache(self) -> None:
         from looplet._storage import TrackedList
 
         tracked = self._sync_tracked()
@@ -646,14 +651,18 @@ class Conversation:
             tracked._revision,
             len(tracked),
         )
+
+    def serialize(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict for persistence."""
+        self._refresh_serialized_cache()
         return {
             "version": 1,
             "messages": self._serialized_messages.snapshot_list(),
         }
 
     def serialized_char_estimate(self) -> int:
-        """Return incremental JSON character count without re-dumping unchanged messages."""
-        self.serialize()
+        """Return incremental JSON character count without copying the message list."""
+        self._refresh_serialized_cache()
         return self._serialized_total_chars
 
     @classmethod
